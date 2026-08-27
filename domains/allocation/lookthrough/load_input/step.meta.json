@@ -1,0 +1,7 @@
+{
+  "step_id": "load_input",
+  "monolith_path": "AllocationV2/usp_sm_load_lookthrough_allocation_input",
+  "pool_tier": 3,
+  "depends_on": [],
+  "raw_tables": []
+}

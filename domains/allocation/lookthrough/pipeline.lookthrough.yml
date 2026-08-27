@@ -1,0 +1,41 @@
+# Lookthrough allocation workflow — job DAG manifest
+# Maps monolith AllocationV2 usp_* folders to ordered tasks.
+#
+# Source (monolith) → Target (this repo):
+#   usp_sm_load_lookthrough_allocation_input → lookthrough/load_input/
+#   usp_sm_load_lookthrough_cost            → lookthrough/load_cost/
+#   usp_apply_effective_pct_lookthrough_alloc → lookthrough/apply_effective_pct/
+#   usp_sm_apply_rounding (if lookthrough)    → shared/rounding/ OR lookthrough/apply_rounding/
+
+workflow: lookthrough_allocation
+description: Lookthrough allocation Spark migration from SQL stored procedures
+
+pool_tier: 3
+
+steps:
+  - id: load_input
+    monolith_path: AllocationV2/usp_sm_load_lookthrough_allocation_input
+    repo_path: domains/allocation/lookthrough/load_input
+    depends_on: []
+
+  - id: load_cost
+    monolith_path: AllocationV2/usp_sm_load_lookthrough_cost
+    repo_path: domains/allocation/lookthrough/load_cost
+    depends_on: [load_input]
+
+  - id: apply_effective_pct
+    monolith_path: AllocationV2/usp_apply_effective_pct_lookthrough_alloc
+    repo_path: domains/allocation/lookthrough/apply_effective_pct
+    depends_on: [load_cost]
+
+  - id: apply_rounding
+    monolith_path: AllocationV2/usp_sm_apply_rounding
+    repo_path: domains/allocation/lookthrough/apply_rounding
+    depends_on: [apply_effective_pct]
+
+  - id: run_allocation
+    monolith_path: AllocationV2/usp_sm_run_lookthrough_allocation
+    repo_path: domains/allocation/lookthrough/run_allocation
+    depends_on: [apply_rounding]
+
+bundle_job_key: lookthrough_allocation

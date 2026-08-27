@@ -1,0 +1,31 @@
+# =============================================================================
+# ipac-sdt-calc — calculation + platform monorepo (hybrid split)
+#
+# Deploy jobs only — NO Lakeflow pipelines (those live in ipac_delta_sync)
+#
+#   databricks bundle deploy --select jobs.lookthrough_allocation
+# =============================================================================
+bundle:
+  name: ipac-sdt-calc
+
+include:
+  - resources/jobs/*.yml
+
+variables:
+  uc_catalog:
+    default: ipac_tax_synch
+    description: Shared UC catalog (same var as ipac_delta_sync)
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      uc_catalog: ipac_tax_synch
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Shared/ipac_sdt_calc/prod
+    variables:
+      uc_catalog: ipac_tax_synch

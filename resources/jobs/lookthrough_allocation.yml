@@ -1,0 +1,34 @@
+# Deploy: databricks bundle deploy --select jobs.lookthrough_allocation
+resources:
+  jobs:
+    lookthrough_allocation:
+      name: job_lookthrough_allocation
+      tags:
+        workflow: lookthrough
+        repo: ipac-sdt-calc
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: load_input
+          notebook_task:
+            notebook_path: ../domains/allocation/lookthrough/load_input/source/main
+          # depends_on: [] — first task
+        - task_key: load_cost
+          depends_on:
+            - task_key: load_input
+          notebook_task:
+            notebook_path: ../domains/allocation/lookthrough/load_cost/source/main
+        - task_key: apply_effective_pct
+          depends_on:
+            - task_key: load_cost
+          notebook_task:
+            notebook_path: ../domains/allocation/lookthrough/apply_effective_pct/source/main
+        - task_key: apply_rounding
+          depends_on:
+            - task_key: apply_effective_pct
+          notebook_task:
+            notebook_path: ../domains/allocation/lookthrough/apply_rounding/source/main
+        - task_key: run_allocation
+          depends_on:
+            - task_key: apply_rounding
+          notebook_task:
+            notebook_path: ../domains/allocation/lookthrough/run_allocation/source/main

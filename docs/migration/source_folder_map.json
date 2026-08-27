@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "monolith_repo": "Deloitte-US-Tax/iPACSCore_SDT_Databricks",
+  "monolith_root": "Source",
+  "targets": {
+    "ipac_delta_sync": {
+      "role": "ingestion_lakeflow",
+      "bundle_deploy": "pipelines.p_*"
+    },
+    "ipac-sdt-calc": {
+      "role": "calc_platform_domains",
+      "bundle_deploy": "jobs.*"
+    }
+  },
+  "folders": [
+    {
+      "source": "ingestion",
+      "tag": "ingest",
+      "target_repo": "ipac_delta_sync",
+      "target_path": "src/ingestion",
+      "status": "migrate"
+    },
+    {
+      "source": "import",
+      "tag": "ingest",
+      "target_repo": "ipac_delta_sync",
+      "target_path": "src/import",
+      "status": "migrate"
+    },
+    {
+      "source": "Framework",
+      "tag": "platform",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": "platform/framework",
+      "status": "migrate"
+    },
+    {
+      "source": "Common_V2",
+      "tag": "platform",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": "platform/common",
+      "status": "migrate_merge"
+    },
+    {
+      "source": "common",
+      "tag": "legacy",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": "platform/common",
+      "status": "deprecate_merge_into_common_v2"
+    },
+    {
+      "source": "UnitTest",
+      "tag": "platform",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": "platform/testing",
+      "status": "migrate"
+    },
+    {
+      "source": "test/unittest",
+      "tag": "legacy",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": "platform/testing",
+      "status": "deprecate_merge"
+    },
+    {
+      "source": "AllocationV2",
+      "tag": "allocation",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": "domains/allocation",
+      "status": "regroup_migrate"
+    },
+    {
+      "source": "allocation",
+      "tag": "legacy",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": null,
+      "status": "deprecate_after_parity"
+    },
+    {
+      "source": "database",
+      "tag": "database",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": "domains/database",
+      "status": "migrate"
+    },
+    {
+      "source": "report",
+      "tag": "report",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": "domains/report",
+      "status": "migrate"
+    },
+    {
+      "source": "Client/Script",
+      "tag": "client",
+      "target_repo": "split",
+      "target_path": "ipac_delta_sync/config/common/client_overrides OR ipac-sdt-calc/config/clients",
+      "status": "split_by_concern"
+    },
+    {
+      "source": "_migration_state",
+      "tag": "platform",
+      "target_repo": "ipac-sdt-calc",
+      "target_path": "platform/migration_state",
+      "status": "migrate"
+    }
+  ],
+  "allocation_workflows": [
+    {
+      "workflow": "lookthrough",
+      "target": "domains/allocation/lookthrough",
+      "example_steps": [
+        "usp_sm_load_lookthrough_allocation_input",
+        "usp_sm_load_lookthrough_cost",
+        "usp_sm_load_lookthrough_effective_pct",
+        "usp_sm_load_lookthrough_reclass",
+        "usp_sm_run_lookthrough_allocation",
+        "usp_sm_add_lookthrough_allocation",
+        "usp_add_lookthrough_alloc_detail_step01",
+        "usp_add_lookthrough_alloc_detail_step03",
+        "usp_apply_effective_pct_lookthrough_alloc",
+        "usp_apply_tax_holdback_lookthrough_allocation"
+      ]
+    },
+    {
+      "workflow": "k3",
+      "target": "domains/allocation/k3",
+      "example_steps": ["uspLoadK3AllocationSummary"]
+    },
+    {
+      "workflow": "contributions",
+      "target": "domains/allocation/contributions",
+      "example_steps": ["usp_apply_contributions_to_926"]
+    },
+    {
+      "workflow": "allocation_detail",
+      "target": "domains/allocation/allocation_detail",
+      "example_steps": [
+        "usp_add_allocation_detail_step_02",
+        "usp_add_allocation_detail_step_03",
+        "usp_add_allocation_detail_step_07",
+        "usp_add_allocation_detail_step_08"
+      ]
+    }
+  ]
+}
