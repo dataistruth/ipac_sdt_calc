@@ -28,6 +28,8 @@
 # MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
 # MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |
 # MAGIC
+# MAGIC **Run All** from the top, or at least **Widgets** then **Helpers** before the benchmark loop.
+# MAGIC
 # MAGIC **Note:** Both implementations write to the same `RunID` — use a test run or accept overwrite.
 
 # COMMAND ----------
@@ -49,8 +51,8 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text(
     "source_path",
-    "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks_msingh/Source",
-    "Monolith Source/ on sys.path",
+    "",
+    "Monolith Source/ on sys.path (empty = auto-detect from notebook path)",
 )
 dbutils.widgets.text(
     "volume_path",
@@ -103,6 +105,50 @@ print(f"parallel_workers: {parallel_workers} (updated only)")
 
 # COMMAND ----------
 
+import os
+import sys
+
+
+def _source_from_notebook_path() -> str:
+    """Infer monolith Source/ from this notebook's workspace path."""
+    try:
+        ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+        nb_path = ctx.notebookPath().get()
+        if "/Source/" in nb_path:
+            return nb_path.split("/Source/")[0] + "/Source"
+        marker = "/AllocationV2/"
+        if marker in nb_path:
+            return nb_path.split(marker)[0]
+    except Exception:
+        pass
+    return ""
+
+
+def ensure_source_on_path(path: str) -> str:
+    path = (path or "").strip()
+    if not path:
+        path = _source_from_notebook_path()
+    if not path:
+        raise ValueError(
+            "Set source_path widget to monolith Source/ (directory that contains AllocationV2/). "
+            "Could not infer from notebook path."
+        )
+    alloc = os.path.join(path, "AllocationV2")
+    if not os.path.isdir(alloc):
+        raise FileNotFoundError(
+            f"AllocationV2 not found at {alloc}. "
+            "Fix source_path — it must be the Source/ folder, not a subfolder."
+        )
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    print(f"[path] sys.path ← {path}")
+    return path
+
+
+source_path = ensure_source_on_path(source_path)
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Spark tuning
 
@@ -130,8 +176,8 @@ import time
 from datetime import datetime
 from typing import Any
 
-if source_path and source_path not in sys.path:
-    sys.path.insert(0, source_path)
+# Re-apply if this cell runs without the widgets cell (e.g. partial re-run)
+source_path = ensure_source_on_path(source_path)
 
 MODULE_ORIGINAL = "load_allocation_input"
 MODULE_UPDATED = "load_allocation_input_updated"

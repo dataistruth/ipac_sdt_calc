@@ -2,7 +2,7 @@
 # MAGIC %md
 # MAGIC # Runner — `usp_load_allocation_input`
 # MAGIC
-# MAGIC Toggle **module_stem** only. Same `output/` folder → all `ai_*` imports unchanged.
+# MAGIC Toggle **module_stem** only. Requires monolith `Source/` on `sys.path` (widget or auto-detect).
 
 # COMMAND ----------
 
@@ -25,17 +25,54 @@ dbutils.widgets.text(
     "/Volumes/qa7/datavolume/databrickdata/checkpoint",
     "Checkpoint volume (uncompressed parquet)",
 )
+dbutils.widgets.text(
+    "source_path",
+    "",
+    "Monolith Source/ (empty = auto-detect from notebook path)",
+)
 
 module_stem = dbutils.widgets.get("module_stem").strip()
 volume_path = dbutils.widgets.get("volume_path").strip()
-source_path = "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks_msingh/Source"
+source_path = dbutils.widgets.get("source_path").strip()
 
+import os
 import sys
 import importlib
 from datetime import datetime
 
-if source_path not in sys.path:
-    sys.path.insert(0, source_path)
+
+def _source_from_notebook_path() -> str:
+    try:
+        ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+        nb_path = ctx.notebookPath().get()
+        if "/Source/" in nb_path:
+            return nb_path.split("/Source/")[0] + "/Source"
+        marker = "/AllocationV2/"
+        if marker in nb_path:
+            return nb_path.split(marker)[0]
+    except Exception:
+        pass
+    return ""
+
+
+def ensure_source_on_path(path: str) -> str:
+    path = (path or "").strip()
+    if not path:
+        path = _source_from_notebook_path()
+    if not path:
+        raise ValueError(
+            "Set source_path to monolith Source/ (parent of AllocationV2/)."
+        )
+    alloc = os.path.join(path, "AllocationV2")
+    if not os.path.isdir(alloc):
+        raise FileNotFoundError(f"AllocationV2 not found at {alloc}")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    print(f"[path] sys.path ← {path}")
+    return path
+
+
+source_path = ensure_source_on_path(source_path)
 
 prefix = f"AllocationV2.{sp_name}.output"
 for name in list(sys.modules):
