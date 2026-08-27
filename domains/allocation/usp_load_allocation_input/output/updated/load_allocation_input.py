@@ -15,13 +15,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
 
-from .checkpoint import checkpoint, drop_checkpoints
+from .checkpoint import checkpoint
 from .step_timer import StepTimer
-from .config_loaders import load_common_config_parallel, load_config_parallel
 from .shared_views import register_shared_views_parallel
 
+from ..ai_config_service import load_config
 from ..ai_validation_service import run_validations
 from ..ai_hierarchy_service import build_entity_hierarchy, build_lower_tier_funds, build_workflows
 from ..ai_k1_service import build_k1_and_related_inputs
@@ -113,18 +114,16 @@ def run_load_allocation_input(
     )
 
     if cfg is None:
-        with timer.step("load_common_config"):
-            cfg = load_common_config_parallel(
-                spark,
-                cfg={"parallel_config_workers": parallel_config_workers},
-                entity_id=entity_id,
-                client_id=client_id,
-                tax_period_id=tax_period_id,
-                run_id=run_id,
-                catalog=catalog,
-                schema=schema,
-                call_from=call_from,
-            )
+        cfg = load_common_config(
+            spark,
+            entity_id=entity_id,
+            client_id=client_id,
+            tax_period_id=tax_period_id,
+            run_id=run_id,
+            catalog=catalog,
+            schema=schema,
+            call_from=call_from,
+        )
     elif call_from is not None:
         cfg["call_from"] = call_from
 
@@ -143,10 +142,7 @@ def run_load_allocation_input(
     cfg.setdefault("parallel_config_workers", parallel_config_workers)
     cfg.setdefault("parallel_write_workers", 3)
     cfg.setdefault("write_compression", "uncompressed")
-    config_workers = int(cfg.get("parallel_config_workers", 3) or 0)
     write_workers = int(cfg.get("parallel_write_workers", 3) or 0)
-    if config_workers > 1:
-        print(f"[parallel_config] config phase workers: max_workers={config_workers}")
     if write_workers > 1:
         print(f"[write] parallel flow-up table writes: max_workers={write_workers}")
     if str(cfg.get("write_compression", "")).lower() in ("uncompressed", "none"):
@@ -155,10 +151,8 @@ def run_load_allocation_input(
     if cfg.get("run_status") == "FAIL":
         return _timed_fail(timer, "run_status_fail")
 
-    with timer.step("load_config"):
-        cfg = load_config_parallel(spark, cfg)
-
-    with timer.step("register_shared_views"):
+    with timer.step("phase_1_config_and_shared_views"):
+        cfg = load_config(spark, cfg)
         register_shared_views_parallel(spark, cfg)
 
     with timer.step("phase_2_hierarchy_and_workflows"):
@@ -394,9 +388,6 @@ def run_load_allocation_input(
     cfg["step_timings"] = timer.as_dict_list()
     timer.print_summary("load_allocation_input (updated)")
     log_timing("load_allocation_input (updated)", t0)
-
-    with timer.step("drop_checkpoints"):
-        drop_checkpoints(spark, cfg)
 
     if save_return_value and isinstance(save_return_value, str) and save_return_value.strip().startswith("{"):
         return save_return_value

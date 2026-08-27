@@ -27,8 +27,8 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text(
     "source_path",
-    "",
-    "Monolith Source/ (empty = auto-detect from notebook path)",
+    "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks_msingh/Source",
+    "Monolith Source/ (parent of AllocationV2/)",
 )
 
 module_stem = dbutils.widgets.get("module_stem").strip()
