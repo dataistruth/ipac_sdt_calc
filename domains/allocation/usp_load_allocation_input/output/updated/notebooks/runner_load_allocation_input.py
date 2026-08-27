@@ -12,13 +12,13 @@ sp_name = "usp_load_allocation_input"
 
 dbutils.widgets.dropdown(
     "module_stem",
-    "load_allocation_input_updated",
+    "updated.load_allocation_input",
     [
         "load_allocation_input",
-        "load_allocation_input_updated",
         "updated.load_allocation_input",
+        "load_allocation_input_updated",
     ],
-    "Module under output/ (Change 2)",
+    "Module under output/ (updated package or shim)",
 )
 dbutils.widgets.text(
     "volume_path",

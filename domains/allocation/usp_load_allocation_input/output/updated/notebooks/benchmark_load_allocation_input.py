@@ -1,19 +1,19 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Benchmark — `load_allocation_input` vs `load_allocation_input_updated`
+# MAGIC # Benchmark — production vs `output/updated/`
 # MAGIC
 # MAGIC | | |
 # MAGIC |---|---|
 # MAGIC | **Notebook** | `benchmark_load_allocation_input` |
 # MAGIC | **SP** | `AllocationV2/usp_load_allocation_input` |
-# MAGIC | **Purpose** | A/B wall-clock benchmark: production vs `_updated` module |
-# MAGIC | **Deploy** | `Source/AllocationV2/usp_load_allocation_input/output/updated/` (copy whole folder) |
+# MAGIC | **Purpose** | A/B wall-clock benchmark: production vs optimized `updated/` package |
+# MAGIC | **Deploy** | Copy entire `output/updated/` folder to monolith `output/updated/` |
 # MAGIC
 # MAGIC ## What each pass does
 # MAGIC
 # MAGIC For each pass (`1` … `number_of_run`):
-# MAGIC 1. **`load_allocation_input`** — production (original)
-# MAGIC 2. **`load_allocation_input_updated`** — volume checkpoints, parallel config/views/writes, uncompressed
+# MAGIC 1. **`output.load_allocation_input`** — production (original)
+# MAGIC 2. **`output.updated.load_allocation_input`** — volume checkpoints, parallel config/views/writes, uncompressed
 # MAGIC
 # MAGIC Records wall time, reported `elapsed_seconds`, and per-pass delta.
 # MAGIC
@@ -145,7 +145,27 @@ def ensure_source_on_path(path: str) -> str:
     return path
 
 
+def ensure_updated_package(source_root: str, sp: str) -> str:
+    """Verify output/updated/load_allocation_input.py exists on monolith."""
+    updated_main = os.path.join(
+        source_root,
+        "AllocationV2",
+        sp,
+        "output",
+        "updated",
+        "load_allocation_input.py",
+    )
+    if not os.path.isfile(updated_main):
+        raise FileNotFoundError(
+            f"Updated package not found: {updated_main}\n"
+            "Copy local output/updated/ to monolith output/updated/."
+        )
+    print(f"[path] updated package OK: {updated_main}")
+    return updated_main
+
+
 source_path = ensure_source_on_path(source_path)
+ensure_updated_package(source_path, sp_name)
 
 # COMMAND ----------
 
@@ -180,7 +200,7 @@ from typing import Any
 source_path = ensure_source_on_path(source_path)
 
 MODULE_ORIGINAL = "load_allocation_input"
-MODULE_UPDATED = "load_allocation_input_updated"
+MODULE_UPDATED = "updated.load_allocation_input"
 OUTPUT_PREFIX = f"AllocationV2.{sp_name}.output"
 
 
@@ -251,7 +271,11 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
     row = {
         "pass": pass_num,
         "variant": variant,
-        "module": MODULE_ORIGINAL if variant == "original" else MODULE_UPDATED,
+        "module": (
+            f"{OUTPUT_PREFIX}.{MODULE_ORIGINAL}"
+            if variant == "original"
+            else f"{OUTPUT_PREFIX}.{MODULE_UPDATED}"
+        ),
         "parallel_workers": parallel_workers if variant == "updated" else None,
         "status": status,
         "wall_seconds": wall_seconds,
