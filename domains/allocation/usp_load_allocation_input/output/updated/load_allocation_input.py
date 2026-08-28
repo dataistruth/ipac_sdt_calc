@@ -18,7 +18,14 @@ from typing import Any
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
 
-from .checkpoint import checkpoint, checkpoint_enabled, log_checkpoint_level, normalize_checkpoint_level
+from .checkpoint import (
+    checkpoint,
+    checkpoint_enabled,
+    checkpoint_parallel,
+    log_checkpoint_level,
+    normalize_checkpoint_level,
+    parallel_checkpoint_workers,
+)
 from .step_timer import StepTimer
 from .shared_views import register_shared_views_parallel
 from . import ai_pfic_flowup_service as _pfic_flowup_svc
@@ -101,6 +108,27 @@ def _maybe_checkpoint(
         return checkpoint(spark, df, name, cfg)
 
 
+def _maybe_checkpoints_parallel(
+    spark: SparkSession,
+    timer: StepTimer,
+    named_dfs: list[tuple[str, Any]],
+    cfg: dict,
+    timer_label: str | None = None,
+) -> dict[str, Any]:
+    """Checkpoint independent DataFrames; parallel when 2+ steps enabled."""
+    enabled = [(name, df) for name, df in named_dfs if checkpoint_enabled(cfg, name)]
+    if not enabled:
+        return {name: df for name, df in named_dfs}
+
+    label = timer_label or "checkpoint_parallel_" + "_".join(n for n, _ in enabled)
+    with timer.step(label):
+        if len(enabled) == 1:
+            name, df = enabled[0]
+            return {name: checkpoint(spark, df, name, cfg)}
+        workers = parallel_checkpoint_workers(cfg)
+        return checkpoint_parallel(spark, cfg, enabled, max_workers=workers)
+
+
 def run_load_allocation_input(
     spark: SparkSession,
     cfg: dict = None,
@@ -130,6 +158,8 @@ def run_load_allocation_input(
     ParallelConfigWorkers: int = None,
     parallel_write_workers: int = None,
     ParallelWriteWorkers: int = None,
+    parallel_checkpoint_workers: int = None,
+    ParallelCheckpointWorkers: int = None,
     **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
@@ -178,6 +208,14 @@ def run_load_allocation_input(
         cfg.get("parallel_write_workers") if cfg else None,
         default=parallel_config_workers,
     )
+    parallel_checkpoint_workers_val = _worker_count(
+        parallel_checkpoint_workers,
+        ParallelCheckpointWorkers,
+        kwargs.get("parallel_checkpoint_workers"),
+        kwargs.get("ParallelCheckpointWorkers"),
+        cfg.get("parallel_checkpoint_workers") if cfg else None,
+        default=parallel_write_workers,
+    )
 
     if cfg is None:
         cfg = load_common_config(
@@ -207,6 +245,7 @@ def run_load_allocation_input(
     cfg.setdefault("execution_id", execution_id)
     cfg["parallel_config_workers"] = parallel_config_workers
     cfg["parallel_write_workers"] = parallel_write_workers
+    cfg["parallel_checkpoint_workers"] = parallel_checkpoint_workers_val
     cfg.setdefault("write_compression", "uncompressed")
     level_raw = (
         checkpoint_level
@@ -244,6 +283,8 @@ def run_load_allocation_input(
         lower_tier_df = build_lower_tier_funds(spark, cfg)
         workflows = build_workflows(spark, cfg)
 
+    lower_tier_df = _maybe_checkpoint(spark, timer, lower_tier_df, "lower_tier_funds", cfg)
+
     with timer.step("phase_3_validations"):
         should_continue = run_validations(spark, cfg, lower_tier_df)
     if not should_continue:
@@ -258,6 +299,10 @@ def run_load_allocation_input(
     with timer.step("phase_5_k1_and_related_inputs"):
         k1_df = build_k1_and_related_inputs(spark, cfg, workflows)
         allocation_input_df = allocation_input_df.unionByName(k1_df, allowMissingColumns=True)
+
+    allocation_input_df = _maybe_checkpoint(
+        spark, timer, allocation_input_df, "alloc_post_k1", cfg
+    )
 
     with timer.step("phase_6a_pfic_snapshot"):
         pfic_snapshot_df = build_pfic_snapshot(spark, cfg)
@@ -290,7 +335,18 @@ def run_load_allocation_input(
         )
         pfic_flowup_df = apply_part_v_vii_flags(spark, cfg, pfic_flowup_df)
 
-    pfic_flowup_df = _maybe_checkpoint(spark, timer, pfic_flowup_df, "pfic_flowup", cfg)
+    post_7b = _maybe_checkpoints_parallel(
+        spark,
+        timer,
+        [
+            ("alloc_post_7b", allocation_input_df),
+            ("pfic_flowup", pfic_flowup_df),
+        ],
+        cfg,
+        timer_label="checkpoint_post_7b_parallel",
+    )
+    allocation_input_df = post_7b.get("alloc_post_7b", allocation_input_df)
+    pfic_flowup_df = post_7b.get("pfic_flowup", pfic_flowup_df)
 
     with timer.step("post_filters"):
         allocation_input_df = apply_master_feed_override(spark, cfg, allocation_input_df)
@@ -485,5 +541,6 @@ def run_load_allocation_input(
         "volume_path": cfg.get("volume_path") or "",
         "parallel_write_workers": int(cfg.get("parallel_write_workers", 1) or 1),
         "parallel_config_workers": int(cfg.get("parallel_config_workers", 1) or 1),
+        "parallel_checkpoint_workers": int(cfg.get("parallel_checkpoint_workers", 1) or 1),
         "write_compression": cfg.get("write_compression"),
     }

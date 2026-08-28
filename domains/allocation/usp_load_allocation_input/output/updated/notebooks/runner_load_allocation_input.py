@@ -120,6 +120,7 @@ result = lt_runner.run_load_allocation_input(
     CheckpointLevel=checkpoint_level,
     parallel_config_workers=parallel_workers,
     parallel_write_workers=parallel_workers,
+    parallel_checkpoint_workers=parallel_workers,
 )
 
 print(f"Elapsed: {datetime.now() - beginning_time}")

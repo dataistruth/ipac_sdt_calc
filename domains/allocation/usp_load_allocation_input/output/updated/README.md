@@ -73,9 +73,38 @@ result = run_load_allocation_input(
 
 | Level | Steps materialized |
 |-------|-------------------|
-| `minimal` | `pfic_snapshot`, `alloc_input` |
-| `default` | + `pfic_flowup` |
-| `full` | + `reclass_data`, `pfic_raw`, `alloc_filtered`, `alloc_tagged` |
+| `minimal` | `pfic_snapshot`, `alloc_input` (debug only — slow) |
+| `default` | + `reclass_data`, `lower_tier_funds`, `alloc_post_k1`, `pfic_raw`, `alloc_post_7b`, `pfic_flowup`, `alloc_filtered` |
+| `full` | + `alloc_tagged` (when tag workflow active); inner PFIC `base_flowup` checkpoints |
+
+### Parallel checkpoints
+
+Independent materializations run concurrently (same worker pool as writes):
+
+- **After phase 7b:** `alloc_post_7b` + `pfic_flowup` in parallel (`checkpoint_post_7b_parallel`)
+- Controlled by `parallel_checkpoint_workers` (defaults to `parallel_write_workers`)
+
+Logs:
+
+```text
+[checkpoint] parallel write: 2 table(s), max_workers=4
+[checkpoint] parallel ok alloc_post_7b
+[checkpoint] parallel ok pfic_flowup
+```
+
+### Lineage breaks (why each step)
+
+| Step | After | Prevents replay of |
+|------|-------|-------------------|
+| `reclass_data` | shared views | Heavy reclass scan in PFIC flowup |
+| `lower_tier_funds` | phase 2 | Hierarchy/LTF joins in 7a/7b |
+| `alloc_post_k1` | phase 5 | Form + K1 unions before PFIC |
+| `pfic_snapshot` | phase 6a | Snapshot build in 6b/7a |
+| `alloc_input` | phase 6c | Full alloc build before 7a |
+| `pfic_raw` | phase 7a | Entire flowup build in 7b |
+| `alloc_post_7b` | phase 7b | Election deletes in post-filters/writes |
+| `pfic_flowup` | phase 7b | Flowup + 7a in downstream writes |
+| `alloc_filtered` | post-filters | Filter chain in phase 9 |
 
 ## PFIC flowup (`ai_pfic_flowup_service.py`)
 

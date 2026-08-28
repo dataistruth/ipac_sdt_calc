@@ -24,7 +24,7 @@
 # MAGIC | `sp_name` | SP folder under `AllocationV2/` |
 # MAGIC | `number_of_run` | A/B passes (original → updated each pass) |
 # MAGIC | `parallel_workers` | Shared views + flow-up writes (`updated` only); default `3` |
-# MAGIC | `checkpoint_level` | `minimal` / `default` / `full` (`updated` only); default `default` |
+# MAGIC | `checkpoint_level` | `minimal` / `default` / `full` (`updated` only); default `default` (includes pfic_raw + alloc_filtered) |
 # MAGIC | `volume_path` | UC volume for checkpoints (`_updated` only) |
 # MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
 # MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |
@@ -258,6 +258,7 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         run_kwargs["VolumePath"] = volume_path
         run_kwargs["parallel_config_workers"] = parallel_workers
         run_kwargs["parallel_write_workers"] = parallel_workers
+        run_kwargs["parallel_checkpoint_workers"] = parallel_workers
         run_kwargs["CheckpointLevel"] = checkpoint_level
 
     started_at = datetime.now()
