@@ -66,7 +66,7 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text(
     "source_path",
-    "",
+    "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
     "5. Monolith Source/ (empty = auto-detect)",
 )
 dbutils.widgets.text(
