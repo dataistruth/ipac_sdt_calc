@@ -1,32 +1,12 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Benchmark — `load_allocation_input` vs `load_allocation_input_updated`
-# MAGIC
-# MAGIC | | |
-# MAGIC |---|---|
-# MAGIC | **Notebook** | `benchmark_load_allocation_input` |
-# MAGIC | **SP** | `AllocationV2/usp_load_allocation_input` |
-# MAGIC | **Purpose** | A/B wall-clock benchmark: production vs `_updated` module |
-# MAGIC | **Deploy** | `Source/AllocationV2/usp_load_allocation_input/notebooks/` |
-# MAGIC
-# MAGIC ## What each pass does
+# MAGIC # Benchmark — original vs `load_allocation_input_updated`
 # MAGIC
 # MAGIC For each pass (`1` … `number_of_run`):
-# MAGIC 1. **`load_allocation_input`** — production (original)
-# MAGIC 2. **`load_allocation_input_updated`** — volume checkpoints, parallel config/views/writes, uncompressed
+# MAGIC 1. Run **`load_allocation_input`** (production / original)
+# MAGIC 2. Run **`load_allocation_input_updated`** (volume checkpoints, parallel writes, uncompressed)
 # MAGIC
-# MAGIC Records wall time, reported `elapsed_seconds`, and per-pass delta.
-# MAGIC
-# MAGIC ## Key widgets
-# MAGIC
-# MAGIC | Widget | Description |
-# MAGIC |--------|-------------|
-# MAGIC | `sp_name` | SP folder under `AllocationV2/` |
-# MAGIC | `number_of_run` | A/B passes (original → updated each pass) |
-# MAGIC | `parallel_workers` | Config + flow-up writes (`_updated` only); default `3` |
-# MAGIC | `volume_path` | UC volume for checkpoints (`_updated` only) |
-# MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
-# MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |
+# MAGIC Records end-to-end wall time per run and optional `elapsed_seconds` from the module result.
 # MAGIC
 # MAGIC **Note:** Both implementations write to the same `RunID` — use a test run or accept overwrite.
 
@@ -63,11 +43,6 @@ dbutils.widgets.text("TaxPeriodID", "1", "TaxPeriodID")
 dbutils.widgets.text("RunID", "16560", "RunID")
 dbutils.widgets.text("CatalogName", "QA7", "CatalogName")
 dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "SchemaName")
-dbutils.widgets.text(
-    "parallel_workers",
-    "3",
-    "Parallel workers (updated: config + flow-up writes)",
-)
 
 sp_name = dbutils.widgets.get("sp_name").strip()
 number_of_run = int(dbutils.widgets.get("number_of_run").strip() or "1")
@@ -79,10 +54,6 @@ tax_period_id = int(dbutils.widgets.get("TaxPeriodID").strip())
 run_id = int(dbutils.widgets.get("RunID").strip())
 catalog_name = dbutils.widgets.get("CatalogName").strip()
 schema_name = dbutils.widgets.get("SchemaName").strip()
-parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "3")
-
-if parallel_workers < 1:
-    raise ValueError("parallel_workers must be >= 1")
 
 if number_of_run < 1:
     raise ValueError("number_of_run must be >= 1")
@@ -99,7 +70,6 @@ print(f"TaxPeriodID     : {tax_period_id}")
 print(f"RunID           : {run_id}")
 print(f"CatalogName     : {catalog_name}")
 print(f"SchemaName      : {schema_name}")
-print(f"parallel_workers: {parallel_workers} (updated only)")
 
 # COMMAND ----------
 
@@ -178,15 +148,10 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
     }
     if variant == "updated":
         run_kwargs["VolumePath"] = volume_path
-        run_kwargs["parallel_config_workers"] = parallel_workers
-        run_kwargs["parallel_write_workers"] = parallel_workers
 
     started_at = datetime.now()
     t0 = time.time()
-    worker_note = (
-        f" | workers={parallel_workers}" if variant == "updated" else ""
-    )
-    print(f"\n=== pass {pass_num} | {variant}{worker_note} | start {started_at} ===")
+    print(f"\n=== pass {pass_num} | {variant} | start {started_at} ===")
 
     try:
         result = runner.run_load_allocation_input(spark, **run_kwargs)
@@ -206,7 +171,6 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         "pass": pass_num,
         "variant": variant,
         "module": MODULE_ORIGINAL if variant == "original" else MODULE_UPDATED,
-        "parallel_workers": parallel_workers if variant == "updated" else None,
         "status": status,
         "wall_seconds": wall_seconds,
         "reported_elapsed_seconds": reported,

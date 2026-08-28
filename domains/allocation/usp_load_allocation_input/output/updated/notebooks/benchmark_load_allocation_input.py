@@ -13,7 +13,7 @@
 # MAGIC
 # MAGIC For each pass (`1` … `number_of_run`):
 # MAGIC 1. **`output.load_allocation_input`** — production (original)
-# MAGIC 2. **`output.updated.load_allocation_input`** — volume checkpoints, parallel config/views/writes, uncompressed
+# MAGIC 2. **`output.updated.load_allocation_input`** — volume checkpoints, parallel views/writes, uncompressed
 # MAGIC
 # MAGIC Records wall time, reported `elapsed_seconds`, and per-pass delta.
 # MAGIC
@@ -23,7 +23,7 @@
 # MAGIC |--------|-------------|
 # MAGIC | `sp_name` | SP folder under `AllocationV2/` |
 # MAGIC | `number_of_run` | A/B passes (original → updated each pass) |
-# MAGIC | `parallel_workers` | Config + flow-up writes (`_updated` only); default `3` |
+# MAGIC | `parallel_workers` | Shared views + flow-up writes (`updated` only); default `3` |
 # MAGIC | `volume_path` | UC volume for checkpoints (`_updated` only) |
 # MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
 # MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |

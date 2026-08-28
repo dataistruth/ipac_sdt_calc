@@ -4,7 +4,7 @@ checkpoint.py — volume / Delta checkpoints for updated package.
 - auto: uncompressed Parquet files on volume_path when set
 - delta: same as production (UC temp table _tmp_{name}_{run_id}_{uniq})
 - optimizeWrite on Delta checkpoints
-- tracks volume paths in cfg["_checkpoint_paths"] for cleanup
+- tracks volume paths in cfg["_checkpoint_paths"] (audit only; no end-of-run cleanup)
 
 Set in cfg (optional):
   checkpoint_backend: "auto" | "delta" | "volume"  (default "auto")
@@ -156,23 +156,3 @@ def checkpoint(
     cfg["_checkpoint_tables"].append(fqn)
     logger.info(f"[CHECKPOINT] delta write: {fqn}")
     return _write_delta_checkpoint(spark, df, fqn)
-
-
-def drop_checkpoints(spark: SparkSession, cfg: dict) -> None:
-    """Drop UC temp tables and volume checkpoint dirs. Call at end of run."""
-    for fqn in cfg.get("_checkpoint_tables", []):
-        try:
-            spark.sql(f"DROP TABLE IF EXISTS {fqn}")
-            logger.debug(f"[CHECKPOINT] Dropped table: {fqn}")
-        except Exception as exc:
-            logger.warning(f"[CHECKPOINT] Failed to drop table {fqn}: {exc}")
-
-    for path in cfg.get("_checkpoint_paths", []):
-        try:
-            _rm_path(spark, path)
-            logger.debug(f"[CHECKPOINT] Removed path: {path}")
-        except Exception as exc:
-            logger.warning(f"[CHECKPOINT] Failed to remove path {path}: {exc}")
-
-    cfg["_checkpoint_tables"] = []
-    cfg["_checkpoint_paths"] = []

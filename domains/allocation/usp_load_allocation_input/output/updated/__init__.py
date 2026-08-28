@@ -1,4 +1,4 @@
-"""Optimized usp_load_allocation_input modules (parallel config, checkpoints, writes)."""
+"""Optimized usp_load_allocation_input (parallel views/writes, volume checkpoints)."""
 
 from .load_allocation_input import run_load_allocation_input
 

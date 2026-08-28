@@ -111,7 +111,7 @@ def run_load_allocation_input(
 
     parallel_config_workers = int(
         kwargs.get("parallel_config_workers", 3) or 3
-    )
+    )  # shared_views parallel lookups only
 
     if cfg is None:
         cfg = load_common_config(
