@@ -24,6 +24,7 @@
 # MAGIC | `sp_name` | SP folder under `AllocationV2/` |
 # MAGIC | `number_of_run` | A/B passes (original → updated each pass) |
 # MAGIC | `parallel_workers` | Shared views + flow-up writes (`updated` only); default `3` |
+# MAGIC | `checkpoint_level` | `minimal` / `default` / `full` (`updated` only); default `default` |
 # MAGIC | `volume_path` | UC volume for checkpoints (`_updated` only) |
 # MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
 # MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |
@@ -68,7 +69,13 @@ dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "SchemaName")
 dbutils.widgets.text(
     "parallel_workers",
     "3",
-    "Parallel workers (updated: config + flow-up writes)",
+    "Parallel workers (updated: shared views + flow-up writes)",
+)
+dbutils.widgets.dropdown(
+    "checkpoint_level",
+    "default",
+    ["minimal", "default", "full"],
+    "Checkpoint level (updated only)",
 )
 
 sp_name = dbutils.widgets.get("sp_name").strip()
@@ -82,6 +89,7 @@ run_id = int(dbutils.widgets.get("RunID").strip())
 catalog_name = dbutils.widgets.get("CatalogName").strip()
 schema_name = dbutils.widgets.get("SchemaName").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "3")
+checkpoint_level = dbutils.widgets.get("checkpoint_level").strip() or "default"
 
 if parallel_workers < 1:
     raise ValueError("parallel_workers must be >= 1")
@@ -102,6 +110,7 @@ print(f"RunID           : {run_id}")
 print(f"CatalogName     : {catalog_name}")
 print(f"SchemaName      : {schema_name}")
 print(f"parallel_workers: {parallel_workers} (updated only)")
+print(f"checkpoint_level: {checkpoint_level} (updated only)")
 
 # COMMAND ----------
 
@@ -246,6 +255,7 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         run_kwargs["VolumePath"] = volume_path
         run_kwargs["parallel_config_workers"] = parallel_workers
         run_kwargs["parallel_write_workers"] = parallel_workers
+        run_kwargs["CheckpointLevel"] = checkpoint_level
 
     started_at = datetime.now()
     t0 = time.time()

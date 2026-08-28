@@ -8,6 +8,7 @@ checkpoint.py — volume / Delta checkpoints for updated package.
 
 Set in cfg (optional):
   checkpoint_backend: "auto" | "delta" | "volume"  (default "auto")
+  checkpoint_level: "minimal" | "default" | "full"  (default "default")
 """
 
 from __future__ import annotations
@@ -25,6 +26,52 @@ logger = logging.getLogger(__name__)
 
 _CHECKPOINT_MAX_RETRIES = 3
 _CHECKPOINT_RETRY_DELAY = 5
+
+CHECKPOINT_LEVELS = ("minimal", "default", "full")
+
+# Step names must match checkpoint(..., name, ...) calls in the pipeline.
+_STEPS_BY_LEVEL: dict[str, frozenset[str]] = {
+    "minimal": frozenset({"pfic_snapshot", "alloc_input"}),
+    "default": frozenset({"pfic_snapshot", "alloc_input", "pfic_flowup"}),
+    "full": frozenset(
+        {
+            "reclass_data",
+            "pfic_snapshot",
+            "alloc_input",
+            "pfic_raw",
+            "pfic_flowup",
+            "alloc_filtered",
+            "alloc_tagged",
+        }
+    ),
+}
+
+
+def normalize_checkpoint_level(raw: str | None, default: str = "default") -> str:
+    level = str(raw or default).strip().lower()
+    if level not in CHECKPOINT_LEVELS:
+        raise ValueError(
+            f"checkpoint_level must be one of {CHECKPOINT_LEVELS}, got '{raw}'"
+        )
+    return level
+
+
+def checkpoint_enabled(cfg: dict, step_name: str) -> bool:
+    level = normalize_checkpoint_level(cfg.get("checkpoint_level"), default="default")
+    allowed = _STEPS_BY_LEVEL[level]
+    if step_name not in allowed:
+        return False
+    if step_name == "alloc_tagged":
+        return int(cfg.get("investment_tag_workflow_id", 0) or 0) != 0
+    return True
+
+
+def log_checkpoint_level(cfg: dict) -> None:
+    level = normalize_checkpoint_level(cfg.get("checkpoint_level"), default="default")
+    enabled = sorted(
+        name for name in _STEPS_BY_LEVEL["full"] if checkpoint_enabled(cfg, name)
+    )
+    print(f"[checkpoint] level={level} steps={enabled}")
 
 
 def _ensure_checkpoint_lists(cfg: dict) -> None:

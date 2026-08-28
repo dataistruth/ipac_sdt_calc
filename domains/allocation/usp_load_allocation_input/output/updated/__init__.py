@@ -1,4 +1,4 @@
-"""Optimized usp_load_allocation_input (parallel views/writes, volume checkpoints)."""
+"""Optimized usp_load_allocation_input — sync this folder only to monolith output/updated/."""
 
 from .load_allocation_input import run_load_allocation_input
 

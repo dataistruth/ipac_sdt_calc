@@ -16,7 +16,7 @@ dbutils.widgets.dropdown(
     [
         "load_allocation_input",
         "updated.load_allocation_input",
-        "load_allocation_input_updated",
+        "updated.load_allocation_input_updated",
     ],
     "Module under output/ (updated package or shim)",
 )
@@ -30,10 +30,17 @@ dbutils.widgets.text(
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks_msingh/Source",
     "Monolith Source/ (parent of AllocationV2/)",
 )
+dbutils.widgets.dropdown(
+    "checkpoint_level",
+    "default",
+    ["minimal", "default", "full"],
+    "Lineage-break checkpoints (updated module only)",
+)
 
 module_stem = dbutils.widgets.get("module_stem").strip()
 volume_path = dbutils.widgets.get("volume_path").strip()
 source_path = dbutils.widgets.get("source_path").strip()
+checkpoint_level = dbutils.widgets.get("checkpoint_level").strip()
 
 import os
 import sys
@@ -97,6 +104,7 @@ result = lt_runner.run_load_allocation_input(
     CatalogName="QA7",
     SchemaName="IPC_2025_QA7_15348",
     VolumePath=volume_path,
+    CheckpointLevel=checkpoint_level,
 )
 
 print(f"Elapsed: {datetime.now() - beginning_time}")

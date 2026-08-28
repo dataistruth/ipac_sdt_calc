@@ -10,12 +10,14 @@ import logging
 
 from pyspark.sql import SparkSession
 
-from ..ai_shared_views import register_shared_views
+from .parent import output_module
 from .parallel_config import parallel_workers
 from .shared_views_builders import (
     INDEPENDENT_VIEW_REGISTRARS,
     register_shared_views_parallel_builders,
 )
+
+register_shared_views = output_module("ai_shared_views").register_shared_views
 
 logger = logging.getLogger(__name__)
 
