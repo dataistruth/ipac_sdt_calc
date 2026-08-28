@@ -56,11 +56,16 @@ def _cached_lower_tier_funds(spark: SparkSession, cfg: dict, run_id: int) -> Dat
 
 
 def _inner_checkpoint(spark: SparkSession, df: DataFrame, cfg: dict, label: str) -> DataFrame:
-    """Production-aligned inner break (monolith uses Common_V2.core.checkpoint base_flowup)."""
-    from .checkpoint import checkpoint
+    """Inner 7a break — same role as original single phase-7a checkpoint."""
+    from .checkpoint import checkpoint, should_checkpoint
+
+    if not should_checkpoint(cfg, "base_flowup"):
+        return df
 
     _log(f"inner checkpoint ({label})")
-    return checkpoint(spark, df, "base_flowup", cfg)
+    out = checkpoint(spark, df, "base_flowup", cfg)
+    cfg["_pfic_inner_base_flowup_checkpoint"] = True
+    return out
 
 
 def _cached_zero_fa_only_ids(

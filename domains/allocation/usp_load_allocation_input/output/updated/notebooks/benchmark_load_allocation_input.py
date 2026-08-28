@@ -23,7 +23,7 @@
 # MAGIC |--------|-------------|
 # MAGIC | `sp_name` | SP folder under `AllocationV2/` |
 # MAGIC | `number_of_run` | A/B passes (original → updated each pass) |
-# MAGIC | `parallel_workers` | Shared views + flow-up writes (`updated` only); default `3` |
+# MAGIC | `parallel_workers` | Shared views + flow-up writes (`updated` only); default `4` |
 # MAGIC | `volume_path` | UC volume for checkpoints (`updated` only) |
 # MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
 # MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |
@@ -54,7 +54,7 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text(
     "parallel_workers",
-    "3",
+    "4",
     "3. Parallel workers (updated: shared views + flow-up writes)",
 )
 dbutils.widgets.text(
@@ -84,7 +84,7 @@ tax_period_id = int(dbutils.widgets.get("TaxPeriodID").strip())
 run_id = int(dbutils.widgets.get("RunID").strip())
 catalog_name = dbutils.widgets.get("CatalogName").strip()
 schema_name = dbutils.widgets.get("SchemaName").strip()
-parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "3")
+parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
 
 if parallel_workers < 1:
     raise ValueError("parallel_workers must be >= 1")

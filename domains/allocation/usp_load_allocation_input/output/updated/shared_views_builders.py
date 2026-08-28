@@ -175,7 +175,7 @@ def register_shared_views_parallel_builders(spark: SparkSession, cfg: dict, work
     Mirror ai_shared_views.register_shared_views with parallel independent reads.
 
     Phase 1: 8 broadcast lookups in parallel (max_workers)
-    Phase 2: _reclass_data (checkpoint)
+    Phase 2: _reclass_data (optional checkpoint via checkpoint_reclass_data)
     Phase 3: _lower_tier_funds_{run_id} (needs _entity)
     """
     from .parallel_config import run_parallel_tasks

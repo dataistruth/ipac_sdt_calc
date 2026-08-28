@@ -25,22 +25,19 @@ result = run_load_allocation_input(
 )
 ```
 
-## Checkpoints (production-aligned)
+## Checkpoints (original-aligned)
 
-Same placement as monolith / `load_allocation_input_updated.py` (volume backend when `VolumePath` set):
+Matches `output.load_allocation_input` — four main breaks (+ tagged when applicable):
 
 | Step | When |
 |------|------|
-| `reclass_data` | Shared views (`register_reclass_data`) |
-| `pfic_snapshot` | After phase 6a |
 | `alloc_input` | After phase 6c |
-| `base_flowup` | Inside PFIC flowup (post-reclass, post-zero) |
-| `pfic_raw` | After phase 7a build |
+| `base_flowup` | Inside PFIC flowup (post-reclass / post-zero) — **single 7a materialization** |
 | `pfic_flowup` | After phase 7b |
 | `alloc_filtered` | After post-filters |
 | `alloc_tagged` | After phase 8 (if investment tag workflow active) |
 
-No extra checkpoints (`lower_tier_funds`, `alloc_post_k1`, `alloc_post_7b`).
+**Not enabled by default** (opt-in via cfg): `checkpoint_reclass_data`, `checkpoint_pfic_snapshot`, `checkpoint_pfic_raw`.
 
 ## Phase 7a optimizations (broadcast / cache)
 
@@ -53,6 +50,6 @@ Kept in `updated.ai_pfic_flowup_service`:
 
 ## Other optimizations
 
-- Parallel shared view registration (`parallel_config_workers`)
-- Parallel flow-up Delta writes (`parallel_write_workers`)
+- Parallel shared view registration (`parallel_config_workers`, default 4)
+- Parallel flow-up Delta writes (`parallel_write_workers`, default 4)
 - Uncompressed Parquet on volume checkpoints and writes

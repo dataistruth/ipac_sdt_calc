@@ -147,7 +147,7 @@ def run_load_allocation_input(
 
     def _worker_count(
         *values: object,
-        default: int = 3,
+        default: int = 4,
     ) -> int:
         for raw in values:
             if raw is None:
@@ -166,7 +166,7 @@ def run_load_allocation_input(
         kwargs.get("parallel_config_workers"),
         kwargs.get("ParallelConfigWorkers"),
         cfg.get("parallel_config_workers") if cfg else None,
-        default=3,
+        default=4,
     )
     parallel_write_workers = _worker_count(
         parallel_write_workers,

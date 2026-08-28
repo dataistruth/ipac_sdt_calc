@@ -1,9 +1,11 @@
 """
 checkpoint.py — volume / Delta checkpoints for updated package.
 
-Matches production checkpoint placement (same steps as monolith /
-load_allocation_input_updated), using volume uncompressed Parquet when
-volume_path is set.
+Default steps match original output.load_allocation_input (4 checkpoint logs):
+  alloc_input, base_flowup (inner 7a), pfic_flowup, alloc_filtered (+ alloc_tagged if tagged).
+
+Opt-in via cfg flags (benchmark parity with original — off by default):
+  checkpoint_reclass_data, checkpoint_pfic_snapshot, checkpoint_pfic_raw
 
 Set in cfg (optional):
   checkpoint_backend: "auto" | "delta" | "volume"  (default "auto")
@@ -25,32 +27,51 @@ logger = logging.getLogger(__name__)
 _CHECKPOINT_MAX_RETRIES = 3
 _CHECKPOINT_RETRY_DELAY = 5
 
-# Production-aligned step names (see output/load_allocation_input_updated.py).
+# Default: original output.load_allocation_input placement (no pfic_snapshot / pfic_raw / reclass).
 CHECKPOINT_STEPS: frozenset[str] = frozenset(
     {
-        "reclass_data",  # shared_views_builders.register_reclass_data
-        "pfic_snapshot",
         "alloc_input",
-        "pfic_raw",
-        "base_flowup",  # inner PFIC flowup (monolith ai_pfic_flowup_service)
+        "base_flowup",  # inner PFIC flowup (post-reclass / post-zero in ai_pfic_flowup_service)
         "pfic_flowup",
         "alloc_filtered",
         "alloc_tagged",
     }
 )
 
+# Extra materialization — enable per flag when debugging lineage (not default).
+OPT_IN_CHECKPOINT_STEPS: frozenset[str] = frozenset(
+    {
+        "reclass_data",
+        "pfic_snapshot",
+        "pfic_raw",
+    }
+)
+
+_OPT_IN_CFG_KEYS: dict[str, str] = {
+    "reclass_data": "checkpoint_reclass_data",
+    "pfic_snapshot": "checkpoint_pfic_snapshot",
+    "pfic_raw": "checkpoint_pfic_raw",
+}
+
 
 def should_checkpoint(cfg: dict, step_name: str) -> bool:
+    if step_name in OPT_IN_CHECKPOINT_STEPS:
+        key = _OPT_IN_CFG_KEYS[step_name]
+        return bool(cfg.get(key, False))
+
     if step_name not in CHECKPOINT_STEPS:
         return False
+
     if step_name == "alloc_tagged":
         return int(cfg.get("investment_tag_workflow_id", 0) or 0) != 0
+
     return True
 
 
 def log_checkpoint_plan(cfg: dict) -> None:
-    enabled = sorted(name for name in CHECKPOINT_STEPS if should_checkpoint(cfg, name))
-    print(f"[checkpoint] steps={enabled} (production-aligned)")
+    all_steps = CHECKPOINT_STEPS | OPT_IN_CHECKPOINT_STEPS
+    enabled = sorted(name for name in all_steps if should_checkpoint(cfg, name))
+    print(f"[checkpoint] steps={enabled} (original-aligned)")
 
 
 def _ensure_checkpoint_lists(cfg: dict) -> None:

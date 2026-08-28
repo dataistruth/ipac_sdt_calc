@@ -24,7 +24,7 @@ dbutils.widgets.dropdown(
 )
 dbutils.widgets.text(
     "parallel_workers",
-    "3",
+    "4",
     "2. Parallel workers (shared views + flow-up writes)",
 )
 dbutils.widgets.text(
@@ -39,7 +39,7 @@ dbutils.widgets.text(
 )
 
 module_stem = dbutils.widgets.get("module_stem").strip()
-parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "3")
+parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
 volume_path = dbutils.widgets.get("volume_path").strip()
 source_path = dbutils.widgets.get("source_path").strip()
 

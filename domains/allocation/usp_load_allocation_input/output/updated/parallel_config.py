@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 TaskFn = Callable[[], dict[str, Any] | None]
 
 
-def parallel_workers(cfg: dict | None, default: int = 3) -> int:
+def parallel_workers(cfg: dict | None, default: int = 4) -> int:
     if cfg is None:
         return default
     raw = cfg.get("parallel_config_workers", default)
