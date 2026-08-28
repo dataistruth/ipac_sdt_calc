@@ -8,7 +8,8 @@ Opt-in via cfg flags (benchmark parity with original — off by default):
   checkpoint_reclass_data, checkpoint_pfic_snapshot, checkpoint_pfic_raw
 
 Set in cfg (optional):
-  checkpoint_backend: "auto" | "delta" | "volume"  (default "auto")
+  checkpoint_backend: "auto" | "delta" | "volume"  (default "auto" → delta)
+  volume_path: used for final flow-up outputs (GenericResultStorer), not checkpoints by default.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ _CHECKPOINT_RETRY_DELAY = 5
 CHECKPOINT_STEPS: frozenset[str] = frozenset(
     {
         "alloc_input",
-        "base_flowup",  # inner PFIC flowup (post-reclass / post-zero in ai_pfic_flowup_service)
+        "base_flowup",  # once after phase 7a build (original single 7a checkpoint)
         "pfic_flowup",
         "alloc_filtered",
         "alloc_tagged",
@@ -105,7 +106,9 @@ def _resolve_backend(cfg: dict) -> str:
         return "volume"
     if mode == "delta":
         return "delta"
-    return "volume" if volume else "delta"
+    # auto: Delta temp tables (matches original / Common_V2.core.checkpoint).
+    # volume_path is for final outputs; opt in to volume checkpoints via checkpoint_backend=volume.
+    return "delta"
 
 
 def _volume_checkpoint_path(cfg: dict, name: str, uniq: str) -> str:
@@ -185,8 +188,8 @@ def checkpoint(
     """
     Materialize df to break lineage. Same contract as Common_V2.core.checkpoint.
 
-    auto + volume_path → uncompressed Parquet files under volume (no UC temp table).
-    Otherwise → Delta temp table in catalog (production behavior).
+    Default (auto): Delta temp table in catalog with optimizeWrite.
+    volume: uncompressed Parquet on volume_path (opt-in only).
     """
     _ensure_checkpoint_lists(cfg)
     run_id = cfg.get("run_id", 0)

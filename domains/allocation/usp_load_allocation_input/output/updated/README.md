@@ -25,19 +25,22 @@ result = run_load_allocation_input(
 )
 ```
 
-## Checkpoints (original-aligned)
+## Checkpoints (original-aligned, Delta temp tables)
 
-Matches `output.load_allocation_input` — four main breaks (+ tagged when applicable):
+Intermediate lineage breaks use **Delta temp tables** in UC (`_tmp_*`), same as original
+`Common_V2.core.checkpoint` — not volume Parquet unless `checkpoint_backend=volume`.
 
 | Step | When |
 |------|------|
 | `alloc_input` | After phase 6c |
-| `base_flowup` | Inside PFIC flowup (post-reclass / post-zero) — **single 7a materialization** |
+| `base_flowup` | After phase 7a build (single materialization) |
 | `pfic_flowup` | After phase 7b |
 | `alloc_filtered` | After post-filters |
 | `alloc_tagged` | After phase 8 (if investment tag workflow active) |
 
-**Not enabled by default** (opt-in via cfg): `checkpoint_reclass_data`, `checkpoint_pfic_snapshot`, `checkpoint_pfic_raw`.
+`VolumePath` is for **final flow-up / storer outputs**, not checkpoints by default.
+
+Opt-in volume checkpoints: `checkpoint_backend="volume"` (requires `volume_path`).
 
 ## Phase 7a optimizations (broadcast / cache)
 

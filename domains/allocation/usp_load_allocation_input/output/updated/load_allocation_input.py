@@ -196,10 +196,9 @@ def run_load_allocation_input(
     cfg.setdefault("_checkpoint_paths", [])
     if volume_path:
         cfg["volume_path"] = volume_path.strip()
-        cfg["checkpoint_backend"] = "volume"
         print(
-            f"[checkpoint] volume + uncompressed parquet → "
-            f"{cfg['volume_path']}/_checkpoints/{{run_id}}/"
+            f"[checkpoint] delta temp tables (UC) | volume_path for flow-up outputs: "
+            f"{cfg['volume_path']}"
         )
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
@@ -267,7 +266,8 @@ def run_load_allocation_input(
             spark, cfg, pfic_snapshot_df, pfic_elections, lower_tier_df
         )
 
-    pfic_flowup_df = _maybe_checkpoint(spark, timer, pfic_flowup_df, "pfic_raw", cfg)
+    # Single 7a materialization (original: one "build + checkpoint" — not mid-pipeline breaks).
+    pfic_flowup_df = _maybe_checkpoint(spark, timer, pfic_flowup_df, "base_flowup", cfg)
 
     with timer.step("phase_7b_pfic_election_deletes_and_flags"):
         check_pfic_xml_override_alert(spark, cfg, pfic_flowup_df)
