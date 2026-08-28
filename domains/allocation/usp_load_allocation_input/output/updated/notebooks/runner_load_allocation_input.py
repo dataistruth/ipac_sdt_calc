@@ -22,36 +22,28 @@ dbutils.widgets.dropdown(
     ],
     "1. Module under output/",
 )
-dbutils.widgets.dropdown(
-    "checkpoint_level",
-    "default",
-    ["minimal", "default", "full"],
-    "2. Checkpoint level (minimal | default | full)",
-)
 dbutils.widgets.text(
     "parallel_workers",
     "3",
-    "3. Parallel workers (shared views + flow-up writes)",
+    "2. Parallel workers (shared views + flow-up writes)",
 )
 dbutils.widgets.text(
     "volume_path",
     "/Volumes/qa7/datavolume/databrickdata/checkpoint",
-    "4. Checkpoint volume",
+    "3. Checkpoint volume",
 )
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
-    "5. Monolith Source/",
+    "4. Monolith Source/",
 )
 
 module_stem = dbutils.widgets.get("module_stem").strip()
-checkpoint_level = dbutils.widgets.get("checkpoint_level").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "3")
 volume_path = dbutils.widgets.get("volume_path").strip()
 source_path = dbutils.widgets.get("source_path").strip()
 
 print(f"module_stem       : {module_stem}")
-print(f"checkpoint_level  : {checkpoint_level}")
 print(f"parallel_workers  : {parallel_workers}")
 print(f"volume_path       : {volume_path}")
 
@@ -117,10 +109,8 @@ result = lt_runner.run_load_allocation_input(
     CatalogName="QA7",
     SchemaName="IPC_2025_QA7_15348",
     VolumePath=volume_path,
-    CheckpointLevel=checkpoint_level,
     parallel_config_workers=parallel_workers,
     parallel_write_workers=parallel_workers,
-    parallel_checkpoint_workers=parallel_workers,
 )
 
 print(f"Elapsed: {datetime.now() - beginning_time}")

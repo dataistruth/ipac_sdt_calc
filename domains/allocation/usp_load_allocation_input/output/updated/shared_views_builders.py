@@ -14,7 +14,7 @@ from pyspark.sql import SparkSession
 
 from Common_V2.core.helpers import log_section, log_timing, read_table
 
-from .checkpoint import checkpoint, checkpoint_enabled
+from .checkpoint import checkpoint, should_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def register_reclass_data(spark: SparkSession, cfg: dict) -> None:
             & (F.col("RunID") == run_id)
         )
     )
-    if checkpoint_enabled(cfg, "reclass_data"):
+    if should_checkpoint(cfg, "reclass_data"):
         reclass_df = checkpoint(spark, reclass_df, "reclass_data", cfg)
     reclass_df.createOrReplaceTempView("_reclass_data")
 

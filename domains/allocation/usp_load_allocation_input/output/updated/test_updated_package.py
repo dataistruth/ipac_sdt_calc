@@ -252,9 +252,8 @@ def test_stubbed_run(modules: dict[str, types.ModuleType]) -> None:
         CatalogName="QA7",
         SchemaName="IPC_2025_QA7_15348",
         VolumePath="/tmp/alloc_checkpoint_test",
-        CheckpointLevel="default",
-        parallel_write_workers=1,
         parallel_config_workers=1,
+        parallel_write_workers=1,
     )
 
     if not isinstance(result, dict):

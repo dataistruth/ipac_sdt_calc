@@ -47,11 +47,18 @@ def _blocked_classification(pfic_foreign_corp: DataFrame, entity_id: int) -> Dat
     ).distinct()
 
 
-def _maybe_inner_checkpoint(spark: SparkSession, df: DataFrame, cfg: dict, label: str) -> DataFrame:
-    if cfg.get("skip_inner_pfic_checkpoints", True):
-        _log(f"skip inner checkpoint ({label})")
-        return df
+def _cached_lower_tier_funds(spark: SparkSession, cfg: dict, run_id: int) -> DataFrame:
+    key = f"_lower_tier_funds_df_{run_id}"
+    if key not in cfg:
+        cfg[key] = spark.table(f"_lower_tier_funds_{run_id}")
+        _log(f"cached _lower_tier_funds_{run_id}")
+    return cfg[key]
+
+
+def _inner_checkpoint(spark: SparkSession, df: DataFrame, cfg: dict, label: str) -> DataFrame:
+    """Production-aligned inner break (monolith uses Common_V2.core.checkpoint base_flowup)."""
     from .checkpoint import checkpoint
+
     _log(f"inner checkpoint ({label})")
     return checkpoint(spark, df, "base_flowup", cfg)
 
@@ -70,8 +77,8 @@ def _cached_zero_fa_only_ids(
         _log("reuse cached _zero_fa_only_ids")
     return cfg[cache_key]
 
-def _collect_result(cfg: dict, df: DataFrame, table_name: str) -> None:
 
+def _collect_result(cfg: dict, df: DataFrame, table_name: str) -> None:
     """Collect DataFrame for batch write via GenericResultStorer at end of SP."""
 
     spark = df.sparkSession
@@ -111,6 +118,7 @@ def _collect_result(cfg: dict, df: DataFrame, table_name: str) -> None:
     else:
 
         cfg["_parquet_results"][table_name] = df
+
 
 def _build_zero_fa_only_ids(spark, cfg, reclass_unblocked_df, pfic_line_item_df):
 
@@ -445,13 +453,12 @@ def build_pfic_flowup_pipeline(
 
     type_of_pfic_line = cfg.get("type_of_pfic_line_id")
 
-    # Read temp views
-
-    pfic_line_item = spark.table("_pfic_line_item")
-
-    entity_tv = spark.table("_entity")
-
-    fx_avg_rate = spark.table("_fx_avg_rate")
+    # Broadcast small shared views (used many times in Step 1–6).
+    pfic_line_item = F.broadcast(spark.table("_pfic_line_item"))
+    entity_tv = F.broadcast(spark.table("_entity"))
+    fx_avg_rate = F.broadcast(spark.table("_fx_avg_rate"))
+    lower_tier_funds = _cached_lower_tier_funds(spark, cfg, run_id)
+    _log("broadcast shared views for flowup build")
 
     # Placeholder for the lookthrough-reclass unblocked set. The real data is
 
@@ -785,7 +792,7 @@ def build_pfic_flowup_pipeline(
 
         base_flowup = base_flowup.unionByName(reclass_flowup_non_alloc)
 
-        base_flowup = _maybe_inner_checkpoint(spark, base_flowup, cfg, "post-reclass")
+        base_flowup = _inner_checkpoint(spark, base_flowup, cfg, "post-reclass")
 
     # ─── Step 3: Zero-Amount PFICs ────────────────────────────────────────
 
@@ -818,8 +825,6 @@ def build_pfic_flowup_pipeline(
     # Zero amount PFICs from prior flowup table (not already in current flowup)
 
     pfic_flowup_tracking = read_table(spark, "PFICFootnoteFlowupWithTrackingKey", cfg)
-
-    lower_tier_funds = spark.table(f"_lower_tier_funds_{run_id}")
 
     enu_tax_class = F.broadcast(read_table(spark, "ENU_TaxClass", cfg))
 
@@ -1277,7 +1282,7 @@ def build_pfic_flowup_pipeline(
 
         base_flowup = base_flowup.unionByName(zero_flowup)
 
-        base_flowup = _maybe_inner_checkpoint(spark, base_flowup, cfg, "post-zero")
+        base_flowup = _inner_checkpoint(spark, base_flowup, cfg, "post-zero")
 
         # SQL lines 2529-2551: @FlowZeroPFICs block
 
@@ -1292,7 +1297,7 @@ def build_pfic_flowup_pipeline(
             flow_zero_extra = base_flowup.alias("PFIC") \
                 .join(
 
-                    spark.table(f"_lower_tier_funds_{run_id}").alias("LTF"),
+                    lower_tier_funds.alias("LTF"),
 
                     (F.col("PFIC.RunID") == F.col("LTF.RunID"))
 
@@ -1608,13 +1613,13 @@ def build_custom_footnote_input(
 
     custom_footnote_package = read_table(spark, "CustomFootnotePackage", cfg)
 
-    lower_tier_funds = spark.table(f"_lower_tier_funds_{run_id}")
+    lower_tier_funds = _cached_lower_tier_funds(spark, cfg, run_id)
 
-    entity_tv = spark.table("_entity")
+    entity_tv = F.broadcast(spark.table("_entity"))
 
-    fx_avg_rate = spark.table("_fx_avg_rate")
+    fx_avg_rate = F.broadcast(spark.table("_fx_avg_rate"))
 
-    k1_package = spark.table("_k1_package")
+    k1_package = F.broadcast(spark.table("_k1_package"))
 
     # Step 1: Get latest custom footnote transaction IDs
 

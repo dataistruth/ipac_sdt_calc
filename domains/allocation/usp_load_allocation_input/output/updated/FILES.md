@@ -12,7 +12,7 @@ Production `output/load_allocation_input.py` and `output/ai_*.py` stay on monoli
 | `ai_pfic_flowup_service.py` | YES | Optimized PFIC flowup (replaces monolith for updated run) |
 | `parent.py` | YES | Imports `ai_*.py` siblings from monolith `output/` |
 | `step_timer.py` | YES | Per-step timers |
-| `checkpoint.py` | YES | Volume / Delta checkpoints + `checkpoint_level` |
+| `checkpoint.py` | YES | Volume / Delta checkpoints (fixed step set) |
 | `parallel_config.py` | YES | Thread pool for parallel shared views |
 | `shared_views.py` | YES | Parallel register entry |
 | `shared_views_builders.py` | YES | Parallel view builders |
