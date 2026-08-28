@@ -64,7 +64,8 @@ result = run_load_allocation_input(
     SchemaName="IPC_2025_QA7_15348",
     VolumePath="/Volumes/qa7/datavolume/databrickdata/checkpoint",
     CheckpointLevel="default",  # minimal | default | full
-    parallel_write_workers=3,
+    parallel_config_workers=3,
+    parallel_write_workers=3,  # same value drives flow-up parallel writes
 )
 ```
 

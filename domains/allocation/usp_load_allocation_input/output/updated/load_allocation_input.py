@@ -126,6 +126,10 @@ def run_load_allocation_input(
     CallFrom: str = None,
     checkpoint_level: str = None,
     CheckpointLevel: str = None,
+    parallel_config_workers: int = None,
+    ParallelConfigWorkers: int = None,
+    parallel_write_workers: int = None,
+    ParallelWriteWorkers: int = None,
     **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
@@ -143,9 +147,37 @@ def run_load_allocation_input(
     log_section("load_allocation_input (updated)")
     timer = StepTimer(logger=logger)
 
-    parallel_config_workers = int(
-        kwargs.get("parallel_config_workers", 3) or 3
-    )  # shared_views parallel lookups only
+    def _worker_count(
+        *values: object,
+        default: int = 3,
+    ) -> int:
+        for raw in values:
+            if raw is None:
+                continue
+            try:
+                n = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if n >= 1:
+                return n
+        return max(1, default)
+
+    parallel_config_workers = _worker_count(
+        parallel_config_workers,
+        ParallelConfigWorkers,
+        kwargs.get("parallel_config_workers"),
+        kwargs.get("ParallelConfigWorkers"),
+        cfg.get("parallel_config_workers") if cfg else None,
+        default=3,
+    )
+    parallel_write_workers = _worker_count(
+        parallel_write_workers,
+        ParallelWriteWorkers,
+        kwargs.get("parallel_write_workers"),
+        kwargs.get("ParallelWriteWorkers"),
+        cfg.get("parallel_write_workers") if cfg else None,
+        default=parallel_config_workers,
+    )
 
     if cfg is None:
         cfg = load_common_config(
@@ -173,8 +205,8 @@ def run_load_allocation_input(
         )
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
-    cfg.setdefault("parallel_config_workers", parallel_config_workers)
-    cfg.setdefault("parallel_write_workers", 3)
+    cfg["parallel_config_workers"] = parallel_config_workers
+    cfg["parallel_write_workers"] = parallel_write_workers
     cfg.setdefault("write_compression", "uncompressed")
     level_raw = (
         checkpoint_level
@@ -187,10 +219,14 @@ def run_load_allocation_input(
     cfg["skip_inner_pfic_checkpoints"] = cfg["checkpoint_level"] != "full"
     log_checkpoint_level(cfg)
     print(
+        f"[updated] parallel_config_workers={cfg['parallel_config_workers']} "
+        f"parallel_write_workers={cfg['parallel_write_workers']}"
+    )
+    print(
         f"[updated] PFIC flowup: output.updated.ai_pfic_flowup_service "
         f"(skip_inner_checkpoints={cfg['skip_inner_pfic_checkpoints']})"
     )
-    write_workers = int(cfg.get("parallel_write_workers", 3) or 0)
+    write_workers = cfg["parallel_write_workers"]
     if write_workers > 1:
         print(f"[write] parallel flow-up table writes: max_workers={write_workers}")
     if str(cfg.get("write_compression", "")).lower() in ("uncompressed", "none"):

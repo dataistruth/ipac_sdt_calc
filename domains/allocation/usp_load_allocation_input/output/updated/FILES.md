@@ -20,6 +20,9 @@ Production `output/load_allocation_input.py` and `output/ai_*.py` stay on monoli
 | `load_allocation_input_updated.py` | optional | Shim inside `updated/` |
 | `__init__.py` | YES | Package marker |
 | `notebooks/*.py` | YES | Runner, benchmark, SQL map generator |
+| `test_updated_package.py` | optional | Local import/smoke test (do not sync to prod) |
+| `_build_ai_pfic_flowup.py` | optional | Dev rebuild script (do not sync) |
+| `_ai_pfic_flowup_service_base.py` | optional | Dev extract (do not sync) |
 
 ## Import paths (all under `output.updated`)
 

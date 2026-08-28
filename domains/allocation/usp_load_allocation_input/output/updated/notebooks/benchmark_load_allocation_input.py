@@ -40,43 +40,46 @@
 
 # COMMAND ----------
 
+# Recreate widgets each run so new controls (e.g. checkpoint_level) appear in the UI.
+dbutils.widgets.removeAll()
+
 dbutils.widgets.text(
     "sp_name",
     "usp_load_allocation_input",
-    "SP folder under AllocationV2/",
+    "1. SP folder under AllocationV2/",
 )
 dbutils.widgets.text(
     "number_of_run",
     "1",
-    "Number of A/B passes (original then updated each pass)",
-)
-dbutils.widgets.text(
-    "source_path",
-    "",
-    "Monolith Source/ on sys.path (empty = auto-detect from notebook path)",
-)
-dbutils.widgets.text(
-    "volume_path",
-    "/Volumes/qa7/datavolume/databrickdata/checkpoint",
-    "VolumePath for _updated (checkpoints + storer)",
-)
-dbutils.widgets.text("EntityID", "115", "EntityID")
-dbutils.widgets.text("ClientID", "15348", "ClientID")
-dbutils.widgets.text("TaxPeriodID", "1", "TaxPeriodID")
-dbutils.widgets.text("RunID", "16560", "RunID")
-dbutils.widgets.text("CatalogName", "QA7", "CatalogName")
-dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "SchemaName")
-dbutils.widgets.text(
-    "parallel_workers",
-    "3",
-    "Parallel workers (updated: shared views + flow-up writes)",
+    "2. A/B passes (original then updated each pass)",
 )
 dbutils.widgets.dropdown(
     "checkpoint_level",
     "default",
     ["minimal", "default", "full"],
-    "Checkpoint level (updated only)",
+    "3. Checkpoint level (updated only: minimal | default | full)",
 )
+dbutils.widgets.text(
+    "parallel_workers",
+    "3",
+    "4. Parallel workers (updated: shared views + flow-up writes)",
+)
+dbutils.widgets.text(
+    "source_path",
+    "",
+    "5. Monolith Source/ (empty = auto-detect)",
+)
+dbutils.widgets.text(
+    "volume_path",
+    "/Volumes/qa7/datavolume/databrickdata/checkpoint",
+    "6. VolumePath for updated checkpoints",
+)
+dbutils.widgets.text("EntityID", "115", "7. EntityID")
+dbutils.widgets.text("ClientID", "15348", "8. ClientID")
+dbutils.widgets.text("TaxPeriodID", "1", "9. TaxPeriodID")
+dbutils.widgets.text("RunID", "16560", "10. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "11. CatalogName")
+dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "12. SchemaName")
 
 sp_name = dbutils.widgets.get("sp_name").strip()
 number_of_run = int(dbutils.widgets.get("number_of_run").strip() or "1")
@@ -260,7 +263,9 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
     started_at = datetime.now()
     t0 = time.time()
     worker_note = (
-        f" | workers={parallel_workers}" if variant == "updated" else ""
+        f" | workers={parallel_workers} | checkpoint_level={checkpoint_level}"
+        if variant == "updated"
+        else ""
     )
     print(f"\n=== pass {pass_num} | {variant}{worker_note} | start {started_at} ===")
 
@@ -287,6 +292,7 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
             else f"{OUTPUT_PREFIX}.{MODULE_UPDATED}"
         ),
         "parallel_workers": parallel_workers if variant == "updated" else None,
+        "checkpoint_level": checkpoint_level if variant == "updated" else None,
         "status": status,
         "wall_seconds": wall_seconds,
         "reported_elapsed_seconds": reported,
