@@ -25,22 +25,25 @@ result = run_load_allocation_input(
 )
 ```
 
-## Checkpoints (original-aligned, Delta temp tables)
+## Checkpoints (default: executor `localCheckpoint`)
 
-Intermediate lineage breaks use **Delta temp tables** in UC (`_tmp_*`), same as original
-`Common_V2.core.checkpoint` — not volume Parquet unless `checkpoint_backend=volume`.
+Intermediate lineage breaks use Spark **`localCheckpoint(eager=True)`** on executor local disk by default — fast, cuts lineage, **not fault-tolerant** (full job restart on failure).
+
+| Backend | When to use |
+|---------|-------------|
+| `local` (default / `auto`) | Fast; you restart the whole job on failure |
+| `delta` | Match original UC temp tables: `checkpoint_backend="delta"` |
+| `volume` | Uncompressed Parquet on volume: `checkpoint_backend="volume"` |
 
 | Step | When |
 |------|------|
 | `alloc_input` | After phase 6c |
-| `base_flowup` | After phase 7a build (single materialization) |
+| `base_flowup` | After phase 7a build |
 | `pfic_flowup` | After phase 7b |
 | `alloc_filtered` | After post-filters |
 | `alloc_tagged` | After phase 8 (if investment tag workflow active) |
 
-`VolumePath` is for **final flow-up / storer outputs**, not checkpoints by default.
-
-Opt-in volume checkpoints: `checkpoint_backend="volume"` (requires `volume_path`).
+`VolumePath` is for **final flow-up outputs**, not checkpoints (unless `checkpoint_backend=volume`).
 
 ## Phase 7a optimizations (broadcast / cache)
 

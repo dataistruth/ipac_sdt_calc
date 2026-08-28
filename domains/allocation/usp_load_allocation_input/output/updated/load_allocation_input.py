@@ -128,6 +128,8 @@ def run_load_allocation_input(
     ParallelConfigWorkers: int = None,
     parallel_write_workers: int = None,
     ParallelWriteWorkers: int = None,
+    checkpoint_backend: str = None,
+    CheckpointBackend: str = None,
     **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
@@ -194,12 +196,27 @@ def run_load_allocation_input(
     cfg.setdefault("_checkpoint_tables", [])
     cfg.setdefault("_parquet_results", {})
     cfg.setdefault("_checkpoint_paths", [])
+    _ckpt_backend = (
+        checkpoint_backend
+        or CheckpointBackend
+        or kwargs.get("checkpoint_backend")
+        or kwargs.get("CheckpointBackend")
+        or cfg.get("checkpoint_backend")
+    )
+    if _ckpt_backend:
+        cfg["checkpoint_backend"] = str(_ckpt_backend).strip().lower()
     if volume_path:
         cfg["volume_path"] = volume_path.strip()
+    from .checkpoint import _resolve_backend
+
+    _backend = _resolve_backend(cfg)
+    if volume_path:
         print(
-            f"[checkpoint] delta temp tables (UC) | volume_path for flow-up outputs: "
-            f"{cfg['volume_path']}"
+            f"[checkpoint] backend={_backend} (executor local disk if local) | "
+            f"volume_path for flow-up outputs: {cfg['volume_path']}"
         )
+    else:
+        print(f"[checkpoint] backend={_backend}")
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
     cfg["parallel_config_workers"] = parallel_config_workers

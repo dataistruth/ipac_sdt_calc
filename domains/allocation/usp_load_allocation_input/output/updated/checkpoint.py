@@ -1,15 +1,13 @@
 """
-checkpoint.py — volume / Delta checkpoints for updated package.
+checkpoint.py — lineage breaks for updated package.
 
-Default steps match original output.load_allocation_input (4 checkpoint logs):
-  alloc_input, base_flowup (inner 7a), pfic_flowup, alloc_filtered (+ alloc_tagged if tagged).
-
-Opt-in via cfg flags (benchmark parity with original — off by default):
-  checkpoint_reclass_data, checkpoint_pfic_snapshot, checkpoint_pfic_raw
+Default steps match original output.load_allocation_input:
+  alloc_input, base_flowup, pfic_flowup, alloc_filtered (+ alloc_tagged if tagged).
 
 Set in cfg (optional):
-  checkpoint_backend: "auto" | "delta" | "volume"  (default "auto" → delta)
-  volume_path: used for final flow-up outputs (GenericResultStorer), not checkpoints by default.
+  checkpoint_backend: "auto" | "local" | "delta" | "volume"
+    auto / default → local (executor disk, fast; not fault-tolerant — full job restart on failure)
+  volume_path: final flow-up outputs (GenericResultStorer), not checkpoints by default.
 """
 
 from __future__ import annotations
@@ -28,18 +26,16 @@ logger = logging.getLogger(__name__)
 _CHECKPOINT_MAX_RETRIES = 3
 _CHECKPOINT_RETRY_DELAY = 5
 
-# Default: original output.load_allocation_input placement (no pfic_snapshot / pfic_raw / reclass).
 CHECKPOINT_STEPS: frozenset[str] = frozenset(
     {
         "alloc_input",
-        "base_flowup",  # once after phase 7a build (original single 7a checkpoint)
+        "base_flowup",
         "pfic_flowup",
         "alloc_filtered",
         "alloc_tagged",
     }
 )
 
-# Extra materialization — enable per flag when debugging lineage (not default).
 OPT_IN_CHECKPOINT_STEPS: frozenset[str] = frozenset(
     {
         "reclass_data",
@@ -69,15 +65,35 @@ def should_checkpoint(cfg: dict, step_name: str) -> bool:
     return True
 
 
+def _resolve_backend(cfg: dict) -> str:
+    mode = str(cfg.get("checkpoint_backend", "auto")).strip().lower()
+    volume = str(cfg.get("volume_path") or "").strip()
+    if mode == "volume":
+        if not volume:
+            raise ValueError(
+                "checkpoint_backend=volume requires volume_path "
+                "(e.g. /Volumes/qa7/datavolume/databrickdata/checkpoint)"
+            )
+        return "volume"
+    if mode == "delta":
+        return "delta"
+    if mode == "local":
+        return "local"
+    # auto: executor localCheckpoint — fast lineage break; job restart if executor loses data.
+    return "local"
+
+
 def log_checkpoint_plan(cfg: dict) -> None:
+    backend = _resolve_backend(cfg)
     all_steps = CHECKPOINT_STEPS | OPT_IN_CHECKPOINT_STEPS
     enabled = sorted(name for name in all_steps if should_checkpoint(cfg, name))
-    print(f"[checkpoint] steps={enabled} (original-aligned)")
+    print(f"[checkpoint] backend={backend} steps={enabled}")
 
 
 def _ensure_checkpoint_lists(cfg: dict) -> None:
     cfg.setdefault("_checkpoint_tables", [])
     cfg.setdefault("_checkpoint_paths", [])
+    cfg.setdefault("_checkpoint_local_count", 0)
 
 
 def _is_transient_uc_error(exc: BaseException) -> bool:
@@ -92,23 +108,6 @@ def _is_transient_uc_error(exc: BaseException) -> bool:
         "already exists",
     )
     return any(n in msg for n in needles)
-
-
-def _resolve_backend(cfg: dict) -> str:
-    mode = str(cfg.get("checkpoint_backend", "auto")).strip().lower()
-    volume = str(cfg.get("volume_path") or "").strip()
-    if mode == "volume":
-        if not volume:
-            raise ValueError(
-                "checkpoint_backend=volume requires volume_path "
-                "(e.g. /Volumes/qa7/datavolume/databrickdata/checkpoint)"
-            )
-        return "volume"
-    if mode == "delta":
-        return "delta"
-    # auto: Delta temp tables (matches original / Common_V2.core.checkpoint).
-    # volume_path is for final outputs; opt in to volume checkpoints via checkpoint_backend=volume.
-    return "delta"
 
 
 def _volume_checkpoint_path(cfg: dict, name: str, uniq: str) -> str:
@@ -132,6 +131,16 @@ def _rm_path(spark: SparkSession, path: str) -> None:
         dbu.fs.rm(path, recurse=True)
         return
     logger.warning(f"[CHECKPOINT] No dbutils — could not remove path: {path}")
+
+
+def _local_checkpoint(df: DataFrame, name: str, cfg: dict) -> DataFrame:
+    """
+    Spark localCheckpoint on executor local disk — cuts lineage without UC / cloud I/O.
+    Not fault-tolerant: executor loss requires full job restart.
+    """
+    logger.info(f"[CHECKPOINT] localCheckpoint (executor disk): {name}")
+    cfg["_checkpoint_local_count"] = int(cfg.get("_checkpoint_local_count", 0)) + 1
+    return df.localCheckpoint(eager=True)
 
 
 def _write_delta_checkpoint(spark: SparkSession, df: DataFrame, fqn: str) -> DataFrame:
@@ -186,15 +195,19 @@ def checkpoint(
     cfg: dict,
 ) -> DataFrame:
     """
-    Materialize df to break lineage. Same contract as Common_V2.core.checkpoint.
+    Materialize df to break lineage.
 
-    Default (auto): Delta temp table in catalog with optimizeWrite.
-    volume: uncompressed Parquet on volume_path (opt-in only).
+    local (default): executor localCheckpoint — fastest; not fault-tolerant.
+    delta: UC temp Delta table (original / Common_V2.core.checkpoint).
+    volume: uncompressed Parquet on volume_path (opt-in).
     """
     _ensure_checkpoint_lists(cfg)
     run_id = cfg.get("run_id", 0)
     uniq = uuid.uuid4().hex[:8]
     backend = _resolve_backend(cfg)
+
+    if backend == "local":
+        return _local_checkpoint(df, name, cfg)
 
     if backend == "volume":
         path = _volume_checkpoint_path(cfg, name, uniq)
