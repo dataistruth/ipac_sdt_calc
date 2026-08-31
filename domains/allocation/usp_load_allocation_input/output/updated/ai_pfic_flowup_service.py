@@ -55,6 +55,18 @@ def _cached_lower_tier_funds(spark: SparkSession, cfg: dict, run_id: int) -> Dat
     return cfg[key]
 
 
+def _flowup_checkpoint(
+    spark: SparkSession, df: DataFrame, cfg: dict, label: str,
+) -> DataFrame:
+    """Monolith-style mid-pipeline break (localCheckpoint by default)."""
+    from .checkpoint import checkpoint, should_checkpoint
+
+    if not should_checkpoint(cfg, "base_flowup"):
+        return df
+    _log(f"flowup checkpoint ({label})")
+    return checkpoint(spark, df, "base_flowup", cfg)
+
+
 def _cached_zero_fa_only_ids(
     spark: SparkSession,
     cfg: dict,
@@ -784,6 +796,8 @@ def build_pfic_flowup_pipeline(
 
         base_flowup = base_flowup.unionByName(reclass_flowup_non_alloc)
 
+        base_flowup = _flowup_checkpoint(spark, base_flowup, cfg, "post-reclass")
+
     # ─── Step 3: Zero-Amount PFICs ────────────────────────────────────────
 
     # PFICs from PFICFootnoteFlowupWithTrackingKey that have no amounts in current flowup
@@ -1271,6 +1285,8 @@ def build_pfic_flowup_pipeline(
         )
 
         base_flowup = base_flowup.unionByName(zero_flowup)
+
+        base_flowup = _flowup_checkpoint(spark, base_flowup, cfg, "post-zero")
 
         # SQL lines 2529-2551: @FlowZeroPFICs block
 

@@ -38,7 +38,7 @@ Intermediate lineage breaks use Spark **`localCheckpoint(eager=True)`** on execu
 | Step | When |
 |------|------|
 | `alloc_input` | After phase 6c |
-| `base_flowup` | After phase 7a build |
+| `base_flowup` | Inside PFIC flowup — `post-reclass` and `post-zero` (local disk by default) |
 | `pfic_flowup` | After phase 7b |
 | `alloc_filtered` | After post-filters |
 | `alloc_tagged` | After phase 8 (if investment tag workflow active) |

@@ -1,36 +1,25 @@
-# output/ — production files stay in monolith; copy `updated/` + shim from this bundle.
+# output/ — copy ALL of these to monolith Source/AllocationV2/usp_load_allocation_input/output/
 
-| Path | Required | Purpose |
+| File | Required | Purpose |
 |------|----------|---------|
-| `updated/load_allocation_input.py` | YES | Main pipeline entry |
-| `updated/step_timer.py` | YES | Per-step timers |
-| `updated/checkpoint.py` | YES | Volume / Delta checkpoints (no end-of-run cleanup) |
-| `updated/parallel_config.py` | YES | Thread pool for parallel shared views |
-| `updated/shared_views.py` | YES | Parallel register entry |
-| `updated/shared_views_builders.py` | YES | Parallel ai_shared_views logic |
-| `updated/shared_view_sql_map.py` | optional | SQL fallback only |
-| `updated/__init__.py` | YES | Package marker |
-| `updated/notebooks/*.py` | YES | Runner, benchmark, SQL map generator |
-| `load_allocation_input_updated.py` | optional | Shim → `updated.load_allocation_input` |
+| load_allocation_input_updated.py | YES | Main pipeline entry |
+| step_timer_updated.py | YES | Per-step timers |
+| checkpoint_updated.py | YES | Volume / Delta checkpoints |
+| parallel_config_updated.py | YES | Thread pool helpers |
+| config_loaders_updated.py | YES | Parallel load_common_config / load_config |
+| config_parallel_hooks.py | YES | UC prefetch hooks |
+| shared_views_updated.py | YES | Parallel register entry |
+| shared_views_builders_updated.py | YES | Parallel ai_shared_views logic |
+| shared_view_sql_map.py | optional | SQL fallback only |
+| __init__.py | optional | Package marker |
 
-## Monolith layout after copy
+## NOT in this folder (stay in monolith — do not replace)
 
-```text
-output/
-  load_allocation_input.py          # production — do not replace
-  ai_*.py                           # unchanged
-  updated/                          # copy entire folder
-    *.py
-    notebooks/
-  load_allocation_input_updated.py   # shim (optional)
-```
+- load_allocation_input.py (production)
+- ai_shared_views.py
+- ai_config_service.py
+- all other ai_*.py
 
-## Import paths
+## After copy to Databricks
 
-```python
-# Recommended
-from AllocationV2.usp_load_allocation_input.output.updated.load_allocation_input import run_load_allocation_input
-
-# Legacy shim (benchmark notebook)
-from AllocationV2.usp_load_allocation_input.output.load_allocation_input_updated import run_load_allocation_input
-```
+Reload imports in runner notebook cell.

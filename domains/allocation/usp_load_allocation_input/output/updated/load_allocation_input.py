@@ -283,9 +283,6 @@ def run_load_allocation_input(
             spark, cfg, pfic_snapshot_df, pfic_elections, lower_tier_df
         )
 
-    # Single 7a materialization (original: one "build + checkpoint" — not mid-pipeline breaks).
-    pfic_flowup_df = _maybe_checkpoint(spark, timer, pfic_flowup_df, "base_flowup", cfg)
-
     with timer.step("phase_7b_pfic_election_deletes_and_flags"):
         check_pfic_xml_override_alert(spark, cfg, pfic_flowup_df)
         allocation_input_df, pfic_flowup_df = apply_pfic_election_deletes(

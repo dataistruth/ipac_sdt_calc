@@ -29,7 +29,7 @@ _CHECKPOINT_RETRY_DELAY = 5
 CHECKPOINT_STEPS: frozenset[str] = frozenset(
     {
         "alloc_input",
-        "base_flowup",
+        "base_flowup",  # inner PFIC flowup (post-reclass / post-zero in ai_pfic_flowup_service)
         "pfic_flowup",
         "alloc_filtered",
         "alloc_tagged",
