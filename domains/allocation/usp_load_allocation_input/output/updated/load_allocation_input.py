@@ -19,15 +19,10 @@ from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
 
 from .checkpoint import (
-    checkpoint,
-    checkpoint_production,
     drop_checkpoints,
     log_checkpoint_plan,
     pipeline_checkpoint,
     should_checkpoint,
-    use_inner_base_flowup_local_checkpoint,
-    use_local_checkpoint,
-    _use_production_checkpoint,
 )
 from .step_timer import StepTimer
 from .shared_views import register_shared_views_parallel
@@ -141,10 +136,6 @@ def run_load_allocation_input(
     ParallelWriteWorkers: int = None,
     checkpoint_backend: str = None,
     CheckpointBackend: str = None,
-    checkpoint_inner_base_flowup_local: bool = None,
-    CheckpointInnerBaseFlowupLocal: bool = None,
-    checkpoint_use_local: bool = None,
-    CheckpointUseLocal: bool = None,
     **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
@@ -220,64 +211,32 @@ def run_load_allocation_input(
     )
     if _ckpt_backend:
         cfg["checkpoint_backend"] = str(_ckpt_backend).strip().lower()
-    _inner_local = (
-        checkpoint_inner_base_flowup_local
-        if checkpoint_inner_base_flowup_local is not None
-        else CheckpointInnerBaseFlowupLocal
-    )
-    if _inner_local is None:
-        _inner_local = kwargs.get("checkpoint_inner_base_flowup_local")
-        if _inner_local is None:
-            _inner_local = kwargs.get("CheckpointInnerBaseFlowupLocal")
-    if _inner_local is not None:
-        cfg["checkpoint_inner_base_flowup_local"] = bool(_inner_local)
-    _use_local = (
-        checkpoint_use_local
-        if checkpoint_use_local is not None
-        else CheckpointUseLocal
-    )
-    if _use_local is None:
-        _use_local = kwargs.get("checkpoint_use_local")
-        if _use_local is None:
-            _use_local = kwargs.get("CheckpointUseLocal")
-    if _use_local is not None and bool(_use_local):
-        cfg["checkpoint_use_local"] = True
-        cfg["checkpoint_backend"] = "local"
     if volume_path:
         cfg["volume_path"] = volume_path.strip()
+        cfg.setdefault("checkpoint_backend", "volume")
+        cfg.setdefault("checkpoint_use_production", False)
     from .checkpoint import _resolve_backend
 
     _backend = _resolve_backend(cfg)
     _comp = cfg.get("checkpoint_compression", "uncompressed")
     if volume_path:
         print(
-            f"[checkpoint] backend={_backend} compression={_comp} (UC temp Delta) | "
-            f"volume_path for flow-up outputs: {cfg['volume_path']}"
+            f"[checkpoint] backend={_backend} compression={_comp} | "
+            f"checkpoints: {cfg['volume_path']}/_checkpoints/ | "
+            f"flow-up outputs: {cfg['volume_path']}"
         )
     else:
-        print(f"[checkpoint] backend={_backend} compression={_comp} (UC temp Delta)")
+        print(f"[checkpoint] backend={_backend} compression={_comp}")
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
     cfg["parallel_config_workers"] = parallel_config_workers
     cfg["parallel_write_workers"] = parallel_write_workers
     cfg.setdefault("write_compression", "uncompressed")
     cfg.setdefault("checkpoint_compression", cfg.get("write_compression", "uncompressed"))
-    if use_local_checkpoint(cfg):
+    if _backend == "volume":
         print(
-            "[checkpoint] pipeline breaks: executor localCheckpoint "
-            "(skips UC AtomicReplace ~2-7s per step; not fault-tolerant)"
-        )
-    elif _use_production_checkpoint(cfg):
-        print("[checkpoint] pipeline breaks: Common_V2.core.checkpoint (sdt_d production)")
-    else:
-        print(
-            f"[checkpoint] pipeline breaks: updated.checkpoint "
-            f"compression={cfg.get('checkpoint_compression', 'uncompressed')}"
-        )
-    if use_inner_base_flowup_local_checkpoint(cfg) and not use_local_checkpoint(cfg):
-        print(
-            "[checkpoint] inner base_flowup (7a): localCheckpoint on executor disk "
-            "(skips UC AtomicReplace ~5s per break)"
+            "[checkpoint] pipeline breaks: UC Volume Parquet "
+            "(serverless-safe; skips UC Delta table commits)"
         )
     log_checkpoint_plan(cfg)
     print(
@@ -548,6 +507,4 @@ def run_load_allocation_input(
         "parallel_write_workers": int(cfg.get("parallel_write_workers", 1) or 1),
         "parallel_config_workers": int(cfg.get("parallel_config_workers", 1) or 1),
         "write_compression": cfg.get("write_compression"),
-        "checkpoint_inner_base_flowup_local": cfg.get("checkpoint_inner_base_flowup_local"),
-        "checkpoint_use_local": cfg.get("checkpoint_use_local"),
     }

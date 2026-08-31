@@ -25,27 +25,28 @@ result = run_load_allocation_input(
 )
 ```
 
-## Checkpoints (default: Delta + uncompressed Parquet)
+## Checkpoints (default: UC Volume Parquet when `VolumePath` is set)
 
-Intermediate lineage breaks use **UC temp Delta tables** (`_tmp_*`) with **uncompressed Parquet**, same style as original `Common_V2.core.checkpoint`.
+Pipeline lineage breaks write Parquet to `{VolumePath}/_checkpoints/{RunID}/` — serverless-safe and faster than UC Delta temp tables.
 
 | Backend | When |
 |---------|------|
-| `delta` (default / `auto`) | UC temp tables, `compression=uncompressed` |
-| `local` | Executor `localCheckpoint` — `checkpoint_backend="local"` |
-| `volume` | Parquet on `volume_path` — `checkpoint_backend="volume"` |
+| `volume` (default with `VolumePath`) | Parquet on volume, `compression=uncompressed` |
+| `delta` | UC temp tables — `checkpoint_backend="delta"` |
 
 Override codec: `checkpoint_compression="snappy"` (default is `uncompressed`).
 
 | Step | When |
 |------|------|
+| `pfic_snapshot` | After phase 6a |
 | `alloc_input` | After phase 6c |
-| `base_flowup` | Inside flowup — `post-reclass` (if reclass), `post-zero` (monolith parity) |
+| `base_flowup` | Inside flowup — `post-reclass`, `post-zero` |
+| `pfic_raw` | After phase 7a |
 | `pfic_flowup` | After phase 7b |
 | `alloc_filtered` | After post-filters |
 | `alloc_tagged` | After phase 8 (if investment tag workflow active) |
 
-`VolumePath` is for **final flow-up outputs**, not checkpoints (unless `checkpoint_backend=volume`).
+`VolumePath` is used for **checkpoints** (`_checkpoints/`) and **final flow-up outputs**.
 
 ## Phase 7a optimizations (broadcast / cache)
 

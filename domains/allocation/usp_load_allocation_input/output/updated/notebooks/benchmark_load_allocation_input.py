@@ -24,8 +24,7 @@
 # MAGIC | `sp_name` | SP folder under `AllocationV2/` |
 # MAGIC | `number_of_run` | A/B passes (original → updated each pass) |
 # MAGIC | `parallel_workers` | Shared views + flow-up writes (`updated` only); default `4` |
-| `checkpoint_local` | All pipeline checkpoints use `localCheckpoint` (`updated` only); default `true` |
-# MAGIC | `volume_path` | UC volume for checkpoints (`updated` only) |
+# MAGIC | `volume_path` | UC volume for checkpoints + flow-up outputs (`updated` only) |
 # MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
 # MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |
 # MAGIC
@@ -54,24 +53,19 @@ dbutils.widgets.text(
     "2. A/B passes (original then updated each pass)",
 )
 dbutils.widgets.text(
-    "checkpoint_local",
-    "true",
-    "4. Pipeline localCheckpoint (updated: all breaks, skips UC Delta)",
-)
-dbutils.widgets.text(
     "parallel_workers",
     "4",
-    "5. Parallel workers (updated: shared views + flow-up writes)",
+    "4. Parallel workers (updated: shared views + flow-up writes)",
 )
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
-    "6. Monolith Source/ (empty = auto-detect)",
+    "5. Monolith Source/ (empty = auto-detect)",
 )
 dbutils.widgets.text(
     "volume_path",
     "/Volumes/qa7/datavolume/databrickdata/checkpoint",
-    "7. VolumePath for updated checkpoints",
+    "6. VolumePath (checkpoints + flow-up outputs)",
 )
 dbutils.widgets.text("EntityID", "115", "8. EntityID")
 dbutils.widgets.text("ClientID", "15348", "9. ClientID")
@@ -91,8 +85,6 @@ run_id = int(dbutils.widgets.get("RunID").strip())
 catalog_name = dbutils.widgets.get("CatalogName").strip()
 schema_name = dbutils.widgets.get("SchemaName").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
-_checkpoint_local_raw = dbutils.widgets.get("checkpoint_local").strip().lower()
-checkpoint_local = _checkpoint_local_raw in ("1", "true", "yes", "y")
 
 if parallel_workers < 1:
     raise ValueError("parallel_workers must be >= 1")
@@ -113,7 +105,6 @@ print(f"RunID           : {run_id}")
 print(f"CatalogName     : {catalog_name}")
 print(f"SchemaName      : {schema_name}")
 print(f"parallel_workers: {parallel_workers} (updated only)")
-print(f"checkpoint_local: {checkpoint_local} (updated: all pipeline breaks)")
 
 # COMMAND ----------
 
@@ -267,9 +258,6 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         run_kwargs["VolumePath"] = volume_path
         run_kwargs["parallel_config_workers"] = parallel_workers
         run_kwargs["parallel_write_workers"] = parallel_workers
-        run_kwargs["checkpoint_use_local"] = checkpoint_local
-        if checkpoint_local:
-            run_kwargs["checkpoint_inner_base_flowup_local"] = True
 
     started_at = datetime.now()
     t0 = time.time()

@@ -62,7 +62,7 @@ def _cached_lower_tier_funds(spark: SparkSession, cfg: dict, run_id: int) -> Dat
 def _flowup_checkpoint(
     spark: SparkSession, df: DataFrame, cfg: dict, label: str,
 ) -> DataFrame:
-    """Inner flowup break (post-reclass / post-zero) — Delta or local per cfg."""
+    """Inner flowup break (post-reclass / post-zero) — volume Parquet on volume_path."""
     from .checkpoint import inner_base_flowup_checkpoint, should_checkpoint
 
     if not should_checkpoint(cfg, "base_flowup"):

@@ -1,18 +1,19 @@
 """
 checkpoint.py — lineage breaks for updated package.
 
+Pipeline checkpoints use UC Volume Parquet when volume_path is set (serverless-safe,
+faster than UC Delta temp tables). Set checkpoint_backend=delta only to force UC Delta.
+
 Default steps match sdt_d output.load_allocation_input:
   pfic_snapshot, alloc_input, base_flowup, pfic_raw, pfic_flowup,
   alloc_filtered (+ alloc_tagged if tagged).
 
-Set in cfg (optional):
-  checkpoint_backend: "auto" | "delta" | "local" | "volume"
-    auto / default → delta (UC temp tables)
-  checkpoint_compression: parquet codec for updated.checkpoint() only (default: uncompressed)
-  checkpoint_use_production: use Common_V2.core.checkpoint for pipeline breaks (default: True)
-  checkpoint_use_local / checkpoint_backend=local: all pipeline breaks use localCheckpoint
-  checkpoint_inner_base_flowup_local: inner 7a only (legacy; also set when checkpoint_use_local)
-  volume_path: final flow-up outputs (GenericResultStorer), not checkpoints by default.
+Cfg (optional):
+  volume_path: required for volume checkpoints + final flow-up outputs
+  checkpoint_backend: "auto" | "volume" | "delta"
+    auto + volume_path → volume (default for updated package)
+  checkpoint_compression: parquet codec (default: uncompressed)
+  checkpoint_use_production: UC Delta via Common_V2 when backend=delta (default: False)
 """
 
 from __future__ import annotations
@@ -71,16 +72,15 @@ def should_checkpoint(cfg: dict, step_name: str) -> bool:
 def _resolve_backend(cfg: dict) -> str:
     mode = str(cfg.get("checkpoint_backend", "auto")).strip().lower()
     volume = str(cfg.get("volume_path") or "").strip()
-    if mode == "volume":
+    if mode == "delta":
+        return "delta"
+    if mode == "volume" or (mode == "auto" and volume):
         if not volume:
             raise ValueError(
-                "checkpoint_backend=volume requires volume_path "
+                "Volume checkpoint requires volume_path "
                 "(e.g. /Volumes/qa7/datavolume/databrickdata/checkpoint)"
             )
         return "volume"
-    if mode in ("delta", "local"):
-        return mode
-    # auto: Delta temp tables (matches original / Common_V2.core.checkpoint).
     return "delta"
 
 
@@ -103,18 +103,14 @@ def log_checkpoint_plan(cfg: dict) -> None:
     enabled = sorted(name for name in all_steps if should_checkpoint(cfg, name))
     comp = _checkpoint_compression(cfg) if backend in ("delta", "volume") else None
     comp_note = f" compression={comp}" if comp else ""
-    inner_note = ""
-    if use_local_checkpoint(cfg):
-        inner_note = " mode=localCheckpoint(all pipeline breaks)"
-    elif bool(cfg.get("checkpoint_inner_base_flowup_local", False)) and "base_flowup" in enabled:
-        inner_note = " inner_base_flowup=localCheckpoint"
-    print(f"[checkpoint] backend={backend}{comp_note}{inner_note} steps={enabled}")
+    vol = str(cfg.get("volume_path") or "").strip()
+    vol_note = f" volume_path={vol}" if backend == "volume" and vol else ""
+    print(f"[checkpoint] backend={backend}{comp_note}{vol_note} steps={enabled}")
 
 
 def _ensure_checkpoint_lists(cfg: dict) -> None:
     cfg.setdefault("_checkpoint_tables", [])
     cfg.setdefault("_checkpoint_paths", [])
-    cfg.setdefault("_checkpoint_local_count", 0)
 
 
 def _is_transient_uc_error(exc: BaseException) -> bool:
@@ -154,16 +150,6 @@ def _rm_path(spark: SparkSession, path: str) -> None:
     logger.warning(f"[CHECKPOINT] No dbutils — could not remove path: {path}")
 
 
-def _local_checkpoint(df: DataFrame, name: str, cfg: dict) -> DataFrame:
-    """
-    Spark localCheckpoint on executor local disk — cuts lineage without UC / cloud I/O.
-    Not fault-tolerant: executor loss requires full job restart.
-    """
-    logger.info(f"[CHECKPOINT] localCheckpoint (executor disk): {name}")
-    cfg["_checkpoint_local_count"] = int(cfg.get("_checkpoint_local_count", 0)) + 1
-    return df.localCheckpoint(eager=True)
-
-
 def _write_delta_checkpoint(
     spark: SparkSession,
     df: DataFrame,
@@ -199,14 +185,7 @@ def _write_delta_checkpoint(
 
 
 def _use_production_checkpoint(cfg: dict) -> bool:
-    return bool(cfg.get("checkpoint_use_production", True))
-
-
-def use_local_checkpoint(cfg: dict) -> bool:
-    """All pipeline materialization breaks use executor localCheckpoint (no UC Delta)."""
-    if str(cfg.get("checkpoint_backend", "")).strip().lower() == "local":
-        return True
-    return bool(cfg.get("checkpoint_use_local", False))
+    return bool(cfg.get("checkpoint_use_production", False))
 
 
 def pipeline_checkpoint(
@@ -215,17 +194,10 @@ def pipeline_checkpoint(
     name: str,
     cfg: dict,
 ) -> DataFrame:
-    """Route pipeline break: localCheckpoint → production Common_V2 → updated Delta."""
-    if use_local_checkpoint(cfg):
-        return _local_checkpoint(df, name, cfg)
-    if _use_production_checkpoint(cfg):
+    """Volume Parquet when volume_path is set; optional UC Delta via Common_V2."""
+    if _use_production_checkpoint(cfg) and _resolve_backend(cfg) == "delta":
         return checkpoint_production(spark, df, name, cfg)
     return checkpoint(spark, df, name, cfg)
-
-
-def use_inner_base_flowup_local_checkpoint(cfg: dict) -> bool:
-    """Inner 7a post-reclass / post-zero breaks — local when global local or legacy flag."""
-    return use_local_checkpoint(cfg) or bool(cfg.get("checkpoint_inner_base_flowup_local", False))
 
 
 def inner_base_flowup_checkpoint(
@@ -234,18 +206,10 @@ def inner_base_flowup_checkpoint(
     cfg: dict,
     label: str,
 ) -> DataFrame:
-    """
-    Mid-pipeline PFIC flowup break only (not pfic_snapshot / pfic_raw).
-
-    When checkpoint_inner_base_flowup_local=True, uses localCheckpoint (~1s vs ~5s UC Delta).
-  """
+    """Mid-pipeline PFIC flowup break (post-reclass / post-zero)."""
     if not should_checkpoint(cfg, "base_flowup"):
         return df
-    ckpt_name = f"base_flowup_{label}"
-    if use_inner_base_flowup_local_checkpoint(cfg):
-        logger.info(f"[CHECKPOINT] inner base_flowup localCheckpoint ({label})")
-        return _local_checkpoint(df, ckpt_name, cfg)
-    return pipeline_checkpoint(spark, df, "base_flowup", cfg)
+    return pipeline_checkpoint(spark, df, f"base_flowup_{label}", cfg)
 
 
 def checkpoint_production(
@@ -256,7 +220,7 @@ def checkpoint_production(
 ) -> DataFrame:
     """
     Match sdt_d Common_V2.core.checkpoint — snappy Delta, DROP before write.
-    Falls back to local implementation when Common_V2 is not on sys.path.
+    Falls back to updated Delta when Common_V2 is not on sys.path.
     """
     try:
         from Common_V2.core.checkpoint import checkpoint as core_checkpoint
@@ -330,20 +294,11 @@ def checkpoint(
     name: str,
     cfg: dict,
 ) -> DataFrame:
-    """
-    Materialize df to break lineage.
-
-    delta (default): UC temp Delta table with uncompressed Parquet (cfg-driven).
-    local: executor localCheckpoint (opt-in).
-    volume: Parquet files on volume_path (opt-in).
-    """
+    """Materialize df: volume Parquet (default when volume_path set) or UC Delta."""
     _ensure_checkpoint_lists(cfg)
     run_id = cfg.get("run_id", 0)
     uniq = uuid.uuid4().hex[:8]
     backend = _resolve_backend(cfg)
-
-    if backend == "local":
-        return _local_checkpoint(df, name, cfg)
 
     if backend == "volume":
         path = _volume_checkpoint_path(cfg, name, uniq)
