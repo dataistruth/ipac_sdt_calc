@@ -24,14 +24,14 @@
 # MAGIC | `sp_name` | SP folder under `AllocationV2/` |
 # MAGIC | `number_of_run` | A/B passes (original → updated each pass) |
 # MAGIC | `parallel_workers` | Shared views + flow-up writes (`updated` only); default `4` |
-| `inner_base_flowup_local` | Inner 7a `base_flowup` uses `localCheckpoint` (`updated` only); default `true` |
+| `checkpoint_local` | All pipeline checkpoints use `localCheckpoint` (`updated` only); default `true` |
 # MAGIC | `volume_path` | UC volume for checkpoints (`updated` only) |
 # MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
 # MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |
 # MAGIC
 # MAGIC **Run All** from the top, or at least **Widgets** then **Helpers** before the benchmark loop.
 # MAGIC
-# MAGIC **Note:** Both implementations write to the same `RunID` — use a test run or accept overwrite.
+# MAGIC **Note:** Both implementations write to the same `RunID`. The benchmark purges that partition before each variant so pass-through reads are not contaminated by the prior run.
 
 # COMMAND ----------
 
@@ -54,9 +54,9 @@ dbutils.widgets.text(
     "2. A/B passes (original then updated each pass)",
 )
 dbutils.widgets.text(
-    "inner_base_flowup_local",
+    "checkpoint_local",
     "true",
-    "4. Inner 7a base_flowup localCheckpoint (updated only)",
+    "4. Pipeline localCheckpoint (updated: all breaks, skips UC Delta)",
 )
 dbutils.widgets.text(
     "parallel_workers",
@@ -91,8 +91,8 @@ run_id = int(dbutils.widgets.get("RunID").strip())
 catalog_name = dbutils.widgets.get("CatalogName").strip()
 schema_name = dbutils.widgets.get("SchemaName").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
-_inner_local_raw = dbutils.widgets.get("inner_base_flowup_local").strip().lower()
-inner_base_flowup_local = _inner_local_raw in ("1", "true", "yes", "y")
+_checkpoint_local_raw = dbutils.widgets.get("checkpoint_local").strip().lower()
+checkpoint_local = _checkpoint_local_raw in ("1", "true", "yes", "y")
 
 if parallel_workers < 1:
     raise ValueError("parallel_workers must be >= 1")
@@ -113,7 +113,7 @@ print(f"RunID           : {run_id}")
 print(f"CatalogName     : {catalog_name}")
 print(f"SchemaName      : {schema_name}")
 print(f"parallel_workers: {parallel_workers} (updated only)")
-print(f"inner_base_flowup_local: {inner_base_flowup_local} (updated 7a checkpoints)")
+print(f"checkpoint_local: {checkpoint_local} (updated: all pipeline breaks)")
 
 # COMMAND ----------
 
@@ -248,6 +248,8 @@ def _extract_elapsed(result: Any) -> float | None:
 from AllocationV2.usp_load_allocation_input.output.updated.output_reconcile import (
     capture_output_metrics,
     compare_variants,
+    format_mismatch_lines,
+    purge_output_partitions_for_run,
     summarize_metrics,
 )
 
@@ -265,7 +267,9 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         run_kwargs["VolumePath"] = volume_path
         run_kwargs["parallel_config_workers"] = parallel_workers
         run_kwargs["parallel_write_workers"] = parallel_workers
-        run_kwargs["checkpoint_inner_base_flowup_local"] = inner_base_flowup_local
+        run_kwargs["checkpoint_use_local"] = checkpoint_local
+        if checkpoint_local:
+            run_kwargs["checkpoint_inner_base_flowup_local"] = True
 
     started_at = datetime.now()
     t0 = time.time()
@@ -275,6 +279,16 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         else ""
     )
     print(f"\n=== pass {pass_num} | {variant}{worker_note} | start {started_at} ===")
+
+    purged = purge_output_partitions_for_run(
+        spark, catalog_name, schema_name, run_id
+    )
+    if purged:
+        print(
+            f"[reconcile] pre-run purge RunID={run_id}: "
+            f"{len(purged)} table(s) ({', '.join(purged[:4])}"
+            f"{', ...' if len(purged) > 4 else ''})"
+        )
 
     output_metrics: list[dict] | None = None
     output_summary: dict | None = None
@@ -380,6 +394,8 @@ for pass_num in range(1, number_of_run + 1):
                 f"{len(mismatches)} table(s): "
                 + ", ".join(r["table"] for r in mismatches)
             )
+            for line in format_mismatch_lines(pass_compare):
+                print(line)
         else:
             print(f"[reconcile] PASS {pass_num}: all output tables match (rows + amounts)")
 

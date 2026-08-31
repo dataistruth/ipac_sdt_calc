@@ -10,7 +10,8 @@ Set in cfg (optional):
     auto / default → delta (UC temp tables)
   checkpoint_compression: parquet codec for updated.checkpoint() only (default: uncompressed)
   checkpoint_use_production: use Common_V2.core.checkpoint for pipeline breaks (default: True)
-  checkpoint_inner_base_flowup_local: inner 7a base_flowup breaks use localCheckpoint (default: False)
+  checkpoint_use_local / checkpoint_backend=local: all pipeline breaks use localCheckpoint
+  checkpoint_inner_base_flowup_local: inner 7a only (legacy; also set when checkpoint_use_local)
   volume_path: final flow-up outputs (GenericResultStorer), not checkpoints by default.
 """
 
@@ -103,7 +104,9 @@ def log_checkpoint_plan(cfg: dict) -> None:
     comp = _checkpoint_compression(cfg) if backend in ("delta", "volume") else None
     comp_note = f" compression={comp}" if comp else ""
     inner_note = ""
-    if bool(cfg.get("checkpoint_inner_base_flowup_local", False)) and "base_flowup" in enabled:
+    if use_local_checkpoint(cfg):
+        inner_note = " mode=localCheckpoint(all pipeline breaks)"
+    elif bool(cfg.get("checkpoint_inner_base_flowup_local", False)) and "base_flowup" in enabled:
         inner_note = " inner_base_flowup=localCheckpoint"
     print(f"[checkpoint] backend={backend}{comp_note}{inner_note} steps={enabled}")
 
@@ -199,9 +202,30 @@ def _use_production_checkpoint(cfg: dict) -> bool:
     return bool(cfg.get("checkpoint_use_production", True))
 
 
+def use_local_checkpoint(cfg: dict) -> bool:
+    """All pipeline materialization breaks use executor localCheckpoint (no UC Delta)."""
+    if str(cfg.get("checkpoint_backend", "")).strip().lower() == "local":
+        return True
+    return bool(cfg.get("checkpoint_use_local", False))
+
+
+def pipeline_checkpoint(
+    spark: SparkSession,
+    df: DataFrame,
+    name: str,
+    cfg: dict,
+) -> DataFrame:
+    """Route pipeline break: localCheckpoint → production Common_V2 → updated Delta."""
+    if use_local_checkpoint(cfg):
+        return _local_checkpoint(df, name, cfg)
+    if _use_production_checkpoint(cfg):
+        return checkpoint_production(spark, df, name, cfg)
+    return checkpoint(spark, df, name, cfg)
+
+
 def use_inner_base_flowup_local_checkpoint(cfg: dict) -> bool:
-    """Opt-in: executor localCheckpoint for inner 7a base_flowup (post-reclass / post-zero)."""
-    return bool(cfg.get("checkpoint_inner_base_flowup_local", False))
+    """Inner 7a post-reclass / post-zero breaks — local when global local or legacy flag."""
+    return use_local_checkpoint(cfg) or bool(cfg.get("checkpoint_inner_base_flowup_local", False))
 
 
 def inner_base_flowup_checkpoint(
@@ -221,9 +245,7 @@ def inner_base_flowup_checkpoint(
     if use_inner_base_flowup_local_checkpoint(cfg):
         logger.info(f"[CHECKPOINT] inner base_flowup localCheckpoint ({label})")
         return _local_checkpoint(df, ckpt_name, cfg)
-    if _use_production_checkpoint(cfg):
-        return checkpoint_production(spark, df, "base_flowup", cfg)
-    return checkpoint(spark, df, "base_flowup", cfg)
+    return pipeline_checkpoint(spark, df, "base_flowup", cfg)
 
 
 def checkpoint_production(

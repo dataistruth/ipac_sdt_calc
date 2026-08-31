@@ -127,6 +127,51 @@ def summarize_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def purge_output_partitions_for_run(
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    run_id: int,
+) -> list[str]:
+    """
+    Delete this RunID from output tables before a benchmark variant.
+
+    Required for fair A/B: write_form_flowups pass-through reads existing Form*Flowup /
+    PFICFootnoteFlowup rows (lower-tier LTRunIDs). Without purge, the second variant
+    sees the first variant's writes and can inflate pass-through row counts.
+    """
+    purged: list[str] = []
+    run_id = int(run_id)
+    for table in OUTPUT_TABLES:
+        fqn = _fqn(catalog, schema, table)
+        try:
+            if not spark.catalog.tableExists(fqn):
+                continue
+            spark.sql(f"DELETE FROM {fqn} WHERE RunID = {run_id}")
+            purged.append(table)
+        except Exception:
+            continue
+    return purged
+
+
+def format_mismatch_lines(compare_rows: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for row in compare_rows:
+        if row.get("parity_ok"):
+            continue
+        name = row["table"]
+        o_cnt = row.get("original_rows", 0)
+        u_cnt = row.get("updated_rows", 0)
+        delta = row.get("row_delta", 0)
+        o_amt = row.get("original_amount_sum")
+        u_amt = row.get("updated_amount_sum")
+        amt_note = ""
+        if o_amt is not None and u_amt is not None and not row.get("amount_match"):
+            amt_note = f" amounts orig={o_amt} upd={u_amt}"
+        lines.append(f"  {name}: orig={o_cnt} upd={u_cnt} delta={delta:+d}{amt_note}")
+    return lines
+
+
 def compare_variants(
     original: list[dict[str, Any]],
     updated: list[dict[str, Any]],

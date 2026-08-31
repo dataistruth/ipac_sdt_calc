@@ -23,8 +23,10 @@ from .checkpoint import (
     checkpoint_production,
     drop_checkpoints,
     log_checkpoint_plan,
+    pipeline_checkpoint,
     should_checkpoint,
     use_inner_base_flowup_local_checkpoint,
+    use_local_checkpoint,
     _use_production_checkpoint,
 )
 from .step_timer import StepTimer
@@ -105,7 +107,7 @@ def _maybe_checkpoint(
 ) -> Any:
     if not should_checkpoint(cfg, name):
         return df
-    ckpt_fn = checkpoint_production if _use_production_checkpoint(cfg) else checkpoint
+    ckpt_fn = pipeline_checkpoint
     with timer.step(f"checkpoint_{name}"):
         return ckpt_fn(spark, df, name, cfg)
 
@@ -141,6 +143,8 @@ def run_load_allocation_input(
     CheckpointBackend: str = None,
     checkpoint_inner_base_flowup_local: bool = None,
     CheckpointInnerBaseFlowupLocal: bool = None,
+    checkpoint_use_local: bool = None,
+    CheckpointUseLocal: bool = None,
     **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
@@ -227,6 +231,18 @@ def run_load_allocation_input(
             _inner_local = kwargs.get("CheckpointInnerBaseFlowupLocal")
     if _inner_local is not None:
         cfg["checkpoint_inner_base_flowup_local"] = bool(_inner_local)
+    _use_local = (
+        checkpoint_use_local
+        if checkpoint_use_local is not None
+        else CheckpointUseLocal
+    )
+    if _use_local is None:
+        _use_local = kwargs.get("checkpoint_use_local")
+        if _use_local is None:
+            _use_local = kwargs.get("CheckpointUseLocal")
+    if _use_local is not None and bool(_use_local):
+        cfg["checkpoint_use_local"] = True
+        cfg["checkpoint_backend"] = "local"
     if volume_path:
         cfg["volume_path"] = volume_path.strip()
     from .checkpoint import _resolve_backend
@@ -246,14 +262,19 @@ def run_load_allocation_input(
     cfg["parallel_write_workers"] = parallel_write_workers
     cfg.setdefault("write_compression", "uncompressed")
     cfg.setdefault("checkpoint_compression", cfg.get("write_compression", "uncompressed"))
-    if _use_production_checkpoint(cfg):
+    if use_local_checkpoint(cfg):
+        print(
+            "[checkpoint] pipeline breaks: executor localCheckpoint "
+            "(skips UC AtomicReplace ~2-7s per step; not fault-tolerant)"
+        )
+    elif _use_production_checkpoint(cfg):
         print("[checkpoint] pipeline breaks: Common_V2.core.checkpoint (sdt_d production)")
     else:
         print(
             f"[checkpoint] pipeline breaks: updated.checkpoint "
             f"compression={cfg.get('checkpoint_compression', 'uncompressed')}"
         )
-    if use_inner_base_flowup_local_checkpoint(cfg):
+    if use_inner_base_flowup_local_checkpoint(cfg) and not use_local_checkpoint(cfg):
         print(
             "[checkpoint] inner base_flowup (7a): localCheckpoint on executor disk "
             "(skips UC AtomicReplace ~5s per break)"
@@ -528,4 +549,5 @@ def run_load_allocation_input(
         "parallel_config_workers": int(cfg.get("parallel_config_workers", 1) or 1),
         "write_compression": cfg.get("write_compression"),
         "checkpoint_inner_base_flowup_local": cfg.get("checkpoint_inner_base_flowup_local"),
+        "checkpoint_use_local": cfg.get("checkpoint_use_local"),
     }
