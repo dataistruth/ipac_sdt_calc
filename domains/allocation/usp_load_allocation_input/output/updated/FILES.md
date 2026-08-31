@@ -14,6 +14,7 @@ Production `output/load_allocation_input.py` and `output/ai_*.py` stay on monoli
 | `step_timer.py` | YES | Per-step timers |
 | `checkpoint.py` | YES | Volume / Delta checkpoints (fixed step set) |
 | `flowup_run_filter.py` | YES | RunID partition pruning (`read_local_run_table`, `read_lower_tier_flowup`) |
+| `output_reconcile.py` | YES | Benchmark output parity (row counts / bytes vs original) |
 | `parallel_config.py` | YES | Thread pool for parallel shared views |
 | `shared_views.py` | YES | Parallel register entry |
 | `shared_views_builders.py` | YES | Parallel view builders |

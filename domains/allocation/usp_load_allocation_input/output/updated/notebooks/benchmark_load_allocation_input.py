@@ -236,6 +236,13 @@ def _extract_elapsed(result: Any) -> float | None:
     return None
 
 
+from AllocationV2.usp_load_allocation_input.output.updated.output_reconcile import (
+    capture_output_metrics,
+    compare_variants,
+    summarize_metrics,
+)
+
+
 def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
     run_kwargs = {
         "EntityID": entity_id,
@@ -259,10 +266,23 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
     )
     print(f"\n=== pass {pass_num} | {variant}{worker_note} | start {started_at} ===")
 
+    output_metrics: list[dict] | None = None
+    output_summary: dict | None = None
+
     try:
         result = runner.run_load_allocation_input(spark, **run_kwargs)
         status = "SUCCESS"
         error = None
+        output_metrics = capture_output_metrics(
+            spark, catalog_name, schema_name, run_id, client_id, tax_period_id
+        )
+        output_summary = summarize_metrics(output_metrics)
+        print(
+            f"[reconcile] {variant}: tables_with_rows="
+            f"{output_summary['tables_with_rows']} "
+            f"total_rows={output_summary['total_rows']} "
+            f"partition_bytes={output_summary.get('total_partition_bytes')}"
+        )
     except Exception as exc:
         result = None
         status = "FAIL"
@@ -288,6 +308,16 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         "started_at": started_at.isoformat(),
         "ended_at": ended_at.isoformat(),
         "error": error,
+        "output_tables_with_rows": (
+            output_summary.get("tables_with_rows") if output_summary else None
+        ),
+        "output_total_rows": (
+            output_summary.get("total_rows") if output_summary else None
+        ),
+        "output_partition_bytes": (
+            output_summary.get("total_partition_bytes") if output_summary else None
+        ),
+        "_output_metrics": output_metrics,
     }
     print(
         f"=== pass {pass_num} | {variant} | wall={wall_seconds}s "
@@ -305,6 +335,7 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
 # COMMAND ----------
 
 benchmark_rows: list[dict] = []
+reconcile_pass_rows: list[dict] = []
 
 for pass_num in range(1, number_of_run + 1):
     print(f"\n{'#' * 60}")
@@ -312,10 +343,35 @@ for pass_num in range(1, number_of_run + 1):
     print(f"{'#' * 60}")
 
     original_runner = _import_module(MODULE_ORIGINAL)
-    benchmark_rows.append(_run_pipeline(original_runner, "original", pass_num))
+    orig_row = _run_pipeline(original_runner, "original", pass_num)
+    benchmark_rows.append(orig_row)
 
     updated_runner = _import_module(MODULE_UPDATED)
-    benchmark_rows.append(_run_pipeline(updated_runner, "updated", pass_num))
+    upd_row = _run_pipeline(updated_runner, "updated", pass_num)
+    benchmark_rows.append(upd_row)
+
+    if (
+        orig_row.get("status") == "SUCCESS"
+        and upd_row.get("status") == "SUCCESS"
+        and orig_row.get("_output_metrics")
+        and upd_row.get("_output_metrics")
+    ):
+        pass_compare = compare_variants(
+            orig_row["_output_metrics"],
+            upd_row["_output_metrics"],
+        )
+        for cmp_row in pass_compare:
+            cmp_row["pass"] = pass_num
+            reconcile_pass_rows.append(cmp_row)
+        mismatches = [r for r in pass_compare if not r.get("parity_ok")]
+        if mismatches:
+            print(
+                f"[reconcile] PASS {pass_num}: MISMATCH on "
+                f"{len(mismatches)} table(s): "
+                + ", ".join(r["table"] for r in mismatches)
+            )
+        else:
+            print(f"[reconcile] PASS {pass_num}: all output tables match (rows + amounts)")
 
 print(f"\nCompleted {number_of_run} pass(es) — {len(benchmark_rows)} runs recorded")
 
@@ -329,7 +385,8 @@ print(f"\nCompleted {number_of_run} pass(es) — {len(benchmark_rows)} runs reco
 import pandas as pd
 
 results_df = pd.DataFrame(benchmark_rows)
-display(results_df)
+display_cols = [c for c in results_df.columns if not c.startswith("_")]
+display(results_df[display_cols])
 
 # COMMAND ----------
 
@@ -384,3 +441,39 @@ if "original" in pass_compare.columns and "updated" in pass_compare.columns:
     ).round(1)
 
 display(pass_compare.round(3))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Output parity (row counts, amounts, partition file sizes)
+
+# COMMAND ----------
+
+if reconcile_pass_rows:
+    reconcile_df = pd.DataFrame(reconcile_pass_rows)
+    display(reconcile_df)
+
+    mismatch_df = reconcile_df[~reconcile_df["parity_ok"].fillna(False)]
+    if len(mismatch_df):
+        print(
+            f"PARITY FAIL: {len(mismatch_df)} table comparison(s) differ — "
+            "review rows_match / amount_match above."
+        )
+    else:
+        print("PARITY OK: original and updated produced matching row counts and amount sums.")
+
+    summary_reconcile = (
+        reconcile_df.groupby("pass", as_index=False)
+        .agg(
+            tables_compared=("table", "count"),
+            tables_match=("parity_ok", "sum"),
+            original_total_rows=("original_rows", "sum"),
+            updated_total_rows=("updated_rows", "sum"),
+        )
+    )
+    display(summary_reconcile)
+else:
+    print(
+        "No output parity data — both variants must SUCCESS on at least one pass "
+        "(snapshot taken after each run before the next overwrites)."
+    )
