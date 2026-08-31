@@ -159,7 +159,7 @@ body = body.replace(
 # has_domestic_blockers without first()
 body = body.replace(
     "has_domestic_blockers = domestic_blocker_ids.limit(1).first() is not None",
-    "has_domestic_blockers = domestic_blocker_ids.head(1) is not None",
+    "has_domestic_blockers = domestic_blocker_ids.limit(1).first() is not None",
 )
 
 # build_pfic_flowup_pipeline entry log
