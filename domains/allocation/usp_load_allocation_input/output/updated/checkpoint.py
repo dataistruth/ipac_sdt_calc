@@ -1,13 +1,15 @@
 """
 checkpoint.py — lineage breaks for updated package.
 
-Default steps match original output.load_allocation_input:
-  alloc_input, base_flowup, pfic_flowup, alloc_filtered (+ alloc_tagged if tagged).
+Default steps match sdt_d output.load_allocation_input:
+  pfic_snapshot, alloc_input, base_flowup, pfic_raw, pfic_flowup,
+  alloc_filtered (+ alloc_tagged if tagged).
 
 Set in cfg (optional):
   checkpoint_backend: "auto" | "delta" | "local" | "volume"
-    auto / default → delta (UC temp tables, uncompressed Parquet)
-  checkpoint_compression: parquet codec for delta/volume checkpoints (default: uncompressed)
+    auto / default → delta (UC temp tables)
+  checkpoint_compression: parquet codec for updated.checkpoint() only (default: uncompressed)
+  checkpoint_use_production: use Common_V2.core.checkpoint for pipeline breaks (default: True)
   volume_path: final flow-up outputs (GenericResultStorer), not checkpoints by default.
 """
 
@@ -29,8 +31,10 @@ _CHECKPOINT_RETRY_DELAY = 5
 
 CHECKPOINT_STEPS: frozenset[str] = frozenset(
     {
+        "pfic_snapshot",
         "alloc_input",
-        "base_flowup",  # inner PFIC flowup (post-base / post-reclass / post-zero)
+        "base_flowup",  # inner PFIC flowup (post-reclass / post-zero)
+        "pfic_raw",
         "pfic_flowup",
         "alloc_filtered",
         "alloc_tagged",
@@ -40,15 +44,11 @@ CHECKPOINT_STEPS: frozenset[str] = frozenset(
 OPT_IN_CHECKPOINT_STEPS: frozenset[str] = frozenset(
     {
         "reclass_data",
-        "pfic_snapshot",
-        "pfic_raw",
     }
 )
 
 _OPT_IN_CFG_KEYS: dict[str, str] = {
     "reclass_data": "checkpoint_reclass_data",
-    "pfic_snapshot": "checkpoint_pfic_snapshot",
-    "pfic_raw": "checkpoint_pfic_raw",
 }
 
 
@@ -167,6 +167,7 @@ def _write_delta_checkpoint(
     optimize = bool(cfg.get("checkpoint_delta_optimize_write", False))
     for attempt in range(1, _CHECKPOINT_MAX_RETRIES + 1):
         try:
+            spark.sql(f"DROP TABLE IF EXISTS {fqn}")
             writer = (
                 df.write.format("delta")
                 .mode("overwrite")
@@ -188,6 +189,59 @@ def _write_delta_checkpoint(
                 time.sleep(_CHECKPOINT_RETRY_DELAY * attempt)
                 continue
             raise
+
+
+def _use_production_checkpoint(cfg: dict) -> bool:
+    return bool(cfg.get("checkpoint_use_production", True))
+
+
+def checkpoint_production(
+    spark: SparkSession,
+    df: DataFrame,
+    name: str,
+    cfg: dict,
+) -> DataFrame:
+    """
+    Match sdt_d Common_V2.core.checkpoint — snappy Delta, DROP before write.
+    Falls back to local implementation when Common_V2 is not on sys.path.
+    """
+    try:
+        from Common_V2.core.checkpoint import checkpoint as core_checkpoint
+
+        return core_checkpoint(spark, df, name, cfg)
+    except ImportError:
+        _ensure_checkpoint_lists(cfg)
+        run_id = cfg.get("run_id", "0")
+        uniq = uuid.uuid4().hex[:8]
+        fqn = f"{table_prefix(cfg)}._tmp_{name}_{run_id}_{uniq}"
+        cfg["_checkpoint_tables"].append(fqn)
+        logger.info(f"[CHECKPOINT] production fallback write: {fqn}")
+        prod_cfg = dict(cfg)
+        prod_cfg["checkpoint_compression"] = "default"
+        prod_cfg["write_compression"] = "default"
+        return _write_delta_checkpoint(spark, df, fqn, prod_cfg)
+
+
+def drop_checkpoints(spark: SparkSession, cfg: dict) -> None:
+    """Drop UC temp tables and volume checkpoint paths tracked in cfg."""
+    try:
+        from Common_V2.core.checkpoint import drop_checkpoints as core_drop
+
+        core_drop(spark, cfg)
+    except ImportError:
+        for fqn in cfg.get("_checkpoint_tables", []):
+            try:
+                spark.sql(f"DROP TABLE IF EXISTS {fqn}")
+            except Exception as exc:
+                logger.warning(f"[CHECKPOINT] Failed to drop table {fqn}: {exc}")
+        cfg["_checkpoint_tables"] = []
+
+    for path in cfg.get("_checkpoint_paths", []):
+        try:
+            _rm_path(spark, path)
+        except Exception as exc:
+            logger.warning(f"[CHECKPOINT] Failed to remove path {path}: {exc}")
+    cfg["_checkpoint_paths"] = []
 
 
 def _write_volume_checkpoint(

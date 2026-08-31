@@ -58,13 +58,15 @@ def _cached_lower_tier_funds(spark: SparkSession, cfg: dict, run_id: int) -> Dat
 def _flowup_checkpoint(
     spark: SparkSession, df: DataFrame, cfg: dict, label: str,
 ) -> DataFrame:
-    """Monolith-style mid-pipeline break (Delta uncompressed by default)."""
-    from .checkpoint import checkpoint, should_checkpoint
+    """Inner flowup break — matches sdt_d output/ai_pfic_flowup_service (Common_V2)."""
+    from .checkpoint import checkpoint_production, should_checkpoint, _use_production_checkpoint
+    from .checkpoint import checkpoint as updated_checkpoint
 
     if not should_checkpoint(cfg, "base_flowup"):
         return df
     _log(f"flowup checkpoint ({label})")
-    return checkpoint(spark, df, "base_flowup", cfg)
+    ckpt_fn = checkpoint_production if _use_production_checkpoint(cfg) else updated_checkpoint
+    return ckpt_fn(spark, df, "base_flowup", cfg)
 
 
 def _cached_zero_fa_only_ids(

@@ -18,7 +18,14 @@ from typing import Any
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
 
-from .checkpoint import checkpoint, log_checkpoint_plan, should_checkpoint
+from .checkpoint import (
+    checkpoint,
+    checkpoint_production,
+    drop_checkpoints,
+    log_checkpoint_plan,
+    should_checkpoint,
+    _use_production_checkpoint,
+)
 from .step_timer import StepTimer
 from .shared_views import register_shared_views_parallel
 from . import ai_pfic_flowup_service as _pfic_flowup_svc
@@ -97,8 +104,9 @@ def _maybe_checkpoint(
 ) -> Any:
     if not should_checkpoint(cfg, name):
         return df
+    ckpt_fn = checkpoint_production if _use_production_checkpoint(cfg) else checkpoint
     with timer.step(f"checkpoint_{name}"):
-        return checkpoint(spark, df, name, cfg)
+        return ckpt_fn(spark, df, name, cfg)
 
 
 def run_load_allocation_input(
@@ -224,6 +232,13 @@ def run_load_allocation_input(
     cfg["parallel_write_workers"] = parallel_write_workers
     cfg.setdefault("write_compression", "uncompressed")
     cfg.setdefault("checkpoint_compression", cfg.get("write_compression", "uncompressed"))
+    if _use_production_checkpoint(cfg):
+        print("[checkpoint] pipeline breaks: Common_V2.core.checkpoint (sdt_d production)")
+    else:
+        print(
+            f"[checkpoint] pipeline breaks: updated.checkpoint "
+            f"compression={cfg.get('checkpoint_compression', 'uncompressed')}"
+        )
     log_checkpoint_plan(cfg)
     print(
         f"[updated] parallel_config_workers={cfg['parallel_config_workers']} "
@@ -237,6 +252,7 @@ def run_load_allocation_input(
         print("[write] parquet compression: uncompressed (Delta + flow-up outputs)")
 
     if cfg.get("run_status") == "FAIL":
+        drop_checkpoints(spark, cfg)
         return _timed_fail(timer, "run_status_fail")
 
     with timer.step("phase_1_config_and_shared_views"):
@@ -250,8 +266,9 @@ def run_load_allocation_input(
 
     with timer.step("phase_3_validations"):
         should_continue = run_validations(spark, cfg, lower_tier_df)
-    if not should_continue:
-        return _timed_fail(timer, "validation_failed")
+        if not should_continue:
+            drop_checkpoints(spark, cfg)
+            return _timed_fail(timer, "validation_failed")
 
     with timer.step("purge_output_tables"):
         purge_output_tables(spark, cfg)
@@ -284,6 +301,8 @@ def run_load_allocation_input(
         pfic_flowup_df = build_pfic_flowup_pipeline(
             spark, cfg, pfic_snapshot_df, pfic_elections, lower_tier_df
         )
+
+    pfic_flowup_df = _maybe_checkpoint(spark, timer, pfic_flowup_df, "pfic_raw", cfg)
 
     with timer.step("phase_7b_pfic_election_deletes_and_flags"):
         check_pfic_xml_override_alert(spark, cfg, pfic_flowup_df)
@@ -472,6 +491,8 @@ def run_load_allocation_input(
     cfg["step_timings"] = timer.as_dict_list()
     timer.print_summary("load_allocation_input (updated)")
     log_timing("load_allocation_input (updated)", t0)
+
+    drop_checkpoints(spark, cfg)
 
     if save_return_value and isinstance(save_return_value, str) and save_return_value.strip().startswith("{"):
         return save_return_value
