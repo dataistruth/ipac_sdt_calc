@@ -24,14 +24,18 @@ import time
 
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
 
+from .flowup_run_filter import read_local_run_table, read_lower_tier_flowup
+
 logger = logging.getLogger(__name__)
 
 
 def _load_pfic_foreign_corp_broadcast(spark: SparkSession, cfg: dict) -> DataFrame:
     key = "_pfic_foreign_corp_broadcast"
     if key not in cfg:
-        cfg[key] = F.broadcast(read_table(spark, "PficForeignCorpClassificationInput", cfg))
-        _log("cached broadcast PficForeignCorpClassificationInput")
+        cfg[key] = F.broadcast(
+            read_local_run_table(spark, "PficForeignCorpClassificationInput", cfg)
+        )
+        _log("cached broadcast PficForeignCorpClassificationInput (RunID partition prune)")
     return cfg[key]
 
 
@@ -181,15 +185,9 @@ def _build_zero_fa_only_ids(spark, cfg, reclass_unblocked_df, pfic_line_item_df)
     )
 
     lower_tier = (
-
-        read_table(spark, "LowerTierFunds", cfg)
-
-        .filter(F.col("RunID") == run_id)
-
+        read_local_run_table(spark, "LowerTierFunds", cfg)
         .select(F.col("EntityID").alias("LT_EntityID"))
-
         .distinct()
-
     )
 
     return (
@@ -828,17 +826,9 @@ def build_pfic_flowup_pipeline(
     existing_pfic_footnotes = base_flowup.filter(F.col("RunID") == run_id) \
         .select("PFICFootnoteID", "FlowupEntityID", "TrackingKey").distinct()
 
-    # Zero amount PFICs from prior flowup table (not already in current flowup)
-    # Table is partitioned on RunID — semi-join on LTRunID first for partition pruning,
-    # then ClientID/TaxPeriodID row filter (inner join below also requires PFIC.RunID = LT.RunID).
-    lt_run_ids = lower_tier_funds.select("RunID").distinct()
-    pfic_flowup_tracking = (
-        read_table(spark, "PFICFootnoteFlowupWithTrackingKey", cfg)
-        .join(F.broadcast(lt_run_ids), "RunID", "left_semi")
-        .filter(
-            (F.col("ClientID") == client_id)
-            & (F.col("TaxPeriodID") == tax_period_id)
-        )
+    # Zero amount PFICs from prior flowup (partitioned on RunID — prune to lower-tier LTRunIDs)
+    pfic_flowup_tracking = read_lower_tier_flowup(
+        spark, "PFICFootnoteFlowupWithTrackingKey", cfg
     )
 
     enu_tax_class = F.broadcast(read_table(spark, "ENU_TaxClass", cfg))

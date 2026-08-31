@@ -15,6 +15,7 @@ from pyspark.sql import SparkSession
 from Common_V2.core.helpers import log_section, log_timing, read_table
 
 from .checkpoint import checkpoint, should_checkpoint
+from .flowup_run_filter import read_local_run_table
 
 logger = logging.getLogger(__name__)
 
@@ -119,14 +120,13 @@ def register_lower_tier_funds(spark: SparkSession, cfg: dict) -> None:
     """Requires _entity temp view."""
     _, _, run_id, _, _ = _ids(cfg)
     is_blocker_checked = cfg.get("is_foreign_blocker_footnotes_flowup_checked", False)
-    ltf_df = read_table(spark, "LowerTierFunds", cfg)
+    ltf_df = read_local_run_table(spark, "LowerTierFunds", cfg)
     entity_view = spark.table("_entity")
     tax_class_df = read_table(spark, "ENU_TaxClass", cfg)
     ltf_out = (
         ltf_df.alias("LF")
         .join(entity_view.alias("E"), F.col("LF.EntityID") == F.col("E.EntityID"), "left")
         .join(tax_class_df.alias("T"), F.col("E.TaxClassID") == F.col("T.TaxClassID"), "left")
-        .filter(F.col("LF.RunID") == run_id)
         .select(
             F.col("LF.EntityID"),
             F.col("LF.PartnerNumber"),
