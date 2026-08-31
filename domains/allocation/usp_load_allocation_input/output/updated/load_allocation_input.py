@@ -24,6 +24,7 @@ from .checkpoint import (
     drop_checkpoints,
     log_checkpoint_plan,
     should_checkpoint,
+    use_inner_base_flowup_local_checkpoint,
     _use_production_checkpoint,
 )
 from .step_timer import StepTimer
@@ -138,6 +139,8 @@ def run_load_allocation_input(
     ParallelWriteWorkers: int = None,
     checkpoint_backend: str = None,
     CheckpointBackend: str = None,
+    checkpoint_inner_base_flowup_local: bool = None,
+    CheckpointInnerBaseFlowupLocal: bool = None,
     **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
@@ -213,6 +216,17 @@ def run_load_allocation_input(
     )
     if _ckpt_backend:
         cfg["checkpoint_backend"] = str(_ckpt_backend).strip().lower()
+    _inner_local = (
+        checkpoint_inner_base_flowup_local
+        if checkpoint_inner_base_flowup_local is not None
+        else CheckpointInnerBaseFlowupLocal
+    )
+    if _inner_local is None:
+        _inner_local = kwargs.get("checkpoint_inner_base_flowup_local")
+        if _inner_local is None:
+            _inner_local = kwargs.get("CheckpointInnerBaseFlowupLocal")
+    if _inner_local is not None:
+        cfg["checkpoint_inner_base_flowup_local"] = bool(_inner_local)
     if volume_path:
         cfg["volume_path"] = volume_path.strip()
     from .checkpoint import _resolve_backend
@@ -238,6 +252,11 @@ def run_load_allocation_input(
         print(
             f"[checkpoint] pipeline breaks: updated.checkpoint "
             f"compression={cfg.get('checkpoint_compression', 'uncompressed')}"
+        )
+    if use_inner_base_flowup_local_checkpoint(cfg):
+        print(
+            "[checkpoint] inner base_flowup (7a): localCheckpoint on executor disk "
+            "(skips UC AtomicReplace ~5s per break)"
         )
     log_checkpoint_plan(cfg)
     print(
@@ -508,4 +527,5 @@ def run_load_allocation_input(
         "parallel_write_workers": int(cfg.get("parallel_write_workers", 1) or 1),
         "parallel_config_workers": int(cfg.get("parallel_config_workers", 1) or 1),
         "write_compression": cfg.get("write_compression"),
+        "checkpoint_inner_base_flowup_local": cfg.get("checkpoint_inner_base_flowup_local"),
     }

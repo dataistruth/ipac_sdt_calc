@@ -33,18 +33,26 @@ dbutils.widgets.text(
     "3. Checkpoint volume",
 )
 dbutils.widgets.text(
+    "inner_base_flowup_local",
+    "true",
+    "4. Inner 7a base_flowup localCheckpoint",
+)
+dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
-    "4. Monolith Source/",
+    "5. Monolith Source/",
 )
 
 module_stem = dbutils.widgets.get("module_stem").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
+_inner_local_raw = dbutils.widgets.get("inner_base_flowup_local").strip().lower()
+inner_base_flowup_local = _inner_local_raw in ("1", "true", "yes", "y")
 volume_path = dbutils.widgets.get("volume_path").strip()
 source_path = dbutils.widgets.get("source_path").strip()
 
 print(f"module_stem       : {module_stem}")
 print(f"parallel_workers  : {parallel_workers}")
+print(f"inner_base_flowup_local: {inner_base_flowup_local}")
 print(f"volume_path       : {volume_path}")
 
 import os
@@ -111,6 +119,7 @@ result = lt_runner.run_load_allocation_input(
     VolumePath=volume_path,
     parallel_config_workers=parallel_workers,
     parallel_write_workers=parallel_workers,
+    checkpoint_inner_base_flowup_local=inner_base_flowup_local,
 )
 
 print(f"Elapsed: {datetime.now() - beginning_time}")

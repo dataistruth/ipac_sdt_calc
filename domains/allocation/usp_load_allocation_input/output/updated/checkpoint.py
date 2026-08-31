@@ -10,6 +10,7 @@ Set in cfg (optional):
     auto / default → delta (UC temp tables)
   checkpoint_compression: parquet codec for updated.checkpoint() only (default: uncompressed)
   checkpoint_use_production: use Common_V2.core.checkpoint for pipeline breaks (default: True)
+  checkpoint_inner_base_flowup_local: inner 7a base_flowup breaks use localCheckpoint (default: False)
   volume_path: final flow-up outputs (GenericResultStorer), not checkpoints by default.
 """
 
@@ -101,7 +102,10 @@ def log_checkpoint_plan(cfg: dict) -> None:
     enabled = sorted(name for name in all_steps if should_checkpoint(cfg, name))
     comp = _checkpoint_compression(cfg) if backend in ("delta", "volume") else None
     comp_note = f" compression={comp}" if comp else ""
-    print(f"[checkpoint] backend={backend}{comp_note} steps={enabled}")
+    inner_note = ""
+    if bool(cfg.get("checkpoint_inner_base_flowup_local", False)) and "base_flowup" in enabled:
+        inner_note = " inner_base_flowup=localCheckpoint"
+    print(f"[checkpoint] backend={backend}{comp_note}{inner_note} steps={enabled}")
 
 
 def _ensure_checkpoint_lists(cfg: dict) -> None:
@@ -193,6 +197,33 @@ def _write_delta_checkpoint(
 
 def _use_production_checkpoint(cfg: dict) -> bool:
     return bool(cfg.get("checkpoint_use_production", True))
+
+
+def use_inner_base_flowup_local_checkpoint(cfg: dict) -> bool:
+    """Opt-in: executor localCheckpoint for inner 7a base_flowup (post-reclass / post-zero)."""
+    return bool(cfg.get("checkpoint_inner_base_flowup_local", False))
+
+
+def inner_base_flowup_checkpoint(
+    spark: SparkSession,
+    df: DataFrame,
+    cfg: dict,
+    label: str,
+) -> DataFrame:
+    """
+    Mid-pipeline PFIC flowup break only (not pfic_snapshot / pfic_raw).
+
+    When checkpoint_inner_base_flowup_local=True, uses localCheckpoint (~1s vs ~5s UC Delta).
+  """
+    if not should_checkpoint(cfg, "base_flowup"):
+        return df
+    ckpt_name = f"base_flowup_{label}"
+    if use_inner_base_flowup_local_checkpoint(cfg):
+        logger.info(f"[CHECKPOINT] inner base_flowup localCheckpoint ({label})")
+        return _local_checkpoint(df, ckpt_name, cfg)
+    if _use_production_checkpoint(cfg):
+        return checkpoint_production(spark, df, "base_flowup", cfg)
+    return checkpoint(spark, df, "base_flowup", cfg)
 
 
 def checkpoint_production(

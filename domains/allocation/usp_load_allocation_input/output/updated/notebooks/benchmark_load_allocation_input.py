@@ -24,6 +24,7 @@
 # MAGIC | `sp_name` | SP folder under `AllocationV2/` |
 # MAGIC | `number_of_run` | A/B passes (original → updated each pass) |
 # MAGIC | `parallel_workers` | Shared views + flow-up writes (`updated` only); default `4` |
+| `inner_base_flowup_local` | Inner 7a `base_flowup` uses `localCheckpoint` (`updated` only); default `true` |
 # MAGIC | `volume_path` | UC volume for checkpoints (`updated` only) |
 # MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
 # MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |
@@ -53,26 +54,31 @@ dbutils.widgets.text(
     "2. A/B passes (original then updated each pass)",
 )
 dbutils.widgets.text(
+    "inner_base_flowup_local",
+    "true",
+    "4. Inner 7a base_flowup localCheckpoint (updated only)",
+)
+dbutils.widgets.text(
     "parallel_workers",
     "4",
-    "3. Parallel workers (updated: shared views + flow-up writes)",
+    "5. Parallel workers (updated: shared views + flow-up writes)",
 )
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
-    "5. Monolith Source/ (empty = auto-detect)",
+    "6. Monolith Source/ (empty = auto-detect)",
 )
 dbutils.widgets.text(
     "volume_path",
     "/Volumes/qa7/datavolume/databrickdata/checkpoint",
-    "6. VolumePath for updated checkpoints",
+    "7. VolumePath for updated checkpoints",
 )
-dbutils.widgets.text("EntityID", "115", "7. EntityID")
-dbutils.widgets.text("ClientID", "15348", "8. ClientID")
-dbutils.widgets.text("TaxPeriodID", "1", "9. TaxPeriodID")
-dbutils.widgets.text("RunID", "16560", "10. RunID")
-dbutils.widgets.text("CatalogName", "QA7", "11. CatalogName")
-dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "12. SchemaName")
+dbutils.widgets.text("EntityID", "115", "8. EntityID")
+dbutils.widgets.text("ClientID", "15348", "9. ClientID")
+dbutils.widgets.text("TaxPeriodID", "1", "10. TaxPeriodID")
+dbutils.widgets.text("RunID", "16560", "11. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "12. CatalogName")
+dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "13. SchemaName")
 
 sp_name = dbutils.widgets.get("sp_name").strip()
 number_of_run = int(dbutils.widgets.get("number_of_run").strip() or "1")
@@ -85,6 +91,8 @@ run_id = int(dbutils.widgets.get("RunID").strip())
 catalog_name = dbutils.widgets.get("CatalogName").strip()
 schema_name = dbutils.widgets.get("SchemaName").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
+_inner_local_raw = dbutils.widgets.get("inner_base_flowup_local").strip().lower()
+inner_base_flowup_local = _inner_local_raw in ("1", "true", "yes", "y")
 
 if parallel_workers < 1:
     raise ValueError("parallel_workers must be >= 1")
@@ -105,6 +113,7 @@ print(f"RunID           : {run_id}")
 print(f"CatalogName     : {catalog_name}")
 print(f"SchemaName      : {schema_name}")
 print(f"parallel_workers: {parallel_workers} (updated only)")
+print(f"inner_base_flowup_local: {inner_base_flowup_local} (updated 7a checkpoints)")
 
 # COMMAND ----------
 
@@ -256,6 +265,7 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         run_kwargs["VolumePath"] = volume_path
         run_kwargs["parallel_config_workers"] = parallel_workers
         run_kwargs["parallel_write_workers"] = parallel_workers
+        run_kwargs["checkpoint_inner_base_flowup_local"] = inner_base_flowup_local
 
     started_at = datetime.now()
     t0 = time.time()
