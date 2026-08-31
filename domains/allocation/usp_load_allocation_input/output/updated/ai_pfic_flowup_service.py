@@ -829,8 +829,17 @@ def build_pfic_flowup_pipeline(
         .select("PFICFootnoteID", "FlowupEntityID", "TrackingKey").distinct()
 
     # Zero amount PFICs from prior flowup table (not already in current flowup)
-
-    pfic_flowup_tracking = read_table(spark, "PFICFootnoteFlowupWithTrackingKey", cfg)
+    # Table is partitioned on RunID — semi-join on LTRunID first for partition pruning,
+    # then ClientID/TaxPeriodID row filter (inner join below also requires PFIC.RunID = LT.RunID).
+    lt_run_ids = lower_tier_funds.select("RunID").distinct()
+    pfic_flowup_tracking = (
+        read_table(spark, "PFICFootnoteFlowupWithTrackingKey", cfg)
+        .join(F.broadcast(lt_run_ids), "RunID", "left_semi")
+        .filter(
+            (F.col("ClientID") == client_id)
+            & (F.col("TaxPeriodID") == tax_period_id)
+        )
+    )
 
     enu_tax_class = F.broadcast(read_table(spark, "ENU_TaxClass", cfg))
 
