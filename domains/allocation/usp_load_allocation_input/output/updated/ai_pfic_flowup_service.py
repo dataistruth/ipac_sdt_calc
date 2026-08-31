@@ -58,7 +58,7 @@ def _cached_lower_tier_funds(spark: SparkSession, cfg: dict, run_id: int) -> Dat
 def _flowup_checkpoint(
     spark: SparkSession, df: DataFrame, cfg: dict, label: str,
 ) -> DataFrame:
-    """Monolith-style mid-pipeline break (localCheckpoint by default)."""
+    """Monolith-style mid-pipeline break (Delta uncompressed by default)."""
     from .checkpoint import checkpoint, should_checkpoint
 
     if not should_checkpoint(cfg, "base_flowup"):
@@ -590,9 +590,13 @@ def build_pfic_flowup_pipeline(
 
     base_flowup = pfic_alloc.unionByName(pfic_non_alloc)
 
-    # ─── Step 2: Lookthrough Reclass Flowup ───────────────────────────────
-
     reclass_wf_id = cfg.get("lookthrough_reclass_workflow_id", 0)
+
+    # When reclass is off, break after Step 1 so Step 3 zero-PFIC is not one giant job.
+    if reclass_wf_id <= 0:
+        base_flowup = _flowup_checkpoint(spark, base_flowup, cfg, "post-base")
+
+    # ─── Step 2: Lookthrough Reclass Flowup ───────────────────────────────
 
     if reclass_wf_id > 0:
         _log(f"Step 2 lookthrough reclass workflow_id={reclass_wf_id}")

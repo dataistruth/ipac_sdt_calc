@@ -25,20 +25,22 @@ result = run_load_allocation_input(
 )
 ```
 
-## Checkpoints (default: executor `localCheckpoint`)
+## Checkpoints (default: Delta + uncompressed Parquet)
 
-Intermediate lineage breaks use Spark **`localCheckpoint(eager=True)`** on executor local disk by default — fast, cuts lineage, **not fault-tolerant** (full job restart on failure).
+Intermediate lineage breaks use **UC temp Delta tables** (`_tmp_*`) with **uncompressed Parquet**, same style as original `Common_V2.core.checkpoint`.
 
-| Backend | When to use |
-|---------|-------------|
-| `local` (default / `auto`) | Fast; you restart the whole job on failure |
-| `delta` | Match original UC temp tables: `checkpoint_backend="delta"` |
-| `volume` | Uncompressed Parquet on volume: `checkpoint_backend="volume"` |
+| Backend | When |
+|---------|------|
+| `delta` (default / `auto`) | UC temp tables, `compression=uncompressed` |
+| `local` | Executor `localCheckpoint` — `checkpoint_backend="local"` |
+| `volume` | Parquet on `volume_path` — `checkpoint_backend="volume"` |
+
+Override codec: `checkpoint_compression="snappy"` (default is `uncompressed`).
 
 | Step | When |
 |------|------|
 | `alloc_input` | After phase 6c |
-| `base_flowup` | Inside PFIC flowup — `post-reclass` and `post-zero` (local disk by default) |
+| `base_flowup` | Inside flowup — `post-base` / `post-reclass` / `post-zero` |
 | `pfic_flowup` | After phase 7b |
 | `alloc_filtered` | After post-filters |
 | `alloc_tagged` | After phase 8 (if investment tag workflow active) |
@@ -58,4 +60,4 @@ Kept in `updated.ai_pfic_flowup_service`:
 
 - Parallel shared view registration (`parallel_config_workers`, default 4)
 - Parallel flow-up Delta writes (`parallel_write_workers`, default 4)
-- Uncompressed Parquet on volume checkpoints and writes
+- Uncompressed Parquet on checkpoints and final outputs

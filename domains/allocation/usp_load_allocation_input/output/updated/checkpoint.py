@@ -5,8 +5,9 @@ Default steps match original output.load_allocation_input:
   alloc_input, base_flowup, pfic_flowup, alloc_filtered (+ alloc_tagged if tagged).
 
 Set in cfg (optional):
-  checkpoint_backend: "auto" | "local" | "delta" | "volume"
-    auto / default → local (executor disk, fast; not fault-tolerant — full job restart on failure)
+  checkpoint_backend: "auto" | "delta" | "local" | "volume"
+    auto / default → delta (UC temp tables, uncompressed Parquet)
+  checkpoint_compression: parquet codec for delta/volume checkpoints (default: uncompressed)
   volume_path: final flow-up outputs (GenericResultStorer), not checkpoints by default.
 """
 
@@ -29,7 +30,7 @@ _CHECKPOINT_RETRY_DELAY = 5
 CHECKPOINT_STEPS: frozenset[str] = frozenset(
     {
         "alloc_input",
-        "base_flowup",  # inner PFIC flowup (post-reclass / post-zero in ai_pfic_flowup_service)
+        "base_flowup",  # inner PFIC flowup (post-base / post-reclass / post-zero)
         "pfic_flowup",
         "alloc_filtered",
         "alloc_tagged",
@@ -75,19 +76,32 @@ def _resolve_backend(cfg: dict) -> str:
                 "(e.g. /Volumes/qa7/datavolume/databrickdata/checkpoint)"
             )
         return "volume"
-    if mode == "delta":
-        return "delta"
-    if mode == "local":
-        return "local"
-    # auto: executor localCheckpoint — fast lineage break; job restart if executor loses data.
-    return "local"
+    if mode in ("delta", "local"):
+        return mode
+    # auto: Delta temp tables (matches original / Common_V2.core.checkpoint).
+    return "delta"
+
+
+def _checkpoint_compression(cfg: dict) -> str | None:
+    raw = str(
+        cfg.get("checkpoint_compression")
+        or cfg.get("write_compression")
+        or "uncompressed"
+    ).strip().lower()
+    if raw in ("uncompressed", "none"):
+        return "uncompressed"
+    if raw in ("", "default"):
+        return None
+    return raw
 
 
 def log_checkpoint_plan(cfg: dict) -> None:
     backend = _resolve_backend(cfg)
     all_steps = CHECKPOINT_STEPS | OPT_IN_CHECKPOINT_STEPS
     enabled = sorted(name for name in all_steps if should_checkpoint(cfg, name))
-    print(f"[checkpoint] backend={backend} steps={enabled}")
+    comp = _checkpoint_compression(cfg) if backend in ("delta", "volume") else None
+    comp_note = f" compression={comp}" if comp else ""
+    print(f"[checkpoint] backend={backend}{comp_note} steps={enabled}")
 
 
 def _ensure_checkpoint_lists(cfg: dict) -> None:
@@ -143,16 +157,24 @@ def _local_checkpoint(df: DataFrame, name: str, cfg: dict) -> DataFrame:
     return df.localCheckpoint(eager=True)
 
 
-def _write_delta_checkpoint(spark: SparkSession, df: DataFrame, fqn: str) -> DataFrame:
+def _write_delta_checkpoint(
+    spark: SparkSession,
+    df: DataFrame,
+    fqn: str,
+    cfg: dict,
+) -> DataFrame:
+    compression = _checkpoint_compression(cfg)
     for attempt in range(1, _CHECKPOINT_MAX_RETRIES + 1):
         try:
-            (
+            writer = (
                 df.write.format("delta")
                 .mode("overwrite")
                 .option("overwriteSchema", "true")
                 .option("optimizeWrite", "true")
-                .saveAsTable(fqn)
             )
+            if compression:
+                writer = writer.option("compression", compression)
+            writer.saveAsTable(fqn)
             return spark.table(fqn)
         except Exception as exc:
             if _is_transient_uc_error(exc) and attempt < _CHECKPOINT_MAX_RETRIES:
@@ -166,14 +188,19 @@ def _write_delta_checkpoint(spark: SparkSession, df: DataFrame, fqn: str) -> Dat
             raise
 
 
-def _write_volume_checkpoint(spark: SparkSession, df: DataFrame, path: str) -> DataFrame:
-    """Write uncompressed Parquet files to volume (faster CPU; larger temp files)."""
+def _write_volume_checkpoint(
+    spark: SparkSession,
+    df: DataFrame,
+    path: str,
+    cfg: dict,
+) -> DataFrame:
+    compression = _checkpoint_compression(cfg) or "uncompressed"
     for attempt in range(1, _CHECKPOINT_MAX_RETRIES + 1):
         try:
             _rm_path(spark, path)
             (
                 df.write.mode("overwrite")
-                .option("compression", "uncompressed")
+                .option("compression", compression)
                 .parquet(path)
             )
             return spark.read.parquet(path)
@@ -197,9 +224,9 @@ def checkpoint(
     """
     Materialize df to break lineage.
 
-    local (default): executor localCheckpoint — fastest; not fault-tolerant.
-    delta: UC temp Delta table (original / Common_V2.core.checkpoint).
-    volume: uncompressed Parquet on volume_path (opt-in).
+    delta (default): UC temp Delta table with uncompressed Parquet (cfg-driven).
+    local: executor localCheckpoint (opt-in).
+    volume: Parquet files on volume_path (opt-in).
     """
     _ensure_checkpoint_lists(cfg)
     run_id = cfg.get("run_id", 0)
@@ -213,9 +240,11 @@ def checkpoint(
         path = _volume_checkpoint_path(cfg, name, uniq)
         cfg["_checkpoint_paths"].append(path)
         logger.info(f"[CHECKPOINT] volume write: {path}")
-        return _write_volume_checkpoint(spark, df, path)
+        return _write_volume_checkpoint(spark, df, path, cfg)
 
     fqn = f"{table_prefix(cfg)}._tmp_{name}_{run_id}_{uniq}"
     cfg["_checkpoint_tables"].append(fqn)
-    logger.info(f"[CHECKPOINT] delta write: {fqn}")
-    return _write_delta_checkpoint(spark, df, fqn)
+    comp = _checkpoint_compression(cfg)
+    comp_note = f" compression={comp}" if comp else ""
+    logger.info(f"[CHECKPOINT] delta write: {fqn}{comp_note}")
+    return _write_delta_checkpoint(spark, df, fqn, cfg)

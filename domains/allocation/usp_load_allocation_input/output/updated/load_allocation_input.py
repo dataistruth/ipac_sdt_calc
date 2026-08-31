@@ -210,18 +210,20 @@ def run_load_allocation_input(
     from .checkpoint import _resolve_backend
 
     _backend = _resolve_backend(cfg)
+    _comp = cfg.get("checkpoint_compression", "uncompressed")
     if volume_path:
         print(
-            f"[checkpoint] backend={_backend} (executor local disk if local) | "
+            f"[checkpoint] backend={_backend} compression={_comp} (UC temp Delta) | "
             f"volume_path for flow-up outputs: {cfg['volume_path']}"
         )
     else:
-        print(f"[checkpoint] backend={_backend}")
+        print(f"[checkpoint] backend={_backend} compression={_comp} (UC temp Delta)")
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
     cfg["parallel_config_workers"] = parallel_config_workers
     cfg["parallel_write_workers"] = parallel_write_workers
     cfg.setdefault("write_compression", "uncompressed")
+    cfg.setdefault("checkpoint_compression", cfg.get("write_compression", "uncompressed"))
     log_checkpoint_plan(cfg)
     print(
         f"[updated] parallel_config_workers={cfg['parallel_config_workers']} "
