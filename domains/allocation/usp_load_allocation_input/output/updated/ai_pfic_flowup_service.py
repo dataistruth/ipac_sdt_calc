@@ -592,10 +592,6 @@ def build_pfic_flowup_pipeline(
 
     reclass_wf_id = cfg.get("lookthrough_reclass_workflow_id", 0)
 
-    # When reclass is off, break after Step 1 so Step 3 zero-PFIC is not one giant job.
-    if reclass_wf_id <= 0:
-        base_flowup = _flowup_checkpoint(spark, base_flowup, cfg, "post-base")
-
     # ─── Step 2: Lookthrough Reclass Flowup ───────────────────────────────
 
     if reclass_wf_id > 0:

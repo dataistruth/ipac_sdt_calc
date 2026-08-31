@@ -164,14 +164,16 @@ def _write_delta_checkpoint(
     cfg: dict,
 ) -> DataFrame:
     compression = _checkpoint_compression(cfg)
+    optimize = bool(cfg.get("checkpoint_delta_optimize_write", False))
     for attempt in range(1, _CHECKPOINT_MAX_RETRIES + 1):
         try:
             writer = (
                 df.write.format("delta")
                 .mode("overwrite")
                 .option("overwriteSchema", "true")
-                .option("optimizeWrite", "true")
             )
+            if optimize:
+                writer = writer.option("optimizeWrite", "true")
             if compression:
                 writer = writer.option("compression", compression)
             writer.saveAsTable(fqn)

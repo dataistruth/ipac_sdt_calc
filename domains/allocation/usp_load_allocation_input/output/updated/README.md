@@ -40,7 +40,7 @@ Override codec: `checkpoint_compression="snappy"` (default is `uncompressed`).
 | Step | When |
 |------|------|
 | `alloc_input` | After phase 6c |
-| `base_flowup` | Inside flowup — `post-base` / `post-reclass` / `post-zero` |
+| `base_flowup` | Inside flowup — `post-reclass` (if reclass), `post-zero` (monolith parity) |
 | `pfic_flowup` | After phase 7b |
 | `alloc_filtered` | After post-filters |
 | `alloc_tagged` | After phase 8 (if investment tag workflow active) |
