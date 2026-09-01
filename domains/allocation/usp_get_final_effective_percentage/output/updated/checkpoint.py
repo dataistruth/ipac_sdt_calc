@@ -20,8 +20,6 @@ _CONSERVATIVE_BYPASSES = frozenset(
     {
         "underlyings_common",
         "nde_post_miss_fused",
-        "eff_dt_fused",
-        "eff_nd_fused",
     }
 )
 CHECKPOINT_PROFILES = {

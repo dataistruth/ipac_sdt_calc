@@ -29,17 +29,32 @@ and the production reference under `sdt_d` are not modified.
 
 4. **Checkpoint profiles**
    - `full`: writes every production lineage break.
-   - `conservative` (default): bypasses four single-consumer checkpoints that
+   - `conservative` (default): bypasses two single-consumer checkpoints that
      are immediately followed by retained materialization barriers:
-     `underlyings_common`, `nde_post_miss_fused`, `eff_dt_fused`, and
-     `eff_nd_fused`.
+     `underlyings_common` and `nde_post_miss_fused`.
    - `balanced`: also bypasses `all_ent_pre_tag_m0` and `eff_dated_s6_m0`.
      Promote this profile only after multi-pass parity and performance testing.
+
+   `eff_dt_fused` and `eff_nd_fused` remain enabled. Benchmarking showed that
+   bypassing them moved their lineage into `apply_plugging` and made
+   `eff_nd_plug_fused` materially slower.
 
    High-fan-out and plan-size circuit breakers remain enabled, including the
    common inputs, pre-CPBT inputs, `tcp_post_et_m0`, `all_ent_m0`,
    `parent_ord_m0`, `eff_dated_s5_m0`, and
    `pickup_order_dated_pre_yearly`.
+
+5. **Candidate-claim CPBT**
+   - The six direct Underlying Only, Entity Total, and Asset Class priority
+     tiers are built as one candidate union.
+   - `row_number` ranks distinct claim keys, not payload rows. Winning claims
+     are joined back to the candidate payload so every valid partner and
+     quarter row is preserved.
+   - Existing cost-percentage keys have absolute priority.
+   - `tcp_post_et_m0` remains after the direct candidate wave and
+     `parent_ord_m0` remains in the unchanged parent hierarchy tail.
+   - Parent, transfer, tag, and empty-key matching stay sequential because
+     each stage depends on the remaining set produced by the prior stage.
 
 ## Entry point
 

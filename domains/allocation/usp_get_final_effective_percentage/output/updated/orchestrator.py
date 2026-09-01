@@ -21,6 +21,10 @@ from .checkpoint import (
     normalize_checkpoint_profile,
     start_checkpoint_run,
 )
+from .cost_pct_loader import (
+    OPTIMIZATION_PROFILE_MARKER as CPBT_OPTIMIZATION_PROFILE,
+    build_cost_percentage_by_type as build_cost_percentage_by_type_optimized,
+)
 from .parent import isolated_output_module
 from .read_optimizations import (
     build_lookthrough_input_modes14,
@@ -75,6 +79,7 @@ _base._drop_checkpoints = drop_checkpoints
 _base.load_line_items = load_line_items
 _base.load_quarters = load_quarters
 _base.build_lookthrough_input_modes14 = build_lookthrough_input_modes14
+_base.build_cost_percentage_by_type = build_cost_percentage_by_type_optimized
 
 _TIMED_GLOBALS = (
     "load_config",
@@ -203,6 +208,7 @@ def _run_with_timings(
             "updated_wall_seconds": wall,
             "timings": summary,
             "checkpoint_summary": checkpoint_summary,
+            "cpbt_profile": CPBT_OPTIMIZATION_PROFILE,
         }
     )
     if isinstance(result, dict):
@@ -212,6 +218,7 @@ def _run_with_timings(
         result["optimization_profile"] = {
             "checkpoint_backend": "uc_delta_stats_off",
             "checkpoint_profile": profile,
+            "cpbt_profile": CPBT_OPTIMIZATION_PROFILE,
             "logging_only_probe_actions_removed": 3,
         }
     return result
