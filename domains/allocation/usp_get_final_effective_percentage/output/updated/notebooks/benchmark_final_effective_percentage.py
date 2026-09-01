@@ -95,34 +95,57 @@ def _import_fresh(module_name: str):
 
 
 def _assert_updated_package_synced() -> None:
-    """Fail early with a clear message if the updated folder is partially synced.
+    """Fail early if updated modules are missing from the Python package path.
 
-    The updated package imports its own submodules relatively, so one missing
-    file (historically cost_pct_loader.py) surfaces as a confusing
-    ModuleNotFoundError deep in the run. Check them up front instead.
+    import-dir must target output/updated, not output/updated/notebooks.
+    Python imports ...output.updated.cost_pct_loader from that parent folder.
     """
-    updated_pkg = f"{PACKAGE}.output.updated"
+    updated_dir = os.path.join(
+        source_path,
+        *PACKAGE.split("."),
+        "output",
+        "updated",
+    )
+    notebooks_dir = os.path.join(updated_dir, "notebooks")
     required = [
-        "parent",
-        "checkpoint",
-        "read_optimizations",
-        "cost_pct_loader",
-        "output_reconcile",
-        "orchestrator",
+        "parent.py",
+        "checkpoint.py",
+        "read_optimizations.py",
+        "cost_pct_loader.py",
+        "output_reconcile.py",
+        "orchestrator.py",
+        "__init__.py",
     ]
-    missing = []
-    for name in required:
-        if importlib.util.find_spec(f"{updated_pkg}.{name}") is None:
-            missing.append(name)
+    print(f"[sync check] package dir: {updated_dir}")
+    print(f"[sync check] exists: {os.path.isdir(updated_dir)}")
+    if os.path.isdir(updated_dir):
+        print(f"[sync check] files: {sorted(os.listdir(updated_dir))}")
+    misplaced = [
+        name
+        for name in required
+        if os.path.isfile(os.path.join(notebooks_dir, name))
+        and not os.path.isfile(os.path.join(updated_dir, name))
+    ]
+    missing = [
+        name
+        for name in required
+        if not os.path.isfile(os.path.join(updated_dir, name))
+    ]
+    if misplaced:
+        raise ModuleNotFoundError(
+            "Updated modules were imported into output/updated/notebooks/ "
+            "instead of output/updated/. Move them up one folder, or rerun "
+            "import-dir with destination "
+            ".../usp_get_final_effective_percentage/output/updated "
+            f"(found in notebooks/: {', '.join(misplaced)})"
+        )
     if missing:
         raise ModuleNotFoundError(
-            "output/updated is partially synced. Missing module(s): "
-            + ", ".join(f"{updated_pkg}.{m}" for m in missing)
-            + ". Resync the ENTIRE output/updated/ folder and restart Python."
+            "output/updated is missing files on the Python path "
+            f"{updated_dir}: {', '.join(missing)}. "
+            "Resync that folder (not notebooks/) and restart Python."
         )
 
-
-import importlib.util  # noqa: E402  (needed for the sync check above)
 
 _assert_updated_package_synced()
 
