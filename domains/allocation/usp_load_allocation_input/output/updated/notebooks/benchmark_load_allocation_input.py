@@ -55,13 +55,19 @@ dbutils.widgets.text(
 dbutils.widgets.text(
     "parallel_workers",
     "4",
-    "4. Parallel workers (updated: shared views + flow-up writes)",
+    "4. Parallel workers (updated: all parallel stages)",
 )
 dbutils.widgets.dropdown(
     "parallel_validations",
     "true",
     ["false", "true"],
     "4b. Parallel validation checks (updated only)",
+)
+dbutils.widgets.dropdown(
+    "parallel_finalize",
+    "true",
+    ["false", "true"],
+    "4c. Parallel result collection (updated only)",
 )
 dbutils.widgets.text(
     "source_path",
@@ -92,6 +98,7 @@ catalog_name = dbutils.widgets.get("CatalogName").strip()
 schema_name = dbutils.widgets.get("SchemaName").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
 parallel_validations = dbutils.widgets.get("parallel_validations").strip().lower() == "true"
+parallel_finalize = dbutils.widgets.get("parallel_finalize").strip().lower() == "true"
 
 if parallel_workers < 1:
     raise ValueError("parallel_workers must be >= 1")
@@ -263,10 +270,9 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
     }
     if variant == "updated":
         run_kwargs["VolumePath"] = volume_path
-        run_kwargs["parallel_config_workers"] = parallel_workers
-        run_kwargs["parallel_write_workers"] = parallel_workers
+        run_kwargs["parallel_workers"] = parallel_workers
         run_kwargs["parallel_validations"] = parallel_validations
-        run_kwargs["validation_workers"] = parallel_workers
+        run_kwargs["parallel_finalize"] = parallel_finalize
 
     started_at = datetime.now()
     t0 = time.time()

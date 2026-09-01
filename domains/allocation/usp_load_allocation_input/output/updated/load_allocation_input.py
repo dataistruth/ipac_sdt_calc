@@ -131,6 +131,8 @@ def run_load_allocation_input(
     execution_id: str = None,
     call_from: str = None,
     CallFrom: str = None,
+    parallel_workers: int = None,
+    ParallelWorkers: int = None,
     parallel_config_workers: int = None,
     ParallelConfigWorkers: int = None,
     parallel_write_workers: int = None,
@@ -139,6 +141,10 @@ def run_load_allocation_input(
     ParallelValidations: bool = None,
     validation_workers: int = None,
     ValidationWorkers: int = None,
+    parallel_finalize: bool = None,
+    ParallelFinalize: bool = None,
+    finalize_workers: int = None,
+    FinalizeWorkers: int = None,
     **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
@@ -171,13 +177,24 @@ def run_load_allocation_input(
                 return n
         return max(1, default)
 
+    # One common worker count drives every parallel stage (config, writes,
+    # validations, finalize). Stage-specific overrides still win if provided.
+    base_workers = _worker_count(
+        parallel_workers,
+        ParallelWorkers,
+        kwargs.get("parallel_workers"),
+        kwargs.get("ParallelWorkers"),
+        cfg.get("parallel_workers") if cfg else None,
+        default=4,
+    )
+
     parallel_config_workers = _worker_count(
         parallel_config_workers,
         ParallelConfigWorkers,
         kwargs.get("parallel_config_workers"),
         kwargs.get("ParallelConfigWorkers"),
         cfg.get("parallel_config_workers") if cfg else None,
-        default=4,
+        default=base_workers,
     )
     parallel_write_workers = _worker_count(
         parallel_write_workers,
@@ -185,7 +202,7 @@ def run_load_allocation_input(
         kwargs.get("parallel_write_workers"),
         kwargs.get("ParallelWriteWorkers"),
         cfg.get("parallel_write_workers") if cfg else None,
-        default=parallel_config_workers,
+        default=base_workers,
     )
 
     if cfg is None:
@@ -209,6 +226,7 @@ def run_load_allocation_input(
     cfg.setdefault("checkpoint_use_production", False)
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
+    cfg["parallel_workers"] = base_workers
     cfg["parallel_config_workers"] = parallel_config_workers
     cfg["parallel_write_workers"] = parallel_write_workers
     cfg.setdefault("parallel_validations", True)
@@ -223,7 +241,21 @@ def run_load_allocation_input(
         validation_workers,
         ValidationWorkers,
         cfg.get("validation_workers"),
-        default=parallel_config_workers,
+        default=base_workers,
+    )
+    cfg.setdefault("parallel_finalize", True)
+    _parallel_finalize = parallel_finalize
+    if _parallel_finalize is None:
+        _parallel_finalize = ParallelFinalize
+    if _parallel_finalize is not None:
+        if isinstance(_parallel_finalize, str):
+            _parallel_finalize = _parallel_finalize.strip().lower() in ("1", "true", "yes", "on")
+        cfg["parallel_finalize"] = bool(_parallel_finalize)
+    cfg["finalize_workers"] = _worker_count(
+        finalize_workers,
+        FinalizeWorkers,
+        cfg.get("finalize_workers"),
+        default=base_workers,
     )
     cfg.setdefault("write_compression", "uncompressed")
     cfg.setdefault("checkpoint_compression", cfg.get("write_compression", "uncompressed"))
@@ -238,8 +270,9 @@ def run_load_allocation_input(
         print(f"[checkpoint] flow-up outputs volume: {cfg['volume_path']}")
     log_checkpoint_plan(cfg)
     print(
-        f"[updated] parallel_config_workers={cfg['parallel_config_workers']} "
-        f"parallel_write_workers={cfg['parallel_write_workers']}"
+        f"[updated] parallel_workers={cfg['parallel_workers']} "
+        f"(config={cfg['parallel_config_workers']} write={cfg['parallel_write_workers']} "
+        f"validation={cfg['validation_workers']} finalize={cfg['finalize_workers']})"
     )
     print("[updated] PFIC flowup: output.updated.ai_pfic_flowup_service")
     write_workers = cfg["parallel_write_workers"]
@@ -249,6 +282,11 @@ def run_load_allocation_input(
         print(
             f"[validations] parallel warning checks: max_workers={cfg['validation_workers']} "
             "(gating checks stay sequential)"
+        )
+    if cfg.get("parallel_finalize"):
+        print(
+            f"[finalize] parallel result collection: max_workers={cfg['finalize_workers']} "
+            "(AllocationInput + PFIC + form flow-ups)"
         )
     if str(cfg.get("write_compression", "")).lower() in ("uncompressed", "none"):
         print("[write] parquet compression: uncompressed (Delta + flow-up outputs)")
@@ -339,9 +377,16 @@ def run_load_allocation_input(
         )
 
     with timer.step("phase_9_write_outputs"):
-        write_allocation_input(spark, cfg, allocation_input_df)
-        write_pfic_flowup(spark, cfg, pfic_flowup_df)
-        write_form_flowups(spark, cfg)
+        if cfg.get("parallel_finalize"):
+            from .finalize_parallel import collect_results_parallel
+            collect_results_parallel(
+                spark, cfg, allocation_input_df, pfic_flowup_df,
+                workers=cfg.get("finalize_workers", 3),
+            )
+        else:
+            write_allocation_input(spark, cfg, allocation_input_df)
+            write_pfic_flowup(spark, cfg, pfic_flowup_df)
+            write_form_flowups(spark, cfg)
 
     parquet_results = cfg.get("_parquet_results", {})
     run_id = cfg["run_id"]

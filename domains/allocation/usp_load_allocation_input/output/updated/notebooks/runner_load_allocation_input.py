@@ -25,13 +25,19 @@ dbutils.widgets.dropdown(
 dbutils.widgets.text(
     "parallel_workers",
     "4",
-    "2. Parallel workers (shared views + flow-up writes)",
+    "2. Parallel workers (all parallel stages)",
 )
 dbutils.widgets.dropdown(
     "parallel_validations",
     "true",
     ["false", "true"],
     "2b. Parallel validation checks",
+)
+dbutils.widgets.dropdown(
+    "parallel_finalize",
+    "true",
+    ["false", "true"],
+    "2c. Parallel result collection (phase 9)",
 )
 dbutils.widgets.text(
     "volume_path",
@@ -47,12 +53,14 @@ dbutils.widgets.text(
 module_stem = dbutils.widgets.get("module_stem").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
 parallel_validations = dbutils.widgets.get("parallel_validations").strip().lower() == "true"
+parallel_finalize = dbutils.widgets.get("parallel_finalize").strip().lower() == "true"
 volume_path = dbutils.widgets.get("volume_path").strip()
 source_path = dbutils.widgets.get("source_path").strip()
 
 print(f"module_stem         : {module_stem}")
 print(f"parallel_workers    : {parallel_workers}")
 print(f"parallel_validations: {parallel_validations}")
+print(f"parallel_finalize   : {parallel_finalize}")
 print(f"volume_path         : {volume_path}")
 
 import os
@@ -117,10 +125,9 @@ result = lt_runner.run_load_allocation_input(
     CatalogName="QA7",
     SchemaName="IPC_2025_QA7_15348",
     VolumePath=volume_path,
-    parallel_config_workers=parallel_workers,
-    parallel_write_workers=parallel_workers,
+    parallel_workers=parallel_workers,
     parallel_validations=parallel_validations,
-    validation_workers=parallel_workers,
+    parallel_finalize=parallel_finalize,
 )
 
 print(f"Elapsed: {datetime.now() - beginning_time}")
