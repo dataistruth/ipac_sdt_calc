@@ -30,7 +30,7 @@ dbutils.widgets.text(
 dbutils.widgets.text(
     "volume_path",
     "/Volumes/qa7/datavolume/databrickdata/checkpoint",
-    "3. VolumePath (checkpoints + flow-up outputs)",
+    "3. VolumePath (flow-up outputs)",
 )
 dbutils.widgets.text(
     "source_path",

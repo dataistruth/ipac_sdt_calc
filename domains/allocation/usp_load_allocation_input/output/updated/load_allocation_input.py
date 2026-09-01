@@ -23,6 +23,7 @@ from .checkpoint import (
     log_checkpoint_plan,
     pipeline_checkpoint,
     should_checkpoint,
+    _use_production_checkpoint,
 )
 from .step_timer import StepTimer
 from .shared_views import register_shared_views_parallel
@@ -134,8 +135,6 @@ def run_load_allocation_input(
     ParallelConfigWorkers: int = None,
     parallel_write_workers: int = None,
     ParallelWriteWorkers: int = None,
-    checkpoint_backend: str = None,
-    CheckpointBackend: str = None,
     **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
@@ -201,43 +200,24 @@ def run_load_allocation_input(
 
     cfg.setdefault("_checkpoint_tables", [])
     cfg.setdefault("_parquet_results", {})
-    cfg.setdefault("_checkpoint_paths", [])
-    _ckpt_backend = (
-        checkpoint_backend
-        or CheckpointBackend
-        or kwargs.get("checkpoint_backend")
-        or kwargs.get("CheckpointBackend")
-        or cfg.get("checkpoint_backend")
-    )
-    if _ckpt_backend:
-        cfg["checkpoint_backend"] = str(_ckpt_backend).strip().lower()
     if volume_path:
         cfg["volume_path"] = volume_path.strip()
-        cfg.setdefault("checkpoint_backend", "volume")
-        cfg.setdefault("checkpoint_use_production", False)
-    from .checkpoint import _resolve_backend
-
-    _backend = _resolve_backend(cfg)
-    _comp = cfg.get("checkpoint_compression", "uncompressed")
-    if volume_path:
-        print(
-            f"[checkpoint] backend={_backend} compression={_comp} | "
-            f"checkpoints: {cfg['volume_path']}/_checkpoints/ | "
-            f"flow-up outputs: {cfg['volume_path']}"
-        )
-    else:
-        print(f"[checkpoint] backend={_backend} compression={_comp}")
+    cfg.setdefault("checkpoint_use_production", False)
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
     cfg["parallel_config_workers"] = parallel_config_workers
     cfg["parallel_write_workers"] = parallel_write_workers
     cfg.setdefault("write_compression", "uncompressed")
     cfg.setdefault("checkpoint_compression", cfg.get("write_compression", "uncompressed"))
-    if _backend == "volume":
+    if _use_production_checkpoint(cfg):
+        print("[checkpoint] pipeline breaks: Common_V2.core.checkpoint (sdt_d production, stats on)")
+    else:
         print(
-            "[checkpoint] pipeline breaks: UC Volume Parquet "
-            "(serverless-safe; skips UC Delta table commits)"
+            "[checkpoint] pipeline breaks: fast UC temp Delta "
+            "(data-skipping stats disabled, uncompressed)"
         )
+    if volume_path:
+        print(f"[checkpoint] flow-up outputs volume: {cfg['volume_path']}")
     log_checkpoint_plan(cfg)
     print(
         f"[updated] parallel_config_workers={cfg['parallel_config_workers']} "
@@ -502,7 +482,6 @@ def run_load_allocation_input(
         "tracked_step_seconds": timer.total_elapsed_seconds(),
         "timings": timer.as_dict_list(),
         "implementation": "updated.load_allocation_input",
-        "checkpoint_backend": cfg.get("checkpoint_backend"),
         "volume_path": cfg.get("volume_path") or "",
         "parallel_write_workers": int(cfg.get("parallel_write_workers", 1) or 1),
         "parallel_config_workers": int(cfg.get("parallel_config_workers", 1) or 1),

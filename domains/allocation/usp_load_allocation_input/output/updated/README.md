@@ -25,16 +25,21 @@ result = run_load_allocation_input(
 )
 ```
 
-## Checkpoints (default: UC Volume Parquet when `VolumePath` is set)
+## Checkpoints (fast UC temp Delta, stats disabled)
 
-Pipeline lineage breaks write Parquet to `{VolumePath}/_checkpoints/{RunID}/` — serverless-safe and faster than UC Delta temp tables.
+Pipeline lineage breaks write throwaway `_tmp_*` UC Delta tables with **Delta
+data-skipping statistics disabled** (`delta.dataSkippingNumIndexedCols=0` +
+`spark.databricks.delta.stats.collect=false`) and **uncompressed Parquet**. Checkpoints
+are read back once and dropped, so per-column min/max stats add write cost with no benefit.
 
-| Backend | When |
-|---------|------|
-| `volume` (default with `VolumePath`) | Parquet on volume, `compression=uncompressed` |
-| `delta` | UC temp tables — `checkpoint_backend="delta"` |
+`VolumePath` is only for **final flow-up outputs** (GenericResultStorer), not checkpoints.
 
-Override codec: `checkpoint_compression="snappy"` (default is `uncompressed`).
+| Backend | Flag | Behavior |
+|---------|------|----------|
+| `fast_delta` (default) | — | Temp Delta, stats off, uncompressed |
+| `Common_V2` | `checkpoint_use_production=True` | Exact production parity (stats on, snappy) |
+
+Cfg toggles: `checkpoint_disable_stats` (default `True`), `checkpoint_compression` (default `uncompressed`).
 
 | Step | When |
 |------|------|
@@ -46,19 +51,6 @@ Override codec: `checkpoint_compression="snappy"` (default is `uncompressed`).
 | `alloc_filtered` | After post-filters |
 | `alloc_tagged` | After phase 8 (if investment tag workflow active) |
 
-`VolumePath` is used for **checkpoints** (`_checkpoints/`) and **final flow-up outputs**.
-
 ## Phase 7a optimizations (broadcast / cache)
 
-Kept in `updated.ai_pfic_flowup_service`:
-
-- Broadcast `_pfic_line_item`, `_entity`, `_fx_avg_rate`
-- Cached `_lower_tier_funds_{run_id}`
-- Broadcast `PficForeignCorpClassificationInput`, cached `_zero_fa_only_ids`
-- `register_reclass_unblocked`, `reclass_wf_id > 0` gate
-
-## Other optimizations
-
-- Parallel shared view registration (`parallel_config_workers`, default 4)
-- Parallel flow-up Delta writes (`parallel_write_workers`, default 4)
-- Uncompressed Parquet on checkpoints and final outputs
+See `ai_pfic_flowup_service.py` — RunID partition pruning, parallel shared views, etc.

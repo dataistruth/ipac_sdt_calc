@@ -12,7 +12,7 @@ Production `output/load_allocation_input.py` and `output/ai_*.py` stay on monoli
 | `ai_pfic_flowup_service.py` | YES | Optimized PFIC flowup (replaces monolith for updated run) |
 | `parent.py` | YES | Imports `ai_*.py` siblings from monolith `output/` |
 | `step_timer.py` | YES | Per-step timers |
-| `checkpoint.py` | YES | Volume Parquet checkpoints on `volume_path/_checkpoints/` (serverless-safe) |
+| `checkpoint.py` | YES | Fast UC temp Delta (stats off); `checkpoint_use_production=True` for Common_V2 parity |
 | `flowup_run_filter.py` | YES | RunID partition pruning (`read_local_run_table`, `read_lower_tier_flowup`) |
 | `output_reconcile.py` | YES | Benchmark output parity (row counts / bytes vs original) |
 | `parallel_config.py` | YES | Thread pool for parallel shared views |

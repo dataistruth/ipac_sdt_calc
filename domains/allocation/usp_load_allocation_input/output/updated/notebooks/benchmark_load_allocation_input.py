@@ -13,7 +13,7 @@
 # MAGIC
 # MAGIC For each pass (`1` … `number_of_run`):
 # MAGIC 1. **`output.load_allocation_input`** — production (original)
-# MAGIC 2. **`output.updated.load_allocation_input`** — volume checkpoints, parallel views/writes, uncompressed
+# MAGIC 2. **`output.updated.load_allocation_input`** — parallel views/writes, UC Delta checkpoints, uncompressed
 # MAGIC
 # MAGIC Records wall time, reported `elapsed_seconds`, and per-pass delta.
 # MAGIC
@@ -24,7 +24,7 @@
 # MAGIC | `sp_name` | SP folder under `AllocationV2/` |
 # MAGIC | `number_of_run` | A/B passes (original → updated each pass) |
 # MAGIC | `parallel_workers` | Shared views + flow-up writes (`updated` only); default `4` |
-# MAGIC | `volume_path` | UC volume for checkpoints + flow-up outputs (`updated` only) |
+# MAGIC | `volume_path` | UC volume for flow-up outputs (`updated` only) |
 # MAGIC | `source_path` | Monolith `Source/` on `sys.path` |
 # MAGIC | Run params | `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`, `CatalogName`, `SchemaName` |
 # MAGIC
@@ -65,7 +65,7 @@ dbutils.widgets.text(
 dbutils.widgets.text(
     "volume_path",
     "/Volumes/qa7/datavolume/databrickdata/checkpoint",
-    "6. VolumePath (checkpoints + flow-up outputs)",
+    "6. VolumePath (flow-up outputs)",
 )
 dbutils.widgets.text("EntityID", "115", "8. EntityID")
 dbutils.widgets.text("ClientID", "15348", "9. ClientID")

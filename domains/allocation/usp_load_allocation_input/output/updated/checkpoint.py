@@ -1,19 +1,19 @@
 """
 checkpoint.py — lineage breaks for updated package.
 
-Pipeline checkpoints use UC Volume Parquet when volume_path is set (serverless-safe,
-faster than UC Delta temp tables). Set checkpoint_backend=delta only to force UC Delta.
+Default: fast UC temp Delta — DROP + overwrite with Delta data-skipping stats
+collection DISABLED (delta.dataSkippingNumIndexedCols=0 + stats.collect=false) and
+uncompressed Parquet. Checkpoints are throwaway lineage breaks, so min/max column
+stats add write cost with zero benefit. Set checkpoint_use_production=True to match
+sdt_d Common_V2.core.checkpoint exactly (stats on first 32 cols).
 
-Default steps match sdt_d output.load_allocation_input:
-  pfic_snapshot, alloc_input, base_flowup, pfic_raw, pfic_flowup,
-  alloc_filtered (+ alloc_tagged if tagged).
+Steps: pfic_snapshot, alloc_input, base_flowup, pfic_raw, pfic_flowup,
+alloc_filtered (+ alloc_tagged if tagged).
 
 Cfg (optional):
-  volume_path: required for volume checkpoints + final flow-up outputs
-  checkpoint_backend: "auto" | "volume" | "delta"
-    auto + volume_path → volume (default for updated package)
-  checkpoint_compression: parquet codec (default: uncompressed)
-  checkpoint_use_production: UC Delta via Common_V2 when backend=delta (default: False)
+  checkpoint_use_production: use Common_V2.core.checkpoint (default: False)
+  checkpoint_disable_stats: skip Delta stats collection on temp writes (default: True)
+  checkpoint_compression: temp Delta parquet codec (default: uncompressed)
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
 
@@ -69,21 +68,6 @@ def should_checkpoint(cfg: dict, step_name: str) -> bool:
     return True
 
 
-def _resolve_backend(cfg: dict) -> str:
-    mode = str(cfg.get("checkpoint_backend", "auto")).strip().lower()
-    volume = str(cfg.get("volume_path") or "").strip()
-    if mode == "delta":
-        return "delta"
-    if mode == "volume" or (mode == "auto" and volume):
-        if not volume:
-            raise ValueError(
-                "Volume checkpoint requires volume_path "
-                "(e.g. /Volumes/qa7/datavolume/databrickdata/checkpoint)"
-            )
-        return "volume"
-    return "delta"
-
-
 def _checkpoint_compression(cfg: dict) -> str | None:
     raw = str(
         cfg.get("checkpoint_compression")
@@ -98,19 +82,19 @@ def _checkpoint_compression(cfg: dict) -> str | None:
 
 
 def log_checkpoint_plan(cfg: dict) -> None:
-    backend = _resolve_backend(cfg)
     all_steps = CHECKPOINT_STEPS | OPT_IN_CHECKPOINT_STEPS
     enabled = sorted(name for name in all_steps if should_checkpoint(cfg, name))
-    comp = _checkpoint_compression(cfg) if backend in ("delta", "volume") else None
+    if _use_production_checkpoint(cfg):
+        print(f"[checkpoint] backend=Common_V2 (stats on) steps={enabled}")
+        return
+    comp = _checkpoint_compression(cfg)
     comp_note = f" compression={comp}" if comp else ""
-    vol = str(cfg.get("volume_path") or "").strip()
-    vol_note = f" volume_path={vol}" if backend == "volume" and vol else ""
-    print(f"[checkpoint] backend={backend}{comp_note}{vol_note} steps={enabled}")
+    stats_note = " stats=off" if _disable_stats(cfg) else " stats=on"
+    print(f"[checkpoint] backend=fast_delta{comp_note}{stats_note} steps={enabled}")
 
 
 def _ensure_checkpoint_lists(cfg: dict) -> None:
     cfg.setdefault("_checkpoint_tables", [])
-    cfg.setdefault("_checkpoint_paths", [])
 
 
 def _is_transient_uc_error(exc: BaseException) -> bool:
@@ -127,27 +111,11 @@ def _is_transient_uc_error(exc: BaseException) -> bool:
     return any(n in msg for n in needles)
 
 
-def _volume_checkpoint_path(cfg: dict, name: str, uniq: str) -> str:
-    base = str(cfg.get("volume_path") or "").rstrip("/")
-    run_id = cfg.get("run_id", 0)
-    return f"{base}/_checkpoints/{run_id}/{name}_{uniq}"
+_DELTA_STATS_COLLECT_KEY = "spark.databricks.delta.stats.collect"
 
 
-def _dbutils(spark: SparkSession) -> Any | None:
-    try:
-        from pyspark.dbutils import DBUtils
-
-        return DBUtils(spark)
-    except Exception:
-        return None
-
-
-def _rm_path(spark: SparkSession, path: str) -> None:
-    dbu = _dbutils(spark)
-    if dbu is not None:
-        dbu.fs.rm(path, recurse=True)
-        return
-    logger.warning(f"[CHECKPOINT] No dbutils — could not remove path: {path}")
+def _disable_stats(cfg: dict) -> bool:
+    return bool(cfg.get("checkpoint_disable_stats", True))
 
 
 def _write_delta_checkpoint(
@@ -158,30 +126,58 @@ def _write_delta_checkpoint(
 ) -> DataFrame:
     compression = _checkpoint_compression(cfg)
     optimize = bool(cfg.get("checkpoint_delta_optimize_write", False))
-    for attempt in range(1, _CHECKPOINT_MAX_RETRIES + 1):
+    disable_stats = _disable_stats(cfg)
+
+    prev_stats: str | None = None
+    stats_conf_set = False
+    if disable_stats:
         try:
-            spark.sql(f"DROP TABLE IF EXISTS {fqn}")
-            writer = (
-                df.write.format("delta")
-                .mode("overwrite")
-                .option("overwriteSchema", "true")
-            )
-            if optimize:
-                writer = writer.option("optimizeWrite", "true")
-            if compression:
-                writer = writer.option("compression", compression)
-            writer.saveAsTable(fqn)
-            return spark.table(fqn)
-        except Exception as exc:
-            if _is_transient_uc_error(exc) and attempt < _CHECKPOINT_MAX_RETRIES:
-                logger.warning(
-                    f"[CHECKPOINT] Transient UC error on attempt "
-                    f"{attempt}/{_CHECKPOINT_MAX_RETRIES}: {exc}"
-                )
+            prev_stats = spark.conf.get(_DELTA_STATS_COLLECT_KEY)
+        except Exception:
+            prev_stats = None
+        try:
+            spark.conf.set(_DELTA_STATS_COLLECT_KEY, "false")
+            stats_conf_set = True
+        except Exception:
+            stats_conf_set = False
+
+    try:
+        for attempt in range(1, _CHECKPOINT_MAX_RETRIES + 1):
+            try:
                 spark.sql(f"DROP TABLE IF EXISTS {fqn}")
-                time.sleep(_CHECKPOINT_RETRY_DELAY * attempt)
-                continue
-            raise
+                writer = (
+                    df.write.format("delta")
+                    .mode("overwrite")
+                    .option("overwriteSchema", "true")
+                )
+                if disable_stats:
+                    # Table property: index 0 columns → no min/max/null stats on write.
+                    writer = writer.option("delta.dataSkippingNumIndexedCols", "0")
+                if optimize:
+                    writer = writer.option("optimizeWrite", "true")
+                if compression:
+                    writer = writer.option("compression", compression)
+                writer.saveAsTable(fqn)
+                return spark.table(fqn)
+            except Exception as exc:
+                if _is_transient_uc_error(exc) and attempt < _CHECKPOINT_MAX_RETRIES:
+                    logger.warning(
+                        f"[CHECKPOINT] Transient UC error on attempt "
+                        f"{attempt}/{_CHECKPOINT_MAX_RETRIES}: {exc}"
+                    )
+                    spark.sql(f"DROP TABLE IF EXISTS {fqn}")
+                    time.sleep(_CHECKPOINT_RETRY_DELAY * attempt)
+                    continue
+                raise
+    finally:
+        if stats_conf_set:
+            try:
+                if prev_stats is not None:
+                    spark.conf.set(_DELTA_STATS_COLLECT_KEY, prev_stats)
+                else:
+                    spark.conf.unset(_DELTA_STATS_COLLECT_KEY)
+            except Exception:
+                pass
 
 
 def _use_production_checkpoint(cfg: dict) -> bool:
@@ -194,8 +190,8 @@ def pipeline_checkpoint(
     name: str,
     cfg: dict,
 ) -> DataFrame:
-    """Volume Parquet when volume_path is set; optional UC Delta via Common_V2."""
-    if _use_production_checkpoint(cfg) and _resolve_backend(cfg) == "delta":
+    """UC Delta lineage break — fast temp Delta (stats off) by default."""
+    if _use_production_checkpoint(cfg):
         return checkpoint_production(spark, df, name, cfg)
     return checkpoint(spark, df, name, cfg)
 
@@ -236,11 +232,12 @@ def checkpoint_production(
         prod_cfg = dict(cfg)
         prod_cfg["checkpoint_compression"] = "default"
         prod_cfg["write_compression"] = "default"
+        prod_cfg["checkpoint_disable_stats"] = False  # match production (stats on)
         return _write_delta_checkpoint(spark, df, fqn, prod_cfg)
 
 
 def drop_checkpoints(spark: SparkSession, cfg: dict) -> None:
-    """Drop UC temp tables and volume checkpoint paths tracked in cfg."""
+    """Drop UC temp checkpoint tables tracked in cfg."""
     try:
         from Common_V2.core.checkpoint import drop_checkpoints as core_drop
 
@@ -253,40 +250,6 @@ def drop_checkpoints(spark: SparkSession, cfg: dict) -> None:
                 logger.warning(f"[CHECKPOINT] Failed to drop table {fqn}: {exc}")
         cfg["_checkpoint_tables"] = []
 
-    for path in cfg.get("_checkpoint_paths", []):
-        try:
-            _rm_path(spark, path)
-        except Exception as exc:
-            logger.warning(f"[CHECKPOINT] Failed to remove path {path}: {exc}")
-    cfg["_checkpoint_paths"] = []
-
-
-def _write_volume_checkpoint(
-    spark: SparkSession,
-    df: DataFrame,
-    path: str,
-    cfg: dict,
-) -> DataFrame:
-    compression = _checkpoint_compression(cfg) or "uncompressed"
-    for attempt in range(1, _CHECKPOINT_MAX_RETRIES + 1):
-        try:
-            _rm_path(spark, path)
-            (
-                df.write.mode("overwrite")
-                .option("compression", compression)
-                .parquet(path)
-            )
-            return spark.read.parquet(path)
-        except Exception as exc:
-            if attempt < _CHECKPOINT_MAX_RETRIES:
-                logger.warning(
-                    f"[CHECKPOINT] Volume write retry "
-                    f"{attempt}/{_CHECKPOINT_MAX_RETRIES}: {exc}"
-                )
-                time.sleep(_CHECKPOINT_RETRY_DELAY * attempt)
-                continue
-            raise
-
 
 def checkpoint(
     spark: SparkSession,
@@ -294,21 +257,14 @@ def checkpoint(
     name: str,
     cfg: dict,
 ) -> DataFrame:
-    """Materialize df: volume Parquet (default when volume_path set) or UC Delta."""
+    """Fast UC temp Delta break: DROP + overwrite, stats off, uncompressed."""
     _ensure_checkpoint_lists(cfg)
     run_id = cfg.get("run_id", 0)
     uniq = uuid.uuid4().hex[:8]
-    backend = _resolve_backend(cfg)
-
-    if backend == "volume":
-        path = _volume_checkpoint_path(cfg, name, uniq)
-        cfg["_checkpoint_paths"].append(path)
-        logger.info(f"[CHECKPOINT] volume write: {path}")
-        return _write_volume_checkpoint(spark, df, path, cfg)
-
     fqn = f"{table_prefix(cfg)}._tmp_{name}_{run_id}_{uniq}"
     cfg["_checkpoint_tables"].append(fqn)
     comp = _checkpoint_compression(cfg)
     comp_note = f" compression={comp}" if comp else ""
-    logger.info(f"[CHECKPOINT] delta write: {fqn}{comp_note}")
+    stats_note = " stats=off" if _disable_stats(cfg) else ""
+    logger.info(f"[CHECKPOINT] fast delta write: {fqn}{comp_note}{stats_note}")
     return _write_delta_checkpoint(spark, df, fqn, cfg)
