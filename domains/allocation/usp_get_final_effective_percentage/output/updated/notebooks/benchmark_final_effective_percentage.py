@@ -162,23 +162,71 @@ for pass_number in range(1, number_of_runs + 1):
 
 # COMMAND ----------
 
+from pyspark.sql.types import (
+    DoubleType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
+
+# Explicit schemas avoid [CANNOT_DETERMINE_TYPE]: reported_seconds is None for
+# the original variant, and timing/summary columns can be entirely null.
+_summary_schema = StructType([
+    StructField("pass", LongType(), True),
+    StructField("variant", StringType(), True),
+    StructField("wall_seconds", DoubleType(), True),
+    StructField("reported_seconds", DoubleType(), True),
+    StructField("total_rows", LongType(), True),
+    StructField("tables_with_rows", LongType(), True),
+])
+
+
+def _as_float(value):
+    return float(value) if value is not None else None
+
+
+def _as_int(value):
+    return int(value) if value is not None else None
+
+
 summary_rows = [
-    {
-        "pass": row["pass"],
-        "variant": row["variant"],
-        "wall_seconds": row["wall_seconds"],
-        "reported_seconds": row["reported_seconds"],
-        "total_rows": row["summary"]["total_rows"],
-        "tables_with_rows": row["summary"]["tables_with_rows"],
-    }
+    (
+        _as_int(row["pass"]),
+        row["variant"],
+        _as_float(row["wall_seconds"]),
+        _as_float(row["reported_seconds"]),
+        _as_int(row["summary"]["total_rows"]),
+        _as_int(row["summary"]["tables_with_rows"]),
+    )
     for row in records
 ]
-display(spark.createDataFrame(summary_rows).orderBy("pass", "variant"))
+if summary_rows:
+    display(
+        spark.createDataFrame(summary_rows, schema=_summary_schema)
+        .orderBy("pass", "variant")
+    )
+else:
+    print("No benchmark records to display")
+
+_timings_schema = StructType([
+    StructField("step", StringType(), True),
+    StructField("calls", LongType(), True),
+    StructField("elapsed_seconds", DoubleType(), True),
+])
 
 for row in records:
     if row["variant"] == "updated" and row["timings"]:
         print(f"\nUpdated timings — pass {row['pass']}")
+        timing_rows = [
+            (
+                str(item.get("step")),
+                _as_int(item.get("calls")),
+                _as_float(item.get("elapsed_seconds")),
+            )
+            for item in row["timings"]
+        ]
         display(
-            spark.createDataFrame(row["timings"])
+            spark.createDataFrame(timing_rows, schema=_timings_schema)
             .orderBy("elapsed_seconds", ascending=False)
         )
