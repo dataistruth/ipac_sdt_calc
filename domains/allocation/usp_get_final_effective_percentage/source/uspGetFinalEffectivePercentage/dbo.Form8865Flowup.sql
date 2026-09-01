@@ -1,0 +1,13 @@
+CREATE TABLE [dbo].[Form8865Flowup](
+	[RunID] BIGINT NOT NULL,
+	[ClientID] BIGINT NOT NULL,
+	[TaxPeriodID] INT NOT NULL,
+	[EntityID] INT NOT NULL,
+	[FlowupEntityID] INT NOT NULL,
+	[SourceEntityID] INT NOT NULL,
+	[Form8865ID] INT NOT NULL,
+	[LineID] INT NOT NULL,
+	[Amount] FLOAT NULL,
+	[TextValue] VARCHAR(128) NULL,
+	[SchID] INT NULL
+)

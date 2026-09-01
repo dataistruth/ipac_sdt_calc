@@ -1,0 +1,276 @@
+# Dependencies: dbo.uspGetFinalEffectivePercentage
+
+**Root type:** SQL_STORED_PROCEDURE
+**Generated:** 2026-05-04T13:51:32.911958
+**Total dependencies:** 102
+
+Legend: `[T]` table, `[U]` table type (TVP), `[P]` procedure, `[SF]` scalar function, `[TVF]` table-valued function, `[V]` view, `*` already expanded above
+
+## By type
+
+### SQL_SCALAR_FUNCTION (7)
+
+- dbo.udfGetApprovedWorkflow
+- dbo.udfGetLastSubmittedWorkflow_Phase
+- dbo.udfGetLastTransactionIDForPartner_Phase
+- dbo.udfGetLastTransactionID_Phase
+- dbo.udfGetLatestTransactionID
+- dbo.udfGetPhaseID
+- dbo.udf_PE_GetPartnerImportEventID
+
+### SQL_STORED_PROCEDURE (2)
+
+- dbo.uspAddAllocationLog
+- dbo.uspUpdateAllocationLog
+
+### SQL_TABLE_VALUED_FUNCTION (6)
+
+- dbo.Split
+- dbo.udfArrToTable
+- dbo.udfGetAssetClassRelationship
+- dbo.udfGetCostPercentageDetails
+- dbo.udfGetLatestCustomFootnoteTransactionIDs
+- dbo.udf_PE_GetPartnersListForReports
+
+### USER_TABLE (86)
+
+- dbo.AllocationInput
+- dbo.AllocationLog
+- dbo.AllocationPercentage704c
+- dbo.AllocationRun
+- dbo.AllocationRunErrors
+- dbo.AssetClassOverrideImportData
+- dbo.AtRiskFlowup
+- dbo.AtRiskPackage
+- dbo.BasisOverrideImportData
+- dbo.BookEffective_Snapshot
+- dbo.BoxjklLineItem
+- dbo.CostPercentage_704c_Snapshot
+- dbo.CostPercentage_Snapshot
+- dbo.CustomFootNotePackage
+- dbo.CustomFootnoteFlowup
+- dbo.CustomImportDetail
+- dbo.DefaultAllocationRuleSetup
+- dbo.ENU_704cAllocationLogic
+- dbo.ENU_AllocationBy
+- dbo.ENU_AllocationLogic
+- dbo.ENU_AllocationPercentageType
+- dbo.ENU_AttributeType
+- dbo.ENU_DF_DataList
+- dbo.ENU_EntityType
+- dbo.ENU_Event
+- dbo.ENU_GlobalMenuGroup
+- dbo.ENU_LineType
+- dbo.ENU_MappingSource
+- dbo.ENU_RuleGroup
+- dbo.ENU_RuleType
+- dbo.ENU_UnderlyingType
+- dbo.Entity
+- dbo.EntityAllocationRule_Snapshot
+- dbo.EntityConfigurations
+- dbo.EntityRelationShip
+- dbo.EntityRelationship
+- dbo.Enu_AssetClass
+- dbo.Enu_Event
+- dbo.Form1042SPackage
+- dbo.Form199AFlowUp
+- dbo.Form199ALineItem
+- dbo.Form199APackage
+- dbo.Form8865Flowup
+- dbo.Form8865LineItem
+- dbo.Form8865Package
+- dbo.Form8886FlowUp
+- dbo.Form8886LineItem
+- dbo.Form8886Package
+- dbo.Form926Flowup
+- dbo.Form926LineItem
+- dbo.Form926Package
+- dbo.GlobalMenu
+- dbo.K1GPartnerTypes
+- dbo.K1LineItem
+- dbo.K1Package
+- dbo.LookThroughAllocationInput
+- dbo.LookThroughAllocationOutput
+- dbo.LookThroughTaxableIncome
+- dbo.MAP_DerivedLines
+- dbo.MAP_K1LineItemLineType
+- dbo.MapDataRegister
+- dbo.MapDefaultAllocRuleToLineItem
+- dbo.MapRulesToUnderlyings
+- dbo.MappingLineItem
+- dbo.PE_AllocationInput
+- dbo.PE_ENU_DataList
+- dbo.PE_SM_AllocationInput
+- dbo.PFICFootnoteFlowup
+- dbo.PFICFootnoteLineItem
+- dbo.PFICFootnotePackage
+- dbo.Partner_Snapshot
+- dbo.Phase
+- dbo.QuarterDates
+- dbo.SM_FederaltoStatePartnerTypeMapping
+- dbo.SM_LookThroughAllocationInput
+- dbo.SM_StateLineAllocationRule_Snapshot
+- dbo.SM_StateLines
+- dbo.TransactionLog
+- dbo.TransfersAdjCostDefaultPercentage
+- dbo.TransfersAdjDefaultPercentage
+- dbo.WORKFLOWSTATUS
+- dbo.WorkFlow
+- dbo.WorkFlowChain
+- dbo.WorkflowStatus
+- dbo.Yearly_Snapshot
+- dbo.enu_customallocations
+
+### VIEW (1)
+
+- dbo.VW_Entity
+
+## Tree
+
+- [P] dbo.uspGetFinalEffectivePercentage
+  - [T] dbo.AllocationInput
+  - [T] dbo.AllocationPercentage704c
+  - [T] dbo.AllocationRun
+  - [T] dbo.AllocationRunErrors
+  - [T] dbo.AtRiskFlowup
+  - [T] dbo.AtRiskPackage
+  - [T] dbo.BookEffective_Snapshot
+  - [T] dbo.BoxjklLineItem
+  - [T] dbo.CostPercentage_704c_Snapshot
+  - [T] dbo.CostPercentage_Snapshot
+  - [T] dbo.CustomFootNotePackage
+  - [T] dbo.CustomFootnoteFlowup
+  - [T] dbo.DefaultAllocationRuleSetup
+  - [T] dbo.ENU_704cAllocationLogic
+  - [T] dbo.ENU_AllocationBy
+  - [T] dbo.ENU_AllocationLogic
+  - [T] dbo.ENU_AllocationPercentageType
+  - [T] dbo.ENU_AttributeType
+  - [T] dbo.ENU_DF_DataList
+  - [T] dbo.ENU_EntityType
+  - [T] dbo.ENU_Event
+  - [T] dbo.ENU_GlobalMenuGroup
+  - [T] dbo.ENU_LineType
+  - [T] dbo.ENU_MappingSource
+  - [T] dbo.ENU_RuleGroup
+  - [T] dbo.ENU_RuleType
+  - [T] dbo.ENU_UnderlyingType
+  - [T] dbo.EntityAllocationRule_Snapshot
+  - [T] dbo.EntityConfigurations
+  - [T] dbo.EntityRelationship
+  - [T] dbo.Form1042SPackage
+  - [T] dbo.Form199AFlowUp
+  - [T] dbo.Form199ALineItem
+  - [T] dbo.Form199APackage
+  - [T] dbo.Form8865Flowup
+  - [T] dbo.Form8865LineItem
+  - [T] dbo.Form8865Package
+  - [T] dbo.Form8886FlowUp
+  - [T] dbo.Form8886LineItem
+  - [T] dbo.Form8886Package
+  - [T] dbo.Form926Flowup
+  - [T] dbo.Form926LineItem
+  - [T] dbo.Form926Package
+  - [T] dbo.GlobalMenu
+  - [T] dbo.K1LineItem
+  - [T] dbo.K1Package
+  - [T] dbo.LookThroughAllocationInput
+  - [T] dbo.LookThroughAllocationOutput
+  - [T] dbo.LookThroughTaxableIncome
+  - [T] dbo.MAP_DerivedLines
+  - [T] dbo.MAP_K1LineItemLineType
+  - [T] dbo.MapDataRegister
+  - [T] dbo.MapDefaultAllocRuleToLineItem
+  - [T] dbo.MapRulesToUnderlyings
+  - [T] dbo.MappingLineItem
+  - [T] dbo.PE_AllocationInput
+  - [T] dbo.PE_SM_AllocationInput
+  - [T] dbo.PFICFootnoteFlowup
+  - [T] dbo.PFICFootnoteLineItem
+  - [T] dbo.PFICFootnotePackage
+  - [T] dbo.QuarterDates
+  - [T] dbo.SM_LookThroughAllocationInput
+  - [T] dbo.SM_StateLineAllocationRule_Snapshot
+  - [T] dbo.SM_StateLines
+  - [T] dbo.TransfersAdjCostDefaultPercentage
+  - [T] dbo.TransfersAdjDefaultPercentage
+  - [V] dbo.VW_Entity
+    - [T] dbo.Entity
+  - [T] dbo.Yearly_Snapshot
+  - [T] dbo.enu_customallocations
+  - [SF] dbo.udfGetApprovedWorkflow
+    - [T] dbo.ENU_Event *
+    - [T] dbo.TransactionLog
+    - [T] dbo.WORKFLOWSTATUS
+    - [T] dbo.WorkFlow
+    - [T] dbo.WorkFlowChain
+    - [SF] dbo.udfGetPhaseID
+      - [T] dbo.Phase
+  - [TVF] dbo.udfGetAssetClassRelationship
+    - [T] dbo.AssetClassOverrideImportData
+    - [T] dbo.BasisOverrideImportData
+    - [T] dbo.ENU_GlobalMenuGroup *
+    - [T] dbo.Enu_Event
+    - [T] dbo.GlobalMenu *
+    - [V] dbo.VW_Entity *
+    - [TVF] dbo.udfArrToTable
+    - [SF] dbo.udfGetLatestTransactionID
+      - [T] dbo.ENU_Event *
+      - [T] dbo.Entity *
+      - [T] dbo.TransactionLog *
+      - [V] dbo.VW_Entity *
+      - [T] dbo.WorkflowStatus
+      - [SF] dbo.udfGetPhaseID *
+  - [TVF] dbo.udfGetCostPercentageDetails
+    - [T] dbo.CostPercentage_Snapshot *
+    - [T] dbo.ENU_UnderlyingType *
+    - [T] dbo.EntityRelationShip
+    - [T] dbo.Enu_AssetClass
+    - [V] dbo.VW_Entity *
+  - [TVF] dbo.udfGetLatestCustomFootnoteTransactionIDs
+    - [T] dbo.CustomImportDetail
+    - [T] dbo.ENU_EntityType *
+    - [T] dbo.ENU_Event *
+    - [T] dbo.ENU_LineType *
+    - [T] dbo.Entity *
+    - [T] dbo.EntityRelationship *
+    - [T] dbo.K1Package *
+    - [TVF] dbo.Split
+    - [SF] dbo.udfGetLastTransactionID_Phase
+      - [T] dbo.ENU_Event *
+      - [T] dbo.TransactionLog *
+      - [V] dbo.VW_Entity *
+      - [T] dbo.WorkflowStatus *
+      - [SF] dbo.udfGetPhaseID *
+    - [SF] dbo.udfGetPhaseID *
+  - [SF] dbo.udfGetLatestTransactionID *
+  - [SF] dbo.udfGetPhaseID *
+  - [TVF] dbo.udf_PE_GetPartnersListForReports
+    - [T] dbo.ENU_EntityType *
+    - [T] dbo.K1GPartnerTypes
+    - [T] dbo.PE_ENU_DataList
+    - [T] dbo.Partner_Snapshot
+    - [T] dbo.Phase *
+    - [T] dbo.SM_FederaltoStatePartnerTypeMapping
+    - [TVF] dbo.Split *
+    - [V] dbo.VW_Entity *
+    - [SF] dbo.udfGetLastSubmittedWorkflow_Phase
+      - [T] dbo.TransactionLog *
+      - [T] dbo.WorkFlow *
+      - [T] dbo.WorkflowStatus *
+      - [SF] dbo.udfGetPhaseID *
+    - [SF] dbo.udfGetLastTransactionIDForPartner_Phase
+      - [T] dbo.ENU_Event *
+      - [T] dbo.ENU_GlobalMenuGroup *
+      - [T] dbo.GlobalMenu *
+      - [T] dbo.TransactionLog *
+      - [T] dbo.WorkflowStatus *
+      - [SF] dbo.udfGetPhaseID *
+    - [SF] dbo.udf_PE_GetPartnerImportEventID
+      - [T] dbo.ENU_Event *
+      - [T] dbo.ENU_GlobalMenuGroup *
+      - [T] dbo.GlobalMenu *
+  - [P] dbo.uspAddAllocationLog
+    - [T] dbo.AllocationLog
+  - [P] dbo.uspUpdateAllocationLog
+    - [T] dbo.AllocationLog *

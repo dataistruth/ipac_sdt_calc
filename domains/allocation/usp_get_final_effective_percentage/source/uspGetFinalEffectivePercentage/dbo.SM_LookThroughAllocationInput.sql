@@ -1,0 +1,21 @@
+CREATE TABLE [dbo].[SM_LookThroughAllocationInput](
+	[RunID] BIGINT NOT NULL,
+	[ClientID] BIGINT NOT NULL,
+	[EntityID] INT NOT NULL,
+	[LineTypeID] INT NOT NULL,
+	[StateID] INT NOT NULL,
+	[StateLineID] INT NOT NULL,
+	[Amount] FLOAT NULL,
+	[QuicklinkID] INT NULL,
+	[Amount704b] FLOAT NULL,
+	[CategoryID] INT NULL,
+	[ParentEntityID] INT NULL,
+	[PeriodID] INT NULL,
+	[LineCode] VARCHAR(100) NULL,
+	[SuperParentEntityID] INT NULL,
+	[AdjustmentTypeID] INT NULL,
+	[TrackingKey] VARCHAR(4000) NULL,
+	[Tag] VARCHAR(5000) NULL,
+	[OriginalParentEntityID] INT NULL,
+	[FlowUpPartner] VARCHAR(50) NULL
+)

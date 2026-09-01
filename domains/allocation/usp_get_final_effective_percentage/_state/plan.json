@@ -1,0 +1,163 @@
+{
+  "sp": "uspGetFinalEffectivePercentage",
+  "sql_lines": 9027,
+  "complexity": "Very Complex (score 23)",
+  "complexity_tier": "Hard",
+  "volume_tier": "X Large (> 2M rows)",
+  "sla_target_seconds": 20,
+  "mode": "surgical",
+  "collation": "UTF8_LCASE",
+  "parameters": {
+    "EntityID": "INT",
+    "ClientID": "BIGINT",
+    "TaxPeriodID": "INT",
+    "RunID": "INT",
+    "Mode": "INT (1,2,3,4)",
+    "IsPEModel": "BIT default 0"
+  },
+  "optimization_strategy": "DUAL_INVOCATION",
+  "optimization_notes": "SQL calls SP 4 times (modes 1,2,3,4). PySpark: Run 1 = modes 1+2+3 combined (shared pipeline, branched output). Run 2 = mode 4 only (704c-specific).",
+  "sections": [
+    {
+      "id": 1,
+      "name": "Init & Config",
+      "sql_lines": "420-600",
+      "description": "Variable declarations, config lookups (LineTypeID, AllocationTypeID, GlobalMenu settings, etc.)",
+      "pyspark_function": "load_config"
+    },
+    {
+      "id": 2,
+      "name": "Load Allocation Input",
+      "sql_lines": "604-730",
+      "description": "Mode-dependent input: Mode 2/PE+1/4 → AllocationInput; Mode 3 → SM_LookThroughAllocationInput. Early return if empty.",
+      "pyspark_function": "build_allocation_input"
+    },
+    {
+      "id": 3,
+      "name": "Temp Table Creation",
+      "sql_lines": "730-1200",
+      "description": "Create ~40 temp tables (FinalCostPercentage, CostPercentageMinQuarter, etc.). In PySpark these become schemas/empty DataFrames or are eliminated via fusion.",
+      "pyspark_function": "N/A - schemas defined inline"
+    },
+    {
+      "id": 4,
+      "name": "Entity Hierarchy & Underlyings",
+      "sql_lines": "1200-1900",
+      "description": "Build entity hierarchy, underlying types, asset class relationships, lookthrough input. Key: udfGetAssetClassRelationship TVF inlining.",
+      "pyspark_function": "build_entity_hierarchy, build_entity_underlyings"
+    },
+    {
+      "id": 5,
+      "name": "Cost Percentage Snapshot & UNPIVOT",
+      "sql_lines": "1900-2400",
+      "description": "Load CostPercentage via udfGetCostPercentageDetails TVF. Mode!=4: normal cost %. Mode=4: AllocationPercentage704c UNPIVOT. 704c mapping logic. Mode 1 + 704c: complex DAR setup.",
+      "pyspark_function": "build_cost_percentage_snapshot"
+    },
+    {
+      "id": 6,
+      "name": "Underlyings Combined & Asset Class",
+      "sql_lines": "2400-2700",
+      "description": "Build #TempAllUnderlyingsCombined with ordering, asset class filtering, ignore-partnership-level config.",
+      "pyspark_function": "build_underlyings_combined"
+    },
+    {
+      "id": 7,
+      "name": "Book Effective & Custom Allocation Rules",
+      "sql_lines": "2700-3060",
+      "description": "Load BookEffective_Snapshot, apply custom allocation rules (CAR). Mode 1/4: K1 line processing. Build #TempAllUnderlyings with ROW_NUMBER pickup order.",
+      "pyspark_function": "build_book_effective_data, build_all_underlyings_ordered"
+    },
+    {
+      "id": 8,
+      "name": "Input Lines & Amount-Based Allocation",
+      "sql_lines": "3060-3370",
+      "description": "Build #TempInputLines from lookthrough input. Amount-based allocation logic (delete AMOUNT rows, compute FinalAmounts).",
+      "pyspark_function": "build_input_lines, compute_amount_based_allocation"
+    },
+    {
+      "id": 9,
+      "name": "Non-Dated & Dated Entities",
+      "sql_lines": "3370-3440",
+      "description": "Split entities into non-dated and dated categories based on IsTransactionDate/IsTransfersAdjusted.",
+      "pyspark_function": "build_non_dated_entities, build_dated_entities"
+    },
+    {
+      "id": 10,
+      "name": "PFIC Footnote Lines",
+      "sql_lines": "3440-5700",
+      "description": "PFIC footnote processing. Custom footnotes. Build #TempAllUnderlyingsFNOrdered. Complex footnote-to-K1 mapping. Part V quarters. Mode-dependent processing.",
+      "pyspark_function": "build_pfic_footnote_underlyings, build_footnote_book_effective"
+    },
+    {
+      "id": 11,
+      "name": "State Allocation (Mode 3)",
+      "sql_lines": "5711-6215",
+      "description": "State-specific: SM_StateLineAllocationRule, state input loading, state non-dated/dated entities.",
+      "pyspark_function": "build_state_allocation_input, build_state_entities"
+    },
+    {
+      "id": 12,
+      "name": "Cost Percentage Load by Underlying Type",
+      "sql_lines": "6215-7050",
+      "description": "Load cost percentages for: Underlying Only, Entity Total, Asset Class. Handle TrackingKey/Tag matching. Transfer adjustments.",
+      "pyspark_function": "build_cost_percentage_by_type"
+    },
+    {
+      "id": 13,
+      "name": "Missing Entities & Min Quarter",
+      "sql_lines": "7050-7440",
+      "description": "Find entities without percentages, determine minimum quarter, handle 100% validation, AllocationRunErrors.",
+      "pyspark_function": "compute_missing_entities, compute_minimum_quarter"
+    },
+    {
+      "id": 14,
+      "name": "Effective Percentage Calculation",
+      "sql_lines": "7443-7780",
+      "description": "Core cost percentage and transfer-affected cost percentage calculation. Non-dated effective percentages.",
+      "pyspark_function": "compute_effective_percentage_non_dated"
+    },
+    {
+      "id": 15,
+      "name": "Dated Pickup Order & Transfer Logic",
+      "sql_lines": "7777-8150",
+      "description": "Dated entities pickup order, missing partner insertion for transfer-adjusted percentages, yearly.",
+      "pyspark_function": "compute_effective_percentage_dated"
+    },
+    {
+      "id": 16,
+      "name": "Non-Dated PFIC/K1 Percentage Load",
+      "sql_lines": "8147-8300",
+      "description": "Load non-dated PFIC and K1 line percentages. Transfer-affected and yearly.",
+      "pyspark_function": "compute_non_dated_pfic_k1_percentages"
+    },
+    {
+      "id": 17,
+      "name": "Plugging Logic",
+      "sql_lines": "8299-8640",
+      "description": "Ensure percentages sum to 100% per group. Find max commitment partner, plug the difference. Update TypeID for non-cost types using cost %.",
+      "pyspark_function": "apply_plugging, apply_type_id_update"
+    },
+    {
+      "id": 18,
+      "name": "Return Data",
+      "sql_lines": "8679-8850",
+      "description": "Mode-dependent final SELECT. Modes 1,2,3 return different column sets. Mode 4: only 704c rows.",
+      "pyspark_function": "build_final_output"
+    }
+  ],
+  "write_targets": [
+    {"table": "ENU_CustomAllocations", "operation": "INSERT", "sql_line": 2159, "condition": "Mode 4, 704c not exists"},
+    {"table": "ENU_RuleGroup", "operation": "INSERT", "sql_line": 2171, "condition": "Mode 4, 704c not exists"},
+    {"table": "AllocationRunErrors", "operation": "INSERT", "sql_line": 7269, "condition": "Missing underlyings"},
+    {"table": "AllocationRunErrors", "operation": "INSERT", "sql_line": 8079, "condition": "Yearly percentage error"},
+    {"table": "AllocationRun", "operation": "UPDATE", "sql_lines": [7275, 8085], "condition": "Error occurred"}
+  ],
+  "udf_inlining": [
+    {"udf": "udfGetCostPercentageDetails", "type": "TVF", "action": "Inline as DataFrame join/filter"},
+    {"udf": "udfGetAssetClassRelationship", "type": "TVF", "action": "Inline as DataFrame join/filter"},
+    {"udf": "udfGetApprovedWorkflow", "type": "SF", "action": "Inline as scalar lookup"},
+    {"udf": "udfGetLatestTransactionID", "type": "SF", "action": "Inline as scalar lookup"},
+    {"udf": "udfGetLatestCustomFootnoteTransactionIDs", "type": "TVF", "action": "Inline as DataFrame"},
+    {"udf": "udf_PE_GetPartnersListForReports", "type": "TVF", "action": "Inline as DataFrame"}
+  ]
+}

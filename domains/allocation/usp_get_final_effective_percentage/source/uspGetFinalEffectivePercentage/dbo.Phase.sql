@@ -1,0 +1,12 @@
+CREATE TABLE [dbo].[Phase](
+	[PhaseID] INT NOT NULL,
+	[PhaseName] VARCHAR(100) NULL,
+	[ShortName] VARCHAR(3) NULL,
+	[ClientID] INT NULL,
+	[TaxPeriodID] INT NULL,
+	[StartDate] DATETIME NULL,
+	[EndDate] DATETIME NULL,
+	[ID] INT IDENTITY(1,1) NOT NULL
+)
+
+ALTER TABLE [dbo].[Phase] ADD PRIMARY KEY ([ID])

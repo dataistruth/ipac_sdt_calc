@@ -1,0 +1,20 @@
+CREATE TABLE [dbo].[TransfersAdjCostDefaultPercentage](
+	[RunID] BIGINT NOT NULL,
+	[ClientID] INT NOT NULL,
+	[EntityID] INT NOT NULL,
+	[InvestmentID] INT NOT NULL,
+	[PartnerNumber] VARCHAR(50) NOT NULL,
+	[TransferPartnerNumber] VARCHAR(50) NULL,
+	[TransferAdjPercent] FLOAT NULL,
+	[EndingCostPercent] FLOAT NULL,
+	[TransferDate] DATETIME NULL,
+	[TransferDirection] VARCHAR(5) NULL,
+	[BeginningPercentUsage] FLOAT NULL,
+	[EffectivePercent] FLOAT NULL,
+	[AllocationComplete] VARCHAR(3) NULL,
+	[AllocationTypeID] INT NULL,
+	[TrackingKey] VARCHAR(5000) NULL,
+	[Tag] VARCHAR(5000) NULL,
+	[Underlyingtype] INT NULL,
+	[IsEODTransfer] BIT NULL
+)

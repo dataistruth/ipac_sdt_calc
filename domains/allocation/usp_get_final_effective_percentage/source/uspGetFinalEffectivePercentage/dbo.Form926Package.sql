@@ -1,0 +1,8 @@
+CREATE TABLE [dbo].[Form926Package](
+	[Form926ID] INT IDENTITY(1,1) NOT NULL,
+	[K1PackageID] INT NOT NULL,
+	[ClientID] BIGINT NOT NULL,
+	[TaxPeriodID] INT NOT NULL
+)
+
+ALTER TABLE [dbo].[Form926Package] ADD PRIMARY KEY ([Form926ID])

@@ -1,0 +1,1691 @@
+﻿{
+  "filename": "dbo.uspGetFinalEffectivePercentage.sql",
+  "line_count": 9027,
+  "temp_tables": [
+    {
+      "name": "#TempAllocationInput",
+      "columns": [
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "LineTypeID",
+        "LineID",
+        "Amount",
+        "QuicklinkID",
+        "Amount704b",
+        "Tag"
+      ],
+      "line": 577
+    },
+    {
+      "name": "#TempSMLookThroughAllocationInput",
+      "columns": [
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "LineTypeID",
+        "StateID",
+        "StateLineID",
+        "Amount",
+        "QuicklinkID",
+        "TrackingKey"
+      ],
+      "line": 581
+    },
+    {
+      "name": "#tmpPartVQuarters",
+      "columns": [
+        "PFICFootnoteID",
+        "QUARTER"
+      ],
+      "line": 585
+    },
+    {
+      "name": "#DefaultAllocationRuleSetup",
+      "columns": [
+        "TransactionID",
+        "RuleID",
+        "AllocationPercentageTypeID",
+        "AllocationByID",
+        "UnderlyingTypeID",
+        "RuleTypeID",
+        "RuleGroupID",
+        "ClientID",
+        "TaxPeriodID",
+        "EntityID"
+      ],
+      "line": 589
+    },
+    {
+      "name": "#MapDefaultAllocRuleToLineItem",
+      "columns": [
+        "TransactionID",
+        "SourceID",
+        "StateID",
+        "SelectedMappingID",
+        "RuleID",
+        "ExcludeFromTransfers",
+        "ClientID",
+        "TaxPeriodID",
+        "EntityID"
+      ],
+      "line": 593
+    },
+    {
+      "name": "#Mappings",
+      "columns": [
+        "EntityID",
+        "MapLineID",
+        "DatabaseName"
+      ],
+      "line": 597
+    },
+    {
+      "name": "#FinalCostPercentage",
+      "columns": [
+        "DealId",
+        "Partnernumber"
+      ],
+      "line": 751
+    },
+    {
+      "name": "#TempCostPercentageMinQuarter",
+      "columns": [
+        "DealId",
+        "Quarter"
+      ],
+      "line": 773
+    },
+    {
+      "name": "#TempFinalEffectivePercentageNonDated",
+      "columns": [
+        "InvestmentID",
+        "PartnerNumber"
+      ],
+      "line": 793
+    },
+    {
+      "name": "#TempFinalEffectivePercentageDated",
+      "columns": [
+        "InvestmentID",
+        "PartnerNumber"
+      ],
+      "line": 827
+    },
+    {
+      "name": "#TempUnderlyingsPickUpOrderDated",
+      "columns": [
+        "InvestmentID",
+        "LineTypeID",
+        "Quarter"
+      ],
+      "line": 859
+    },
+    {
+      "name": "#TempSelectedNonDatedLines",
+      "columns": [
+        "InvestmentID",
+        "TypeID",
+        "TrackingKey"
+      ],
+      "line": 879
+    },
+    {
+      "name": "#TempInputLines",
+      "columns": [
+        "UnderlyingEntityID",
+        "LineID",
+        "LineTypeID",
+        "QuickLinkID",
+        "StateID",
+        "TypeID",
+        "TrackingKey"
+      ],
+      "line": 895
+    },
+    {
+      "name": "#TempNonDatedEntities",
+      "columns": [
+        "UnderlyingEntityID",
+        "LineTypeID",
+        "TypeID",
+        "TrackingKey"
+      ],
+      "line": 919
+    },
+    {
+      "name": "#TempDatedEntities",
+      "columns": [
+        "UnderlyingEntityID",
+        "LineTypeID",
+        "Quarter"
+      ],
+      "line": 939
+    },
+    {
+      "name": "#TempNonDatedEntitiesCost",
+      "columns": [
+        "UnderlyingEntityID",
+        "LineTypeID",
+        "TypeID",
+        "TrackingKey"
+      ],
+      "line": 967
+    },
+    {
+      "name": "#TempDatedEntitiesCost",
+      "columns": [
+        "UnderlyingEntityID",
+        "LineTypeID",
+        "Quarter"
+      ],
+      "line": 985
+    },
+    {
+      "name": "#TempAllEntities",
+      "columns": [
+        "UnderlyingEntityID",
+        "TypeID",
+        "TrackingKey"
+      ],
+      "line": 1005
+    },
+    {
+      "name": "#TempMinimumQuarter",
+      "columns": [
+        "DealID",
+        "TypeID",
+        "TrackingKey"
+      ],
+      "line": 1013
+    },
+    {
+      "name": "#TempErrorUnderlyings",
+      "columns": [
+        "DealID"
+      ],
+      "line": 1031
+    },
+    {
+      "name": "#TempCostPercentage",
+      "columns": [
+        "DealId",
+        "Partnernumber"
+      ],
+      "line": 1037
+    },
+    {
+      "name": "#Temp199ACostPercentage",
+      "columns": [
+        "DealId",
+        "Partnernumber"
+      ],
+      "line": 1063
+    },
+    {
+      "name": "#TempCostPercentageDeals",
+      "columns": [
+        "DealId",
+        "Quarter"
+      ],
+      "line": 1085
+    },
+    {
+      "name": "#EntityPartners",
+      "columns": [
+        "partnernumber"
+      ],
+      "line": 1101
+    },
+    {
+      "name": "#TempTransfersAdjCostDefaultPercentage",
+      "columns": [
+        "InvestmentID",
+        "TransferPartnerNumber"
+      ],
+      "line": 1111
+    },
+    {
+      "name": "#TempEntityUnderlying",
+      "columns": [
+        "UnderlyingEntityId",
+        "AssetClassId",
+        "TrackingKey"
+      ],
+      "line": 1139
+    },
+    {
+      "name": "#TempEntityUnderlyingWithTrackingkey",
+      "columns": [
+        "--UnderlyingEntityId",
+        "--Trackingkey"
+      ],
+      "line": 1151
+    },
+    {
+      "name": "#TempBookEffectiveData",
+      "columns": [
+        "UnderlyingEntityID",
+        "LineID",
+        "FootNoteID",
+        "SourceID",
+        "AllocationTypeid",
+        "AdjustmentAllocationTypeID",
+        "TrackingKey"
+      ],
+      "line": 1163
+    },
+    {
+      "name": "#SM_TempBookEffective",
+      "columns": [
+        "UnderlyingEntityID",
+        "StateLineID",
+        "StateID",
+        "AllocationTypeid",
+        "AdjustmentAllocationTypeID",
+        "TrackingKey"
+      ],
+      "line": 1173
+    },
+    {
+      "name": "#TempTransferDate",
+      "columns": [
+        "UnderlyingEntityID",
+        "LineTypeID",
+        "QUARTER"
+      ],
+      "line": 1183
+    },
+    {
+      "name": "#TempEnitityAllocationRule",
+      "columns": [
+        "LineId",
+        "UpdatedAllocationRuleID"
+      ],
+      "line": 1193
+    },
+    {
+      "name": "#TempLookThroughAllocationInput",
+      "columns": [
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "LineTypeID",
+        "LineID",
+        "Amount",
+        "QuicklinkID",
+        "Amount704b",
+        "TrackingKey"
+      ],
+      "line": 1197
+    },
+    {
+      "name": "#TempDefaultAllocationRule",
+      "columns": [
+        "LineId",
+        "AllocationRuleID",
+        "EntityID"
+      ],
+      "line": 1205
+    },
+    {
+      "name": "#TotalUnderlyingAmounts",
+      "columns": [
+        "LineId",
+        "Partnernumber"
+      ],
+      "line": 1209
+    },
+    {
+      "name": "#FinalEffectiveAmounts",
+      "columns": [
+        "UnderlyingEntityID",
+        "LineId",
+        "Partnernumber"
+      ],
+      "line": 1225
+    },
+    {
+      "name": "#FinalAmounts",
+      "columns": [
+        "InvestmentID",
+        "PartnerNumber"
+      ],
+      "line": 1257
+    },
+    {
+      "name": "#TempAllUnderlyings",
+      "columns": [
+        "Underlyingtype",
+        "UnderlyingEntityId",
+        "EntityId",
+        "TrackingKey"
+      ],
+      "line": 1291
+    },
+    {
+      "name": "#TempAllUnderlyingsOrdered",
+      "columns": [
+        "Underlyingtype",
+        "UnderlyingEntityId",
+        "EntityId",
+        "TrackingKey"
+      ],
+      "line": 1321
+    },
+    {
+      "name": "#TempAllUnderlyingsFNOrdered",
+      "columns": [
+        "Underlyingtype",
+        "UnderlyingEntityId",
+        "EntityId",
+        "TrackingKey"
+      ],
+      "line": 1351
+    },
+    {
+      "name": "#TempAllUnderlyingsStatesOrdered",
+      "columns": [
+        "Underlyingtype",
+        "UnderlyingEntityId",
+        "EntityId",
+        "TrackingKey"
+      ],
+      "line": 1381
+    },
+    {
+      "name": "#LineItem",
+      "columns": [
+        "LineID",
+        "AllocationTypeRuleID",
+        "LineTypeID",
+        "TransactionDate",
+        "IsTransactionDate",
+        "IsTransfersAdjusted"
+      ],
+      "line": 1413
+    },
+    {
+      "name": "#TempFilteredTransfersAdjCostDefaultPercentage",
+      "columns": [
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "InvestmentID",
+        "PartnerNumber"
+      ],
+      "line": 1433
+    },
+    {
+      "name": "#EntityTotalAmounts",
+      "columns": [
+        "UnderlyingEntityID",
+        "PartnerNumber"
+      ],
+      "line": 1477
+    },
+    {
+      "name": "#Quarters",
+      "columns": [
+        "Quarter"
+      ],
+      "line": 1769
+    },
+    {
+      "name": "#CostPercentage_Function",
+      "columns": [
+        "WorkFlowID",
+        "TransactionID",
+        "ClientID",
+        "TaxPeriodID",
+        "EntityID",
+        "InvestmentID",
+        "PartnerNumber"
+      ],
+      "line": 1853
+    },
+    {
+      "name": "#CostPercentage_Snapshot",
+      "columns": [
+        "WorkFlowID",
+        "TransactionID",
+        "ClientID",
+        "TaxPeriodID",
+        "EntityID",
+        "InvestmentID",
+        "PartnerNumber"
+      ],
+      "line": 1861
+    },
+    {
+      "name": "#CostPercentage704cValues",
+      "columns": [
+        "WorkFlowID",
+        "TransactionID",
+        "ClientID",
+        "TaxPeriodID",
+        "EntityID",
+        "InvestmentID",
+        "PartnerNumber"
+      ],
+      "line": 1873
+    },
+    {
+      "name": "#CostPercentage_Snapshot_UnPivoted",
+      "columns": [
+        "WorkFlowID",
+        "TransactionID",
+        "ClientID",
+        "TaxPeriodID",
+        "EntityID",
+        "InvestmentID",
+        "PartnerNumber"
+      ],
+      "line": 1885
+    },
+    {
+      "name": "#CostPercentage_Snapshot_UnPivotedMerged",
+      "columns": [
+        "WorkFlowID",
+        "TransactionID",
+        "ClientID",
+        "TaxPeriodID",
+        "EntityID",
+        "InvestmentID",
+        "PartnerNumber"
+      ],
+      "line": 1895
+    },
+    {
+      "name": "#EntityAssetClassRelationShip",
+      "columns": [
+        "LowerTierEntityID",
+        "AssetClassID",
+        "TrackingKey"
+      ],
+      "line": 2353
+    },
+    {
+      "name": "#TempAllUnderlyingsCombined",
+      "columns": [
+        "UnderlyingEntityID",
+        "EntityID",
+        "HLevel",
+        "UnderlyingType",
+        "AllocationTypeID",
+        "TrackingKey"
+      ],
+      "line": 2361
+    },
+    {
+      "name": "#MatchingAssetClass",
+      "columns": [
+        "UnderlyingEntityID",
+        "EntityID",
+        "HLevel",
+        "UnderlyingType",
+        "AllocationTypeID",
+        "TrackingKey"
+      ],
+      "line": 2519
+    },
+    {
+      "name": "#tempunderlyingMod",
+      "columns": [
+        "UnderlyingType",
+        "UnderlyingEntityID",
+        "EntityID",
+        "TrackingKey"
+      ],
+      "line": 2685
+    },
+    {
+      "name": "#K1LineItem",
+      "columns": [
+        "LineID",
+        "AllocationTypeRuleId"
+      ],
+      "line": 2811
+    },
+    {
+      "name": "#LookThroughAllocationInputAmounts",
+      "columns": [
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "CostPercentageInvestmentID",
+        "LineTypeID",
+        "LineID",
+        "Amount",
+        "QuicklinkID",
+        "CategoryID",
+        "ParentEntityID",
+        "PeriodID",
+        "LineCode"
+      ],
+      "line": 3125
+    },
+    {
+      "name": "#LookThroughAllocationInputGrouped",
+      "columns": [
+        "CostPercentageInvestmentID",
+        "LineID",
+        "LineTypeID",
+        "Amount"
+      ],
+      "line": 3127
+    },
+    {
+      "name": "#DistinctCostPercentage_Snapshot",
+      "columns": [
+        "WorkFlowID",
+        "TransactionID",
+        "EntityID",
+        "InvestmentID",
+        "Quarter"
+      ],
+      "line": 3155
+    },
+    {
+      "name": "#tmpCustomFootnoteLineTypes",
+      "columns": [
+        "[LineTypeID]"
+      ],
+      "line": 3457
+    },
+    {
+      "name": "#tmp199ALine",
+      "columns": [
+        "RuleNumber",
+        "Form199ALineID"
+      ],
+      "line": 4673
+    },
+    {
+      "name": "#tmpK1Line",
+      "columns": [
+        "RuleNumber",
+        "LineNumber"
+      ],
+      "line": 4683
+    },
+    {
+      "name": "#tmpExcludeLine",
+      "columns": [
+        "RuleNumber",
+        "ExcludeLineID"
+      ],
+      "line": 4693
+    },
+    {
+      "name": "#tmpRuleConfig",
+      "columns": [
+        "RuleNumber",
+        "Lookupdata"
+      ],
+      "line": 4703
+    },
+    {
+      "name": "#taxableIncomeEffecivePerLines",
+      "columns": [
+        "UnderlyingEntityID",
+        "RuleNumber",
+        "Form199ALineID"
+      ],
+      "line": 4715
+    },
+    {
+      "name": "#RuleAmount",
+      "columns": [
+        "EntityID",
+        "Partnernumber"
+      ],
+      "line": 4719
+    },
+    {
+      "name": "#TempDatedEntitiesNotransferPickUpQuarter",
+      "columns": [
+        "InvestmentID",
+        "LineTypeID",
+        "PickUpQuarter"
+      ],
+      "line": 7859
+    },
+    {
+      "name": "#TempEffectivePercentagePlug",
+      "columns": [
+        "InvestmentID",
+        "ExcessAllocationPercentage",
+        "BigPartner"
+      ],
+      "line": 8303
+    },
+    {
+      "name": "#TempEffectivePercentageMaxCommitment",
+      "columns": [
+        "InvestmentID",
+        "BigPartner"
+      ],
+      "line": 8335
+    },
+    {
+      "name": "#TempYearlyLines",
+      "columns": [],
+      "line": 1745
+    },
+    {
+      "name": "#YearlyData",
+      "columns": [],
+      "line": 1789
+    },
+    {
+      "name": "#Mapped704cFields",
+      "columns": [],
+      "line": 2139
+    },
+    {
+      "name": "#AllocationPercentage704c",
+      "columns": [],
+      "line": 2241
+    },
+    {
+      "name": "#TempCostUnderlyingTypes",
+      "columns": [],
+      "line": 2327
+    },
+    {
+      "name": "#EntityHierarchy",
+      "columns": [],
+      "line": 2357
+    },
+    {
+      "name": "#TempAllUnderlyingsCombinedOrdered",
+      "columns": [],
+      "line": 2571
+    },
+    {
+      "name": "#TempFootnoteLines",
+      "columns": [],
+      "line": 2737
+    },
+    {
+      "name": "#LookThroughAllocationInput",
+      "columns": [],
+      "line": 3067
+    },
+    {
+      "name": "#DistinctMappedLines",
+      "columns": [],
+      "line": 3121
+    },
+    {
+      "name": "#TempFootnoteBookEffectiveData",
+      "columns": [],
+      "line": 3641
+    },
+    {
+      "name": "#TempInputLinesPFIC",
+      "columns": [],
+      "line": 4265
+    },
+    {
+      "name": "#tmp199AUnderlying",
+      "columns": [],
+      "line": 4819
+    },
+    {
+      "name": "#RuleUnderlyings",
+      "columns": [],
+      "line": 4879
+    },
+    {
+      "name": "#tmpLookThroughAllocationOutput",
+      "columns": [],
+      "line": 4905
+    },
+    {
+      "name": "#TempQuarterMonth",
+      "columns": [],
+      "line": 4977
+    },
+    {
+      "name": "#MaxPercentage",
+      "columns": [],
+      "line": 5079
+    },
+    {
+      "name": "#TotalAmount",
+      "columns": [],
+      "line": 5309
+    },
+    {
+      "name": "#TITotalAmount",
+      "columns": [],
+      "line": 5517
+    },
+    {
+      "name": "#StatesMapDefaultAllocRuleToLineItem",
+      "columns": [],
+      "line": 5733
+    },
+    {
+      "name": "#SMEntityTotalAmounts",
+      "columns": [],
+      "line": 5871
+    },
+    {
+      "name": "#TempAllUnderlyingsPercentages",
+      "columns": [],
+      "line": 6275
+    },
+    {
+      "name": "#TempCostTransferDefinedDeals",
+      "columns": [],
+      "line": 6371
+    },
+    {
+      "name": "#TempEntityExcludeDeals1",
+      "columns": [],
+      "line": 6423
+    },
+    {
+      "name": "#TempEntityExcludeDeals2",
+      "columns": [],
+      "line": 6463
+    },
+    {
+      "name": "#TempCostDefinedDeals",
+      "columns": [],
+      "line": 6497
+    },
+    {
+      "name": "#TempCostDefinedDeals1",
+      "columns": [],
+      "line": 6537
+    },
+    {
+      "name": "#TempExcludeExistingDeals",
+      "columns": [],
+      "line": 6569
+    },
+    {
+      "name": "#TempCostDefinedDeals3",
+      "columns": [],
+      "line": 6611
+    },
+    {
+      "name": "#tmpAllUnderlyingswithParent",
+      "columns": [],
+      "line": 6667
+    },
+    {
+      "name": "#tmpAllUnderlyingswithParentOrdered",
+      "columns": [],
+      "line": 6721
+    },
+    {
+      "name": "#tmpAllUnderlyingswithParentOrdered_Adj",
+      "columns": [],
+      "line": 6731
+    },
+    {
+      "name": "#TempAllEntities_Adj",
+      "columns": [],
+      "line": 6901
+    },
+    {
+      "name": "#QuarterTypeByDeal",
+      "columns": [],
+      "line": 7351
+    },
+    {
+      "name": "#MultipleQuarterTypes",
+      "columns": [],
+      "line": 7385
+    },
+    {
+      "name": "#TempTransferAdjDatedPercentages",
+      "columns": [],
+      "line": 7451
+    },
+    {
+      "name": "#TempDatedEntitiesNotransfer",
+      "columns": [],
+      "line": 7783
+    },
+    {
+      "name": "#TempYearlyDatedToBeDeleted",
+      "columns": [],
+      "line": 7809
+    },
+    {
+      "name": "#TempCost",
+      "columns": [],
+      "line": 7929
+    },
+    {
+      "name": "#TempYearly",
+      "columns": [],
+      "line": 8015
+    },
+    {
+      "name": "#TempPartner1",
+      "columns": [],
+      "line": 8047
+    },
+    {
+      "name": "#TempFinalEffectivePercentageDatedRounded",
+      "columns": [],
+      "line": 8279
+    },
+    {
+      "name": "#TempFinalEffectivePercentageNonDatedRounded",
+      "columns": [],
+      "line": 8427
+    }
+  ],
+  "variables": [
+    {
+      "name": "@LocalEntityID",
+      "type": "INT",
+      "line": 427
+    },
+    {
+      "name": "@PartVAllocated",
+      "type": "BIT",
+      "line": 499
+    },
+    {
+      "name": "@allocationTypeIDfor704c",
+      "type": "INT",
+      "line": 501
+    },
+    {
+      "name": "@EntityAllocationRuleEventTypeID",
+      "type": "INT",
+      "line": 1671
+    },
+    {
+      "name": "@DefaultAllocationRuleEventTypeID",
+      "type": "INT",
+      "line": 1683
+    },
+    {
+      "name": "@IgnoreAssetclassForPartnershipLevel",
+      "type": "VARCHAR(1)",
+      "line": 1823
+    },
+    {
+      "name": "@EntityUnderlyingtype",
+      "type": "INT",
+      "line": 1839
+    },
+    {
+      "name": "@RegisterTypeID",
+      "type": "INT",
+      "line": 1945
+    },
+    {
+      "name": "@Cols",
+      "type": "VARCHAR(MAX)",
+      "line": 2053
+    },
+    {
+      "name": "@AllocationPercentageTypeID",
+      "type": "INT",
+      "line": 2203
+    },
+    {
+      "name": "@PFICFootNoteLineTypeID",
+      "type": "INT",
+      "line": 3447
+    },
+    {
+      "name": "@PFICQuarterLineID",
+      "type": "INT",
+      "line": 4131
+    },
+    {
+      "name": "@199ALineType",
+      "type": "INT",
+      "line": 4833
+    },
+    {
+      "name": "@UnderlyingNames",
+      "type": "varchar(max)",
+      "line": 7255
+    },
+    {
+      "name": "@Form926LineTypeID",
+      "type": "INT",
+      "line": 7547
+    }
+  ],
+  "table_references": [
+    "A",
+    "AI",
+    "AllocationInput",
+    "AllocationPercentage704c",
+    "AllocationRun",
+    "AllocationRunErrors",
+    "AtRiskFlowup",
+    "AtRiskPackage",
+    "BookEffective_Snapshot",
+    "BoxjklLineItem",
+    "C",
+    "CS",
+    "CostPercentage_704c_Snapshot",
+    "CostPercentage_Snapshot",
+    "Costpercent_Snapshot",
+    "CustomFootNotePackage",
+    "CustomFootnoteFlowup",
+    "D",
+    "Davinder",
+    "DefaultAllocationRuleSetup",
+    "ENU_704cAllocationLogic",
+    "ENU_ALLOCATIONPERCENTAGETYPE",
+    "ENU_AllocationBy",
+    "ENU_AllocationLogic",
+    "ENU_AllocationPercentageType",
+    "ENU_AttributeType",
+    "ENU_CustomAllocations",
+    "ENU_DF_DataList",
+    "ENU_EntityType",
+    "ENU_Event",
+    "ENU_GlobalMenuGroup",
+    "ENU_LINETYPE",
+    "ENU_LineType",
+    "ENU_MappingSource",
+    "ENU_RuleGroup",
+    "ENU_RuleType",
+    "ENU_UnderlyingType",
+    "ENU_Underlyingtype",
+    "Entity",
+    "EntityAllocationRule_Snapshot",
+    "EntityConfigurations",
+    "EntityRelationship",
+    "Enu_Underlyingtype",
+    "FROM",
+    "Foreign",
+    "Form1042SPackage",
+    "Form199AFlowUp",
+    "Form199ALineItem",
+    "Form199APackage",
+    "Form8865Flowup",
+    "Form8865LineItem",
+    "Form8865Package",
+    "Form8886FlowUp",
+    "Form8886LineItem",
+    "Form8886Package",
+    "Form926Flowup",
+    "Form926LineItem",
+    "Form926Package",
+    "GlobalMenu",
+    "Guru",
+    "I",
+    "K1LineItem",
+    "K1Lineitem",
+    "K1Package",
+    "KK",
+    "L",
+    "LookThroughAllocationInput",
+    "LookThroughAllocationOutput",
+    "LookThroughTaxableIncome",
+    "LookthroughAllocationInput",
+    "M",
+    "MAP_DerivedLines",
+    "MAP_K1LineItemLineType",
+    "MapDataRegister",
+    "MapDefaultAllocRuleToLineItem",
+    "MapRulesToUnderlyings",
+    "MappingLineItem",
+    "Monthly",
+    "Nonexistent",
+    "Offset",
+    "PE_AllocationInput",
+    "PE_SM_AllocationInput",
+    "PFICFOOTNOTELINEITEM",
+    "PFICFootnoteFlowup",
+    "PFICFootnoteLineItem",
+    "PFICFootnotePackage",
+    "Q",
+    "Quarter",
+    "QuarterDates",
+    "Quarterdates",
+    "SM_LookThroughAllocationInput",
+    "SM_StateLineAllocationRule_Snapshot",
+    "SM_StateLines",
+    "Satish",
+    "T",
+    "Transfer",
+    "TransfersAdjCostDefaultPercentage",
+    "TransfersAdjDefaultPercentage",
+    "TypeID",
+    "VW_Entity",
+    "Yearly_Snapshot",
+    "all",
+    "between",
+    "condition",
+    "cost",
+    "data",
+    "enu_customallocations",
+    "fnfinal",
+    "for",
+    "mode",
+    "on",
+    "quarter",
+    "quarterly",
+    "related",
+    "sp",
+    "temp",
+    "the",
+    "to",
+    "transfer",
+    "udfGetCostPercentageDetails",
+    "udfGetLatestCustomFootnoteTransactionIDs",
+    "udf_PE_GetPartnersListForReports",
+    "yearly"
+  ],
+  "udf_calls": [
+    {
+      "name": "udfGetApprovedWorkflow",
+      "line": 1679
+    },
+    {
+      "name": "udfGetLatestTransactionID",
+      "line": 1693
+    },
+    {
+      "name": "udf_PE_GetPartnersListForReports",
+      "line": 1813
+    },
+    {
+      "name": "udfGetCostPercentageDetails",
+      "line": 1917
+    },
+    {
+      "name": "udfGetLatestCustomFootnoteTransactionIDs",
+      "line": 3461
+    }
+  ],
+  "sp_calls": [
+    {
+      "name": "uspAddAllocationLog",
+      "line": 601
+    }
+  ],
+  "join_patterns": [
+    {
+      "type": "INNER",
+      "table": "ENU_GlobalMenuGroup",
+      "condition_columns": 1,
+      "line": 515
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_GlobalMenuGroup",
+      "condition_columns": 1,
+      "line": 563
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_GlobalMenuGroup",
+      "condition_columns": 2,
+      "line": 1591
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_GlobalMenuGroup",
+      "condition_columns": 1,
+      "line": 1633
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_GlobalMenuGroup",
+      "condition_columns": 2,
+      "line": 1647
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_704cAllocationLogic",
+      "condition_columns": 1,
+      "line": 1665
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_UnderlyingType",
+      "condition_columns": 4,
+      "line": 1931
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_UnderlyingType",
+      "condition_columns": 4,
+      "line": 2039
+    },
+    {
+      "type": "INNER",
+      "table": "VW_Entity",
+      "condition_columns": 1,
+      "line": 2281
+    },
+    {
+      "type": "INNER",
+      "table": "Enu_Underlyingtype",
+      "condition_columns": 2,
+      "line": 2301
+    },
+    {
+      "type": "INNER",
+      "table": "VW_Entity",
+      "condition_columns": 3,
+      "line": 2539
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_AttributeType",
+      "condition_columns": 1,
+      "line": 2757
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_UnderlyingType",
+      "condition_columns": 3,
+      "line": 2841
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_UnderlyingType",
+      "condition_columns": 4,
+      "line": 2905
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_Underlyingtype",
+      "condition_columns": 1,
+      "line": 2967
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 3239
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LINETYPE",
+      "condition_columns": 1,
+      "line": 3287
+    },
+    {
+      "type": "Inner",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 2,
+      "line": 3429
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_UnderlyingType",
+      "condition_columns": 4,
+      "line": 3487
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_UnderlyingType",
+      "condition_columns": 1,
+      "line": 3551
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 3567
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_UnderlyingType",
+      "condition_columns": 1,
+      "line": 3599
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 3617
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4181
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 2,
+      "line": 4191
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4203
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4227
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 3,
+      "line": 4271
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 3,
+      "line": 4313
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 3,
+      "line": 4389
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4421
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4449
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4471
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4493
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4515
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4533
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4557
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4579
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4605
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4627
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 4647
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 3,
+      "line": 5553
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_LineType",
+      "condition_columns": 1,
+      "line": 5753
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_UnderlyingType",
+      "condition_columns": 3,
+      "line": 5781
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_UnderlyingType",
+      "condition_columns": 1,
+      "line": 5825
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_AllocationBy",
+      "condition_columns": 1,
+      "line": 5861
+    },
+    {
+      "type": "Inner",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 2,
+      "line": 6205
+    },
+    {
+      "type": "INNER",
+      "table": "VW_Entity",
+      "condition_columns": 2,
+      "line": 6239
+    },
+    {
+      "type": "INNER",
+      "table": "VW_Entity",
+      "condition_columns": 2,
+      "line": 6261
+    },
+    {
+      "type": "INNER",
+      "table": "Entity",
+      "condition_columns": 2,
+      "line": 6277
+    },
+    {
+      "type": "INNER",
+      "table": "Entity",
+      "condition_columns": 1,
+      "line": 6617
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 2,
+      "line": 7339
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 3,
+      "line": 7353
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 2,
+      "line": 7379
+    },
+    {
+      "type": "INNER",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 2,
+      "line": 7423
+    },
+    {
+      "type": "Inner",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 2,
+      "line": 7627
+    },
+    {
+      "type": "inner",
+      "table": "ENU_DF_DataList",
+      "condition_columns": 4,
+      "line": 7629
+    }
+  ],
+  "if_else_blocks": 155,
+  "while_loops": 7,
+  "merge_statements": 4,
+  "update_delete_on_temp": 16,
+  "window_functions": 10,
+  "dynamic_sql": 1,
+  "union_alls": 7,
+  "unpivot_count": 3,
+  "cursor_count": 0,
+  "nolock_hints": 174,
+  "complexity_score": 23,
+  "complexity_tier": "Very Complex",
+  "nullable_join_keys": [
+    {
+      "left": "CS.InvestmentID",
+      "right": "AC.InvestmentID",
+      "line": 2287
+    },
+    {
+      "left": "CS.PartnerNumber",
+      "right": "AC.PartnerNumber",
+      "line": 2289
+    },
+    {
+      "left": "CS.Quarter",
+      "right": "AC.Quarter",
+      "line": 2291
+    },
+    {
+      "left": "CS.Underlyingtype",
+      "right": "AC.Underlyingtype",
+      "line": 2293
+    },
+    {
+      "left": "CS.AllocationTypeId",
+      "right": "AC.AllocationTypeId",
+      "line": 2295
+    },
+    {
+      "left": "CS.TrackingKey",
+      "right": "AC.TrackingKey",
+      "line": 2297
+    },
+    {
+      "left": "CS.Underlyingtype",
+      "right": "U.UnderlyingTypeId",
+      "line": 2301
+    },
+    {
+      "left": "T.TrackingKey",
+      "right": "EH.TrackingKey",
+      "line": 2433
+    },
+    {
+      "left": "AI.Cost_TrackingKey",
+      "right": "C.TrackingKey",
+      "line": 2703
+    },
+    {
+      "left": "AI.TrackingKey",
+      "right": "E.TrackingKey",
+      "line": 3229
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 3665
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 3683
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 3711
+    },
+    {
+      "left": "I.LineID",
+      "right": "B.LineID",
+      "line": 3713
+    },
+    {
+      "left": "I.LineID",
+      "right": "BK.LineID",
+      "line": 3727
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 3755
+    },
+    {
+      "left": "I.LineID",
+      "right": "B.LineID",
+      "line": 3757
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 3803
+    },
+    {
+      "left": "I.LineID",
+      "right": "B.LineID",
+      "line": 3805
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 3831
+    },
+    {
+      "left": "I.LineID",
+      "right": "B.LineID",
+      "line": 3833
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 3879
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 3907
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 3957
+    },
+    {
+      "left": "B.LineID",
+      "right": "I.LineID",
+      "line": 3959
+    },
+    {
+      "left": "B.LineID",
+      "right": "I.LineID",
+      "line": 3987
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 4035
+    },
+    {
+      "left": "I.LineID",
+      "right": "B.LineID",
+      "line": 4035
+    },
+    {
+      "left": "I.QuicklinkID",
+      "right": "B.FootNoteID",
+      "line": 4109
+    },
+    {
+      "left": "I.LineID",
+      "right": "B.LineID",
+      "line": 4111
+    },
+    {
+      "left": "M.TypeId",
+      "right": "T.TypeId",
+      "line": 5221
+    },
+    {
+      "left": "M.TrackingKey",
+      "right": "T.TrackingKey",
+      "line": 5223
+    },
+    {
+      "left": "M.Tag",
+      "right": "T.Tag",
+      "line": 5225
+    },
+    {
+      "left": "D.Comments",
+      "right": "T.QuarterType",
+      "line": 7355
+    },
+    {
+      "left": "L.Tag",
+      "right": "TD.UnderlyingTag",
+      "line": 7679
+    },
+    {
+      "left": "T.TrackingKey",
+      "right": "S.TrackingKey",
+      "line": 8447
+    },
+    {
+      "left": "T.Tag",
+      "right": "S.Tag",
+      "line": 8447
+    },
+    {
+      "left": "T.TrackingKey",
+      "right": "S.TrackingKey",
+      "line": 8471
+    },
+    {
+      "left": "T.Tag",
+      "right": "S.Tag",
+      "line": 8471
+    },
+    {
+      "left": "T.TrackingKey",
+      "right": "S.TrackingKey",
+      "line": 8591
+    },
+    {
+      "left": "T.Tag",
+      "right": "S.Tag",
+      "line": 8591
+    },
+    {
+      "left": "T.TrackingKey",
+      "right": "S.TrackingKey",
+      "line": 8621
+    },
+    {
+      "left": "T.Tag",
+      "right": "S.Tag",
+      "line": 8621
+    }
+  ],
+  "null_safe_joins": []
+}

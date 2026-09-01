@@ -1,0 +1,83 @@
+{
+  "sp": "uspGetFinalEffectivePercentage",
+  "chunks": [
+    {
+      "chunk": 1,
+      "functions": [
+        "load_config",
+        "build_allocation_input",
+        "build_entity_hierarchy",
+        "build_entity_underlyings",
+        "build_cost_percentage_snapshot"
+      ],
+      "description": "Config + Input Loading + Entity Hierarchy + Cost % Snapshot",
+      "sql_lines": "420-2400",
+      "estimated_turns": 12
+    },
+    {
+      "chunk": 2,
+      "functions": [
+        "build_underlyings_combined",
+        "build_book_effective_data",
+        "build_all_underlyings_ordered",
+        "build_input_lines",
+        "compute_amount_based_allocation"
+      ],
+      "description": "Underlyings + Book Effective + Input Lines + Amount Allocation",
+      "sql_lines": "2400-3370",
+      "estimated_turns": 12
+    },
+    {
+      "chunk": 3,
+      "functions": [
+        "build_non_dated_entities",
+        "build_dated_entities",
+        "build_pfic_footnote_underlyings",
+        "build_footnote_book_effective"
+      ],
+      "description": "Non-Dated/Dated Entities + PFIC Footnotes",
+      "sql_lines": "3370-5700",
+      "estimated_turns": 10
+    },
+    {
+      "chunk": 4,
+      "functions": [
+        "build_state_allocation_input",
+        "build_state_entities",
+        "build_cost_percentage_by_type",
+        "compute_missing_entities",
+        "compute_minimum_quarter"
+      ],
+      "description": "State Allocation + Cost % by Type + Min Quarter",
+      "sql_lines": "5711-7440",
+      "estimated_turns": 12
+    },
+    {
+      "chunk": 5,
+      "functions": [
+        "compute_effective_percentage_non_dated",
+        "compute_effective_percentage_dated",
+        "compute_non_dated_pfic_k1_percentages",
+        "apply_plugging",
+        "apply_type_id_update",
+        "build_final_output"
+      ],
+      "description": "Core Calculation + Plugging + Output Assembly",
+      "sql_lines": "7443-8850",
+      "estimated_turns": 12
+    },
+    {
+      "chunk": 6,
+      "functions": [
+        "run_modes_123",
+        "run_mode_4",
+        "orchestrator_and_tests"
+      ],
+      "description": "Orchestrator + Integration + Unit Tests + Verification",
+      "estimated_turns": 10
+    }
+  ],
+  "total_chunks": 6,
+  "total_functions": 28,
+  "estimated_conversations": 6
+}

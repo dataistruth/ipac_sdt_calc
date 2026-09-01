@@ -1,0 +1,30 @@
+CREATE TABLE [dbo].[K1Package](
+	[K1PackageID] INT IDENTITY(1,1) NOT NULL,
+	[UpperTierEntityID] INT NOT NULL,
+	[LowerTierEntityID] INT NULL,
+	[TaxPeriodID] INT NOT NULL,
+	[IsAnnualized] BIT NULL,
+	[IsFullRedemption] BIT NULL,
+	[K1StatusTypeID] INT NULL,
+	[MonthsOfIncome] INT NULL,
+	[MonthsAnnualizingFor] INT NULL,
+	[UpdatedBy] VARCHAR(50) NULL,
+	[UpdateDate] DATETIME NULL,
+	[ClientID] INT NULL,
+	[WorkflowStatusID] INT NULL,
+	[ReceivedDate] DATETIME NULL,
+	[DateK1Expected] DATETIME NULL,
+	[K1InputStatusId] INT NULL,
+	[FinalK1] VARCHAR(20) NULL,
+	[AmendedK1] VARCHAR(20) NULL,
+	[PhaseID] INT NULL,
+	[K1ATaxBasisStatus] VARCHAR(20) NULL,
+	[StateK1TypeID] INT NULL,
+	[StateK1StatusID] INT NULL,
+	[DateOfDisposition] DATETIME NULL,
+	[PartnershipTypeID] INT NULL,
+	[K1inputTeamSignoff] VARCHAR(1000) NULL,
+	[FundTeamSignoff] VARCHAR(1000) NULL
+)
+
+ALTER TABLE [dbo].[K1Package] ADD PRIMARY KEY ([K1PackageID])

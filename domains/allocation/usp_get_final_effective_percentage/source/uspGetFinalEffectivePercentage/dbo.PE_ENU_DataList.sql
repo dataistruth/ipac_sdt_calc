@@ -1,0 +1,9 @@
+CREATE TABLE [dbo].[PE_ENU_DataList](
+	[ID] INT IDENTITY(1,1) NOT NULL,
+	[Category] VARCHAR(100) NULL,
+	[Value] VARCHAR(200) NULL,
+	[DisplayOrder] INT NULL,
+	[Comments] VARCHAR(200) NULL
+)
+
+ALTER TABLE [dbo].[PE_ENU_DataList] ADD PRIMARY KEY ([ID])

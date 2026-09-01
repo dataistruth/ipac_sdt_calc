@@ -1,0 +1,9 @@
+CREATE TABLE [dbo].[Form8886Package](
+	[Form8886ID] INT IDENTITY(1,1) NOT NULL,
+	[K1PackageID] INT NOT NULL,
+	[ClientID] BIGINT NOT NULL,
+	[TaxPeriodID] INT NOT NULL,
+	[Comments] VARCHAR(MAX) NULL
+)
+
+ALTER TABLE [dbo].[Form8886Package] ADD PRIMARY KEY ([Form8886ID])

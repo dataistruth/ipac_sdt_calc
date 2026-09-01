@@ -1,0 +1,31 @@
+CREATE TABLE [dbo].[SM_StateLines](
+	[StateFieldID] INT NOT NULL,
+	[Description] VARCHAR(150) NOT NULL,
+	[ShortName] VARCHAR(200) NULL,
+	[IsStateSpecificLine] BIT NOT NULL,
+	[HasWithholding] BIT NULL,
+	[HasComposite] BIT NULL,
+	[ClientID] INT NOT NULL,
+	[TaxPeriodID] INT NOT NULL,
+	[StateID] INT NOT NULL,
+	[LineNumber] VARCHAR(20) NULL,
+	[Box] VARCHAR(20) NULL,
+	[DisplayOrder] INT NOT NULL,
+	[CategoryID] INT NULL,
+	[IsInterestIncome] BIT NOT NULL,
+	[TransactionDate] DATETIME NULL,
+	[IsTaxHoldback] BIT NULL,
+	[AllocationTypeRuleId] INT NULL,
+	[IsRestrictDataOverride] BIT NULL,
+	[StandardCode] VARCHAR(35) NULL,
+	[IsStateLineThreshold] BIT NULL,
+	[UsePYData] BIT NULL,
+	[IsPETaxCredit] BIT NULL,
+	[IsNYCNOLDeduction] BIT NULL,
+	[IsRestrictDataFeedbyEntInvOverride] BIT NULL,
+	[StandardSiteClientID] INT NULL,
+	[StandardSiteIdentifier] INT NULL,
+	[UpdateDate] DATETIME NULL
+)
+
+ALTER TABLE [dbo].[SM_StateLines] ADD PRIMARY KEY ([StateFieldID])

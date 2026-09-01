@@ -1,0 +1,10 @@
+CREATE TABLE [dbo].[ENU_DF_DataList](
+	[ID] INT IDENTITY(1,1) NOT NULL,
+	[Category] VARCHAR(100) NULL,
+	[LookUpData] VARCHAR(200) NULL,
+	[LookUpValue] VARCHAR(500) NULL,
+	[DisplayOrder] INT NULL,
+	[Comments] VARCHAR(200) NULL
+)
+
+ALTER TABLE [dbo].[ENU_DF_DataList] ADD PRIMARY KEY ([ID])

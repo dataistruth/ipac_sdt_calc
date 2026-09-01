@@ -1,0 +1,8 @@
+CREATE TABLE [dbo].[Form199APackage](
+	[Form199AID] INT IDENTITY(1,1) NOT NULL,
+	[K1PackageID] INT NOT NULL,
+	[ClientID] BIGINT NOT NULL,
+	[TaxPeriodID] INT NOT NULL
+)
+
+ALTER TABLE [dbo].[Form199APackage] ADD PRIMARY KEY ([Form199AID])

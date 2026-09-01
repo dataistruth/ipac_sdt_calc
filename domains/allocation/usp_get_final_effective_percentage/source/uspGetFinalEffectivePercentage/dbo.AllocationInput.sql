@@ -1,0 +1,21 @@
+CREATE TABLE [dbo].[AllocationInput](
+	[RunID] BIGINT NOT NULL,
+	[ClientID] BIGINT NOT NULL,
+	[EntityID] INT NOT NULL,
+	[LineTypeID] INT NOT NULL,
+	[LineID] INT NOT NULL,
+	[Amount] FLOAT NULL,
+	[QuicklinkID] INT NULL,
+	[Amount704b] FLOAT NULL,
+	[CategoryID] INT NULL,
+	[PeriodID] INT NULL,
+	[LineCode] VARCHAR(100) NULL,
+	[ParentEntityID] INT NULL,
+	[SuperParentEntityID] INT NULL,
+	[AdjustmentTypeID] INT NULL,
+	[Tag] VARCHAR(5000) NULL,
+	[TrackingKey] VARCHAR(4000) NULL,
+	[OriginalParentEntityID] INT NULL,
+	[SchID] INT NULL,
+	[FlowUpPartner] VARCHAR(50) NULL
+)
