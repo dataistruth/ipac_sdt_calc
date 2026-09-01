@@ -13,7 +13,14 @@ import time
 from collections import defaultdict
 from typing import Any, Callable
 
-from .checkpoint import checkpoint, drop_checkpoints
+from .checkpoint import (
+    DEFAULT_CHECKPOINT_PROFILE,
+    checkpoint,
+    drop_checkpoints,
+    finish_checkpoint_run,
+    normalize_checkpoint_profile,
+    start_checkpoint_run,
+)
 from .parent import isolated_output_module
 from .read_optimizations import (
     build_lookthrough_input_modes14,
@@ -28,6 +35,7 @@ _ORIGINAL_RUN_FINAL = _base.run_final_effective_percentages
 _ACTIVE_TIMINGS: contextvars.ContextVar[list[dict[str, Any]] | None] = (
     contextvars.ContextVar("fep_updated_timings", default=None)
 )
+_LAST_RUN_PROFILE: dict[str, Any] = {}
 
 
 def _record(name: str, elapsed: float) -> None:
@@ -143,18 +151,45 @@ def _summarize(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _run_with_timings(fn: Callable[..., Any], *args, **kwargs):
+def _run_with_timings(
+    fn: Callable[..., Any],
+    *args,
+    checkpoint_profile: str = DEFAULT_CHECKPOINT_PROFILE,
+    **kwargs,
+):
+    profile = normalize_checkpoint_profile(checkpoint_profile)
+    supplied_cfg = kwargs.get("cfg")
+    if isinstance(supplied_cfg, dict):
+        supplied_cfg["_checkpoint_profile"] = profile
     events: list[dict[str, Any]] = []
     token = _ACTIVE_TIMINGS.set(events)
+    profile_token, activity_token, checkpoint_activity = start_checkpoint_run(
+        profile
+    )
     started = time.time()
     try:
         result = fn(*args, **kwargs)
     finally:
+        finish_checkpoint_run(profile_token, activity_token)
         _ACTIVE_TIMINGS.reset(token)
 
     summary = _summarize(events)
     wall = round(time.time() - started, 3)
+    checkpoint_summary = {
+        "profile": profile,
+        "written_count": len(checkpoint_activity["written"]),
+        "bypassed_count": len(checkpoint_activity["bypassed"]),
+        "written_names": [
+            item["name"] for item in checkpoint_activity["written"]
+        ],
+        "bypassed_names": list(checkpoint_activity["bypassed"]),
+    }
     print(f"[updated timing] wall={wall:.3f}s")
+    print(
+        f"[updated checkpoints] profile={profile} "
+        f"written={checkpoint_summary['written_count']} "
+        f"bypassed={checkpoint_summary['bypassed_count']}"
+    )
     for item in summary:
         print(
             f"[updated timing] {item['step']}: "
@@ -162,24 +197,63 @@ def _run_with_timings(fn: Callable[..., Any], *args, **kwargs):
             f"(calls={item['calls']})"
         )
 
+    _LAST_RUN_PROFILE.clear()
+    _LAST_RUN_PROFILE.update(
+        {
+            "updated_wall_seconds": wall,
+            "timings": summary,
+            "checkpoint_summary": checkpoint_summary,
+        }
+    )
     if isinstance(result, dict):
         result["timings"] = summary
         result["updated_wall_seconds"] = wall
+        result["checkpoint_summary"] = checkpoint_summary
         result["optimization_profile"] = {
             "checkpoint_backend": "uc_delta_stats_off",
+            "checkpoint_profile": profile,
             "logging_only_probe_actions_removed": 3,
         }
     return result
 
 
+def _pop_checkpoint_profile(kwargs: dict[str, Any]) -> str:
+    if "CheckpointProfile" in kwargs:
+        return kwargs.pop("CheckpointProfile")
+    return kwargs.pop("checkpoint_profile", DEFAULT_CHECKPOINT_PROFILE)
+
+
 def run_modes(*args, **kwargs):
     """Run modes with optimized checkpoints and detailed step timings."""
-    return _run_with_timings(_ORIGINAL_RUN_MODES, *args, **kwargs)
+    profile = _pop_checkpoint_profile(kwargs)
+    return _run_with_timings(
+        _ORIGINAL_RUN_MODES,
+        *args,
+        checkpoint_profile=profile,
+        **kwargs,
+    )
 
 
 def run_final_effective_percentages(*args, **kwargs):
     """Updated entry point matching the production callable."""
-    return _run_with_timings(_ORIGINAL_RUN_FINAL, *args, **kwargs)
+    profile = _pop_checkpoint_profile(kwargs)
+    return _run_with_timings(
+        _ORIGINAL_RUN_FINAL,
+        *args,
+        checkpoint_profile=profile,
+        **kwargs,
+    )
+
+
+def get_last_run_profile() -> dict[str, Any]:
+    """Return benchmark metadata even when the result storer returns a string."""
+    return {
+        **_LAST_RUN_PROFILE,
+        "timings": list(_LAST_RUN_PROFILE.get("timings", [])),
+        "checkpoint_summary": dict(
+            _LAST_RUN_PROFILE.get("checkpoint_summary", {})
+        ),
+    }
 
 
 # Compatibility with existing notebooks that use the historical name.
@@ -189,4 +263,5 @@ __all__ = [
     "run_final_effective_percentages",
     "run_mode",
     "run_modes",
+    "get_last_run_profile",
 ]

@@ -25,6 +25,21 @@ and the production reference under `sdt_d` are not modified.
 3. **Detailed timing**
    - Checkpoint durations are printed individually.
    - Major builder durations are aggregated and returned as `result["timings"]`.
+   - Checkpoint write and bypass counts are reported for each run.
+
+4. **Checkpoint profiles**
+   - `full`: writes every production lineage break.
+   - `conservative` (default): bypasses four single-consumer checkpoints that
+     are immediately followed by retained materialization barriers:
+     `underlyings_common`, `nde_post_miss_fused`, `eff_dt_fused`, and
+     `eff_nd_fused`.
+   - `balanced`: also bypasses `all_ent_pre_tag_m0` and `eff_dated_s6_m0`.
+     Promote this profile only after multi-pass parity and performance testing.
+
+   High-fan-out and plan-size circuit breakers remain enabled, including the
+   common inputs, pre-CPBT inputs, `tcp_post_et_m0`, `all_ent_m0`,
+   `parent_ord_m0`, `eff_dated_s5_m0`, and
+   `pickup_order_dated_pre_yearly`.
 
 ## Entry point
 
@@ -36,12 +51,13 @@ from AllocationV2.usp_get_final_effective_percentage.output.updated.orchestrator
 result = run_final_effective_percentages(
     spark,
     Mode=0,
-    EntityID=5051,
-    ClientID=15347,
+    EntityID=4137,
+    ClientID=15348,
     TaxPeriodID=1,
-    RunID=3517,
+    RunID=17376,
     CatalogName="QA7",
-    SchemaName="iPC_2025_QA7_15347",
+    SchemaName="iPC_2025_QA7_15348",
+    CheckpointProfile="conservative",
 )
 ```
 
@@ -56,7 +72,15 @@ For every pass the notebook:
 3. Captures row counts, schemas, measure sums, and row fingerprints.
 4. Deletes the partitions again and runs the updated module.
 5. Fails immediately if any output fingerprint differs.
-6. Displays original/updated wall times and updated per-step timings.
+6. Displays original/updated wall times, checkpoint counts, and updated
+   per-step timings.
 
 Use `ResultType=deltalake` for direct table reconciliation. Mode `0` benchmarks
 the fused modes 1+2+3 path; Mode `4` benchmarks the 704c path.
+
+Use at least three A/B passes. The notebook alternates original/updated
+execution order on successive passes to reduce warm-cache bias. Accept a
+reduced profile only when all output fingerprints match, Spark completes
+without Analyzer or driver failures, and median wall time improves over
+`full`. If `balanced` regresses, use `conservative`; `full` is the immediate
+fallback.

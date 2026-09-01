@@ -17,14 +17,14 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text("number_of_runs", "1", "2. A/B passes")
 dbutils.widgets.dropdown("Mode", "0", ["0", "4"], "3. Mode")
-dbutils.widgets.text("EntityID", "5051", "4. EntityID")
-dbutils.widgets.text("ClientID", "15347", "5. ClientID")
+dbutils.widgets.text("EntityID", "4137", "4. EntityID")
+dbutils.widgets.text("ClientID", "15348", "5. ClientID")
 dbutils.widgets.text("TaxPeriodID", "1", "6. TaxPeriodID")
-dbutils.widgets.text("RunID", "3517", "7. RunID")
+dbutils.widgets.text("RunID", "17376", "7. RunID")
 dbutils.widgets.text("CatalogName", "QA7", "8. Catalog")
 dbutils.widgets.text(
     "SchemaName",
-    "iPC_2025_QA7_15347",
+    "iPC_2025_QA7_15348",
     "9. Schema",
 )
 dbutils.widgets.dropdown(
@@ -34,6 +34,12 @@ dbutils.widgets.dropdown(
     "10. Result type",
 )
 dbutils.widgets.text("VolumePath", "", "11. Volume path (optional)")
+dbutils.widgets.dropdown(
+    "CheckpointProfile",
+    "conservative",
+    ["full", "conservative", "balanced"],
+    "12. Checkpoint profile",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -46,6 +52,7 @@ catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
 result_type = dbutils.widgets.get("ResultType").strip()
 volume_path = dbutils.widgets.get("VolumePath").strip()
+checkpoint_profile = dbutils.widgets.get("CheckpointProfile").strip().lower()
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
@@ -105,8 +112,7 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         f"{'=' * 72}"
     )
     started = time.time()
-    result = runner.run_final_effective_percentages(
-        spark,
+    run_kwargs = dict(
         Mode=mode,
         EntityID=entity_id,
         ClientID=client_id,
@@ -118,14 +124,38 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         VolumePath=volume_path or None,
         ExecutionID=f"benchmark-{pass_number}-{variant}",
     )
+    if variant == "updated":
+        run_kwargs["CheckpointProfile"] = checkpoint_profile
+
+    result = runner.run_final_effective_percentages(
+        spark,
+        **run_kwargs,
+    )
     wall = round(time.time() - started, 3)
 
     metrics = reconcile.capture_output_metrics(
         spark, catalog, schema, run_id
     )
     summary = reconcile.summarize_metrics(metrics)
-    reported = result.get("elapsed_seconds") if isinstance(result, dict) else None
-    timings = result.get("timings", []) if isinstance(result, dict) else []
+    profile_data = (
+        runner.get_last_run_profile()
+        if variant == "updated" and hasattr(runner, "get_last_run_profile")
+        else {}
+    )
+    reported = (
+        result.get("elapsed_seconds")
+        if isinstance(result, dict)
+        else profile_data.get("updated_wall_seconds")
+    )
+    timings = (
+        result.get("timings", [])
+        if isinstance(result, dict)
+        else profile_data.get("timings", [])
+    )
+    checkpoint_summary = profile_data.get(
+        "checkpoint_summary",
+        result.get("checkpoint_summary", {}) if isinstance(result, dict) else {},
+    )
     print(
         f"[benchmark] {variant}: wall={wall:.3f}s "
         f"reported={reported} rows={summary['total_rows']}"
@@ -138,18 +168,33 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         "summary": summary,
         "metrics": metrics,
         "timings": timings,
+        "checkpoint_profile": checkpoint_summary.get("profile"),
+        "checkpoints_written": checkpoint_summary.get("written_count"),
+        "checkpoints_bypassed": checkpoint_summary.get("bypassed_count"),
     }
 
 
 records = []
 for pass_number in range(1, number_of_runs + 1):
-    original = _run_variant("original", pass_number)
-    updated = _run_variant("updated", pass_number)
-    records.extend([original, updated])
+    # Alternate execution order to reduce systematic warm-cache bias.
+    execution_order = (
+        ("original", "updated")
+        if pass_number % 2 == 1
+        else ("updated", "original")
+    )
+    print(
+        f"[benchmark] pass {pass_number} execution order: "
+        f"{' -> '.join(execution_order)}"
+    )
+    pass_records = {
+        variant: _run_variant(variant, pass_number)
+        for variant in execution_order
+    }
+    records.extend(pass_records.values())
 
     mismatches = reconcile.compare_variants(
-        original["metrics"],
-        updated["metrics"],
+        pass_records["original"]["metrics"],
+        pass_records["updated"]["metrics"],
     )
     if mismatches:
         print(f"[reconcile] FAIL pass {pass_number}")
@@ -179,6 +224,9 @@ _summary_schema = StructType([
     StructField("reported_seconds", DoubleType(), True),
     StructField("total_rows", LongType(), True),
     StructField("tables_with_rows", LongType(), True),
+    StructField("checkpoint_profile", StringType(), True),
+    StructField("checkpoints_written", LongType(), True),
+    StructField("checkpoints_bypassed", LongType(), True),
 ])
 
 
@@ -198,6 +246,9 @@ summary_rows = [
         _as_float(row["reported_seconds"]),
         _as_int(row["summary"]["total_rows"]),
         _as_int(row["summary"]["tables_with_rows"]),
+        row["checkpoint_profile"],
+        _as_int(row["checkpoints_written"]),
+        _as_int(row["checkpoints_bypassed"]),
     )
     for row in records
 ]
