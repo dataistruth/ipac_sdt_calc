@@ -97,6 +97,14 @@ def _ensure_checkpoint_lists(cfg: dict) -> None:
     cfg.setdefault("_checkpoint_tables", [])
 
 
+def _safe_name(name: str) -> str:
+    """Sanitize a checkpoint label for use in an unquoted Delta table identifier."""
+    cleaned = "".join(c if (c.isalnum() or c == "_") else "_" for c in str(name))
+    if cleaned and cleaned[0].isdigit():
+        cleaned = f"_{cleaned}"
+    return cleaned or "ckpt"
+
+
 def _is_transient_uc_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     needles = (
@@ -226,7 +234,7 @@ def checkpoint_production(
         _ensure_checkpoint_lists(cfg)
         run_id = cfg.get("run_id", "0")
         uniq = uuid.uuid4().hex[:8]
-        fqn = f"{table_prefix(cfg)}._tmp_{name}_{run_id}_{uniq}"
+        fqn = f"{table_prefix(cfg)}._tmp_{_safe_name(name)}_{run_id}_{uniq}"
         cfg["_checkpoint_tables"].append(fqn)
         logger.info(f"[CHECKPOINT] production fallback write: {fqn}")
         prod_cfg = dict(cfg)
@@ -261,7 +269,7 @@ def checkpoint(
     _ensure_checkpoint_lists(cfg)
     run_id = cfg.get("run_id", 0)
     uniq = uuid.uuid4().hex[:8]
-    fqn = f"{table_prefix(cfg)}._tmp_{name}_{run_id}_{uniq}"
+    fqn = f"{table_prefix(cfg)}._tmp_{_safe_name(name)}_{run_id}_{uniq}"
     cfg["_checkpoint_tables"].append(fqn)
     comp = _checkpoint_compression(cfg)
     comp_note = f" compression={comp}" if comp else ""
