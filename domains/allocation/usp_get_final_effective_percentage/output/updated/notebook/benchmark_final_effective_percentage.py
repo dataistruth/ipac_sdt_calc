@@ -154,6 +154,19 @@ def _assert_updated_package_synced() -> None:
 
 _assert_updated_package_synced()
 
+CPBT_MODULE = f"{PACKAGE}.output.updated.cost_pct_loader"
+try:
+    cpbt_module = importlib.import_module(CPBT_MODULE)
+except Exception as exc:
+    raise ImportError(
+        f"Optimized CPBT module exists on disk but cannot be imported: "
+        f"{CPBT_MODULE}. Root cause: {type(exc).__name__}: {exc}"
+    ) from exc
+print(
+    f"[sync check] CPBT import OK: {cpbt_module.__file__} | "
+    f"profile={cpbt_module.OPTIMIZATION_PROFILE_MARKER}"
+)
+
 reconcile = importlib.import_module(f"{PACKAGE}.output.updated.output_reconcile")
 
 # COMMAND ----------

@@ -34,7 +34,11 @@ except Exception as _cpbt_import_error:  # pragma: no cover - deploy safety net
     # A partial workspace sync (e.g. cost_pct_loader.py not uploaded) must not
     # crash the whole updated pipeline. Fall back to the base builder and make
     # the degraded state obvious in the logs and in the returned profile.
-    CPBT_OPTIMIZATION_PROFILE = f"base_fallback ({type(_cpbt_import_error).__name__})"
+    _cpbt_error_text = str(_cpbt_import_error).replace("\n", " ")[:240]
+    CPBT_OPTIMIZATION_PROFILE = (
+        f"base_fallback ({type(_cpbt_import_error).__name__}: "
+        f"{_cpbt_error_text})"
+    )
     build_cost_percentage_by_type_optimized = None
     logging.getLogger(__name__).warning(
         "[updated] optimized build_cost_percentage_by_type unavailable (%s); "
