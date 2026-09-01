@@ -7,8 +7,9 @@
 # MAGIC compares row counts, amount sums, schemas, and order-independent row
 # MAGIC fingerprints for all three output tables.
 # MAGIC
-# MAGIC Sync marker v2: import-dir the entire `output/updated/` folder (not
-# MAGIC `notebooks/`), then restart Python before running.
+# MAGIC This notebook lives in `output/updated/notebook/`. Python modules live
+# MAGIC one folder up in `output/updated/`. Do not import-dir modules into
+# MAGIC this `notebook/` folder.
 
 # COMMAND ----------
 
@@ -97,8 +98,8 @@ def _import_fresh(module_name: str):
 def _assert_updated_package_synced() -> None:
     """Fail early if updated modules are missing from the Python package path.
 
-    import-dir must target output/updated, not output/updated/notebooks.
-    Python imports ...output.updated.cost_pct_loader from that parent folder.
+    import-dir for .py modules must target output/updated, not
+    output/updated/notebook or output/updated/notebooks.
     """
     updated_dir = os.path.join(
         source_path,
@@ -106,7 +107,10 @@ def _assert_updated_package_synced() -> None:
         "output",
         "updated",
     )
-    notebooks_dir = os.path.join(updated_dir, "notebooks")
+    sibling_dirs = [
+        os.path.join(updated_dir, "notebook"),
+        os.path.join(updated_dir, "notebooks"),
+    ]
     required = [
         "parent.py",
         "checkpoint.py",
@@ -120,12 +124,13 @@ def _assert_updated_package_synced() -> None:
     print(f"[sync check] exists: {os.path.isdir(updated_dir)}")
     if os.path.isdir(updated_dir):
         print(f"[sync check] files: {sorted(os.listdir(updated_dir))}")
-    misplaced = [
-        name
-        for name in required
-        if os.path.isfile(os.path.join(notebooks_dir, name))
-        and not os.path.isfile(os.path.join(updated_dir, name))
-    ]
+    misplaced = []
+    for sibling in sibling_dirs:
+        for name in required:
+            if os.path.isfile(os.path.join(sibling, name)) and not os.path.isfile(
+                os.path.join(updated_dir, name)
+            ):
+                misplaced.append(f"{os.path.basename(sibling)}/{name}")
     missing = [
         name
         for name in required
@@ -133,17 +138,17 @@ def _assert_updated_package_synced() -> None:
     ]
     if misplaced:
         raise ModuleNotFoundError(
-            "Updated modules were imported into output/updated/notebooks/ "
-            "instead of output/updated/. Move them up one folder, or rerun "
-            "import-dir with destination "
+            "Updated modules were imported into output/updated/notebook(s)/ "
+            "instead of output/updated/. Python cannot import them from there. "
+            "Rerun import-dir with destination "
             ".../usp_get_final_effective_percentage/output/updated "
-            f"(found in notebooks/: {', '.join(misplaced)})"
+            f"(found: {', '.join(misplaced)})"
         )
     if missing:
         raise ModuleNotFoundError(
             "output/updated is missing files on the Python path "
             f"{updated_dir}: {', '.join(missing)}. "
-            "Resync that folder (not notebooks/) and restart Python."
+            "Resync output/updated/ (not notebook/) and restart Python."
         )
 
 

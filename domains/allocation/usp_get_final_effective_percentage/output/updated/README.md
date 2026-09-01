@@ -78,7 +78,11 @@ result = run_final_effective_percentages(
 
 ## Benchmark
 
-Run `notebooks/benchmark_final_effective_percentage.py` in Databricks.
+Run `notebook/benchmark_final_effective_percentage.py` in Databricks.
+
+Keep Python modules in this `updated/` folder. Keep the notebook in
+`updated/notebook/`. `databricks workspace import-dir` for modules must
+target `.../output/updated`, not `.../output/updated/notebook`.
 
 For every pass the notebook:
 
