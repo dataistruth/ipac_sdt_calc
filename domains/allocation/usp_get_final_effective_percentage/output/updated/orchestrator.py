@@ -1,3 +1,6 @@
+# updated-package sync marker v2 (2026-09-01): resync the ENTIRE
+# output/updated/ folder as one set. Imports .checkpoint, .cost_pct_loader,
+# .parent, .read_optimizations relatively; a partial upload breaks the import.
 """Optimized, isolated orchestrator for Final Effective Percentage.
 
 The production orchestrator is executed in a private updated-module namespace.
@@ -9,6 +12,7 @@ from __future__ import annotations
 
 import contextvars
 import functools
+import logging
 import time
 from collections import defaultdict
 from typing import Any, Callable
@@ -21,10 +25,23 @@ from .checkpoint import (
     normalize_checkpoint_profile,
     start_checkpoint_run,
 )
-from .cost_pct_loader import (
-    OPTIMIZATION_PROFILE_MARKER as CPBT_OPTIMIZATION_PROFILE,
-    build_cost_percentage_by_type as build_cost_percentage_by_type_optimized,
-)
+try:
+    from .cost_pct_loader import (
+        OPTIMIZATION_PROFILE_MARKER as CPBT_OPTIMIZATION_PROFILE,
+        build_cost_percentage_by_type as build_cost_percentage_by_type_optimized,
+    )
+except Exception as _cpbt_import_error:  # pragma: no cover - deploy safety net
+    # A partial workspace sync (e.g. cost_pct_loader.py not uploaded) must not
+    # crash the whole updated pipeline. Fall back to the base builder and make
+    # the degraded state obvious in the logs and in the returned profile.
+    CPBT_OPTIMIZATION_PROFILE = f"base_fallback ({type(_cpbt_import_error).__name__})"
+    build_cost_percentage_by_type_optimized = None
+    logging.getLogger(__name__).warning(
+        "[updated] optimized build_cost_percentage_by_type unavailable (%s); "
+        "using base builder. Re-sync output/updated/cost_pct_loader.py to "
+        "enable the candidate-claim optimization.",
+        _cpbt_import_error,
+    )
 from .parent import isolated_output_module
 from .read_optimizations import (
     build_lookthrough_input_modes14,
@@ -79,7 +96,8 @@ _base._drop_checkpoints = drop_checkpoints
 _base.load_line_items = load_line_items
 _base.load_quarters = load_quarters
 _base.build_lookthrough_input_modes14 = build_lookthrough_input_modes14
-_base.build_cost_percentage_by_type = build_cost_percentage_by_type_optimized
+if build_cost_percentage_by_type_optimized is not None:
+    _base.build_cost_percentage_by_type = build_cost_percentage_by_type_optimized
 
 _TIMED_GLOBALS = (
     "load_config",

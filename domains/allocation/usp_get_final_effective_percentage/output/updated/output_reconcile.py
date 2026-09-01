@@ -1,3 +1,5 @@
+# updated-package sync marker v2 (2026-09-01): resync the ENTIRE
+# output/updated/ folder as one set.
 """Output purge and deterministic metrics for original/updated A/B runs."""
 
 from __future__ import annotations

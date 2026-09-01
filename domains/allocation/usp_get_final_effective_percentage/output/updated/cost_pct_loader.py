@@ -1,3 +1,7 @@
+# updated-package sync marker v2 (2026-09-01): resync the ENTIRE
+# output/updated/ folder as one set. This module is imported by
+# orchestrator.py via `from .cost_pct_loader import ...`; if it is missing
+# in the workspace the whole updated package fails to import.
 """Candidate-based direct cost-percentage matching for the isolated variant.
 
 Only the six direct UO/ET/AC tiers are replaced here.  The parent hierarchy,

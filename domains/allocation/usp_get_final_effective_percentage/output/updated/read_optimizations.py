@@ -1,3 +1,5 @@
+# updated-package sync marker v2 (2026-09-01): resync the ENTIRE
+# output/updated/ folder as one set.
 """Semantically equivalent source builders without logging-only Spark actions."""
 
 from __future__ import annotations

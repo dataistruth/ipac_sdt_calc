@@ -1,4 +1,7 @@
 # Databricks notebook source
+# updated-package sync marker v2 (2026-09-01): resync the ENTIRE
+# output/updated/ folder (including cost_pct_loader.py) as one set, then
+# restart Python / detach-reattach so stale sys.modules are cleared.
 # MAGIC %md
 # MAGIC # A/B benchmark — usp_get_final_effective_percentage
 # MAGIC
@@ -90,6 +93,38 @@ def _import_fresh(module_name: str):
     print(f"imported {module_name}: {module.__file__}")
     return module
 
+
+def _assert_updated_package_synced() -> None:
+    """Fail early with a clear message if the updated folder is partially synced.
+
+    The updated package imports its own submodules relatively, so one missing
+    file (historically cost_pct_loader.py) surfaces as a confusing
+    ModuleNotFoundError deep in the run. Check them up front instead.
+    """
+    updated_pkg = f"{PACKAGE}.output.updated"
+    required = [
+        "parent",
+        "checkpoint",
+        "read_optimizations",
+        "cost_pct_loader",
+        "output_reconcile",
+        "orchestrator",
+    ]
+    missing = []
+    for name in required:
+        if importlib.util.find_spec(f"{updated_pkg}.{name}") is None:
+            missing.append(name)
+    if missing:
+        raise ModuleNotFoundError(
+            "output/updated is partially synced. Missing module(s): "
+            + ", ".join(f"{updated_pkg}.{m}" for m in missing)
+            + ". Resync the ENTIRE output/updated/ folder and restart Python."
+        )
+
+
+import importlib.util  # noqa: E402  (needed for the sync check above)
+
+_assert_updated_package_synced()
 
 reconcile = importlib.import_module(f"{PACKAGE}.output.updated.output_reconcile")
 
