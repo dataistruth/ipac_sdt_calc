@@ -1,7 +1,4 @@
 # Databricks notebook source
-# updated-package sync marker v2 (2026-09-01): resync the ENTIRE
-# output/updated/ folder (including cost_pct_loader.py) as one set, then
-# restart Python / detach-reattach so stale sys.modules are cleared.
 # MAGIC %md
 # MAGIC # A/B benchmark — usp_get_final_effective_percentage
 # MAGIC
@@ -9,6 +6,9 @@
 # MAGIC same RunID. Each variant starts with clean output partitions. Parity
 # MAGIC compares row counts, amount sums, schemas, and order-independent row
 # MAGIC fingerprints for all three output tables.
+# MAGIC
+# MAGIC Sync marker v2: import-dir the entire `output/updated/` folder (not
+# MAGIC `notebooks/`), then restart Python before running.
 
 # COMMAND ----------
 
