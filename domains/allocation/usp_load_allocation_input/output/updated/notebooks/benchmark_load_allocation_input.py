@@ -57,6 +57,12 @@ dbutils.widgets.text(
     "4",
     "4. Parallel workers (updated: shared views + flow-up writes)",
 )
+dbutils.widgets.dropdown(
+    "parallel_validations",
+    "true",
+    ["false", "true"],
+    "4b. Parallel validation checks (updated only)",
+)
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
@@ -85,6 +91,7 @@ run_id = int(dbutils.widgets.get("RunID").strip())
 catalog_name = dbutils.widgets.get("CatalogName").strip()
 schema_name = dbutils.widgets.get("SchemaName").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
+parallel_validations = dbutils.widgets.get("parallel_validations").strip().lower() == "true"
 
 if parallel_workers < 1:
     raise ValueError("parallel_workers must be >= 1")
@@ -258,6 +265,8 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         run_kwargs["VolumePath"] = volume_path
         run_kwargs["parallel_config_workers"] = parallel_workers
         run_kwargs["parallel_write_workers"] = parallel_workers
+        run_kwargs["parallel_validations"] = parallel_validations
+        run_kwargs["validation_workers"] = parallel_workers
 
     started_at = datetime.now()
     t0 = time.time()

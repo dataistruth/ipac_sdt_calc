@@ -135,6 +135,10 @@ def run_load_allocation_input(
     ParallelConfigWorkers: int = None,
     parallel_write_workers: int = None,
     ParallelWriteWorkers: int = None,
+    parallel_validations: bool = None,
+    ParallelValidations: bool = None,
+    validation_workers: int = None,
+    ValidationWorkers: int = None,
     **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
@@ -207,6 +211,20 @@ def run_load_allocation_input(
     cfg.setdefault("execution_id", execution_id)
     cfg["parallel_config_workers"] = parallel_config_workers
     cfg["parallel_write_workers"] = parallel_write_workers
+    cfg.setdefault("parallel_validations", True)
+    _parallel_validations = parallel_validations
+    if _parallel_validations is None:
+        _parallel_validations = ParallelValidations
+    if _parallel_validations is not None:
+        if isinstance(_parallel_validations, str):
+            _parallel_validations = _parallel_validations.strip().lower() in ("1", "true", "yes", "on")
+        cfg["parallel_validations"] = bool(_parallel_validations)
+    cfg["validation_workers"] = _worker_count(
+        validation_workers,
+        ValidationWorkers,
+        cfg.get("validation_workers"),
+        default=parallel_config_workers,
+    )
     cfg.setdefault("write_compression", "uncompressed")
     cfg.setdefault("checkpoint_compression", cfg.get("write_compression", "uncompressed"))
     if _use_production_checkpoint(cfg):
@@ -227,6 +245,11 @@ def run_load_allocation_input(
     write_workers = cfg["parallel_write_workers"]
     if write_workers > 1:
         print(f"[write] parallel flow-up table writes: max_workers={write_workers}")
+    if cfg.get("parallel_validations"):
+        print(
+            f"[validations] parallel warning checks: max_workers={cfg['validation_workers']} "
+            "(gating checks stay sequential)"
+        )
     if str(cfg.get("write_compression", "")).lower() in ("uncompressed", "none"):
         print("[write] parquet compression: uncompressed (Delta + flow-up outputs)")
 
@@ -244,7 +267,13 @@ def run_load_allocation_input(
         workflows = build_workflows(spark, cfg)
 
     with timer.step("phase_3_validations"):
-        should_continue = run_validations(spark, cfg, lower_tier_df)
+        if cfg.get("parallel_validations"):
+            from .validation_parallel import run_validations_parallel
+            should_continue = run_validations_parallel(
+                spark, cfg, lower_tier_df, workers=cfg.get("validation_workers", 8)
+            )
+        else:
+            should_continue = run_validations(spark, cfg, lower_tier_df)
         if not should_continue:
             drop_checkpoints(spark, cfg)
             return _timed_fail(timer, "validation_failed")
