@@ -27,6 +27,7 @@ dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "8. Schema")
 dbutils.widgets.dropdown(
     "RankForRulePickup", "1", ["1", "2"], "9. Rank for rule pickup"
 )
+dbutils.widgets.text("ParallelWorkers", "4", "10. Updated parallel workers")
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -37,9 +38,12 @@ run_id = int(dbutils.widgets.get("RunID").strip())
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
 rank_for_rule_pickup = int(dbutils.widgets.get("RankForRulePickup").strip())
+parallel_workers = int(dbutils.widgets.get("ParallelWorkers").strip() or "4")
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
+if not 1 <= parallel_workers <= 8:
+    raise ValueError("ParallelWorkers must be between 1 and 8")
 
 # COMMAND ----------
 
@@ -68,6 +72,7 @@ def _assert_updated_package_synced() -> None:
     required = [
         "__init__.py",
         "checkpoint.py",
+        "join_optimizations.py",
         "orchestrator.py",
         "output_reconcile.py",
     ]
@@ -135,6 +140,7 @@ def _run_variant(variant: str, pass_number: int, snapshot: dict) -> dict:
         CatalogName=catalog,
         SchemaName=schema,
         RankForRulePickup=rank_for_rule_pickup,
+        **({"parallel_workers": parallel_workers} if variant == "updated" else {}),
     )
     wall = round(time.time() - started, 3)
     metrics = capture_metrics(spark, catalog, schema, run_id)

@@ -16,8 +16,13 @@ No production files are modified.
   disabled: `temp_alloc_input`, `all_underlyings`, `underlyings_fn`, and
   `alloc_input`.
 - Records per-stage and per-checkpoint elapsed time.
-- Temporarily enables safe AQE settings and restores their prior values after
-  every invocation. The broadcast threshold is not increased.
+- Does not change AQE, CBO, shuffle, or auto-broadcast Spark session settings.
+- Broadcasts only bounded lookup/update sets: quarter update keys, Part-V
+  exclusion keys, custom footnote line types, zero-exclusion keys, and the
+  existing entity-scoped partner lookup. Large facts are never broadcast.
+- Uses a thread pool for the independent S3/S5 plan builders and for the two
+  final writes to separate Delta tables. Quarter updates remain sequential
+  because every update consumes the previous update's DataFrame.
 
 ## Entry point
 
@@ -35,6 +40,7 @@ status = run_load_footnotes_allocation_to_output(
     CatalogName="QA7",
     SchemaName="IPC_2025_QA7_15348",
     RankForRulePickup=1,
+    parallel_workers=4,
 )
 ```
 
@@ -54,6 +60,9 @@ The SP both appends `AllocationOutput` and deducts amounts from
 4. Compares row counts, schemas, amount sums, and row fingerprints for both
    tables.
 5. Restores the exact pre-benchmark table state in a `finally` block.
+
+`ParallelWorkers` defaults to `4` for the updated variant. Set it to `1` to
+disable concurrent execution while preserving all join hints.
 
 Do not run another process for the same RunID during the benchmark. If final
 restoration fails, backup tables are intentionally retained for manual
