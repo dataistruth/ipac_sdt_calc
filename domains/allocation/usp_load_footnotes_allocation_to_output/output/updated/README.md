@@ -12,9 +12,11 @@ No production files are modified.
 
 - Preserves the production S1-S13 business flow and public entry-point
   signature.
-- Uses four namespaced UC Delta lineage breaks with data-skipping statistics
-  disabled: `temp_alloc_input`, `all_underlyings`, `underlyings_fn`, and
-  `alloc_input`.
+- Uses five namespaced UC Delta lineage breaks with data-skipping statistics
+  disabled: `temp_alloc_input`, `cost_snapshot`, `all_underlyings`,
+  `underlyings_fn`, and `alloc_input`. The `cost_snapshot` break materializes
+  the cost 4-way union + `distinct` once so the S6 hierarchy branches do not
+  re-evaluate it (this is the dominant cost in the `all_underlyings` checkpoint).
 - Records per-stage and per-checkpoint elapsed time.
 - Does not change AQE, CBO, shuffle, or auto-broadcast Spark session settings.
 - Broadcasts only bounded lookup/update sets: quarter update keys, Part-V

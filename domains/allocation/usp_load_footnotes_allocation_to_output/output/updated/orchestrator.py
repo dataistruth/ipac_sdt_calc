@@ -53,6 +53,7 @@ from .join_optimizations import (
     broadcast_part_v_lines,
     broadcast_zero_exclude_lines,
     build_custom_footnote_line_types,
+    derive_cost_underlying_types,
     quarter_join_hints,
 )
 
@@ -229,10 +230,26 @@ def run_load_footnotes_allocation_to_output(
         with _timed(timings, "S5 cost"):
             (
                 df_cost_pct_snapshot,
-                df_temp_cost_underlying_types,
+                _df_cost_underlying_types_lazy,
             ) = cost_future.result()
             planning_pool.shutdown(wait=True)
             planning_pool = None
+            # Materialize the 4-way union + distinct once. Both the snapshot and
+            # its underlying-types subset are consumed by several hierarchy
+            # branches in S6; without this break the union + distinct is
+            # re-evaluated multiple times inside the ~70s all_underlyings
+            # checkpoint. Re-derive the subset from the materialized snapshot so
+            # the heavy work is computed a single time.
+            del _df_cost_underlying_types_lazy
+            df_cost_pct_snapshot = checkpoint(
+                spark,
+                df_cost_pct_snapshot,
+                "cost_snapshot",
+                cfg,
+            )
+            df_temp_cost_underlying_types = derive_cost_underlying_types(
+                df_cost_pct_snapshot
+            )
             status["sections_completed"] = 5
 
         with _timed(timings, "S6 hierarchy"):

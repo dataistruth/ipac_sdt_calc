@@ -133,3 +133,32 @@ def broadcast_part_v_lines(df: DataFrame) -> DataFrame:
 def broadcast_zero_exclude_lines(df: DataFrame) -> DataFrame:
     """Hint the two-form zero-exclusion lookup."""
     return F.broadcast(df)
+
+
+def derive_cost_underlying_types(df_cost_snapshot: DataFrame) -> DataFrame:
+    """Rebuild #TempCostUnderlyingTypes from a materialized cost snapshot.
+
+    Mirrors the production derivation in ``build_cost_percentage_data`` exactly.
+    Deriving from an already-checkpointed snapshot lets the expensive 4-way
+    union + ``distinct`` compute a single time instead of being re-evaluated by
+    every hierarchy branch in S6.
+    """
+    return (
+        df_cost_snapshot.filter(
+            (F.lower(F.col("EntityUnderlyingtype")) != "k-1 only")
+            | (
+                (F.lower(F.col("EntityUnderlyingtype")) == "k-1 only")
+                & (F.col("InvestmentID") == -1)
+            )
+        )
+        .select(
+            "EntityId",
+            "InvestmentID",
+            "Quarter",
+            "AllocationTypeId",
+            "TrackingKey",
+            "Underlyingtype",
+            "EntityUnderlyingtype",
+        )
+        .distinct()
+    )
