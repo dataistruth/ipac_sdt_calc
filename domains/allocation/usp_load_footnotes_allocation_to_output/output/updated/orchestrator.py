@@ -29,7 +29,6 @@ from ..allocation_effective import (
     resolve_min_quarter,
 )
 from ..allocation_input import (
-    build_allocation_input,
     build_temp_allocation_input,
     build_temp_book_effective,
     build_temp_final_effective_pct,
@@ -43,7 +42,6 @@ from ..quarter_logic import (
 )
 from ..underlyings import (
     build_cost_percentage_data,
-    build_entity_hierarchy,
     build_underlyings_footnotes_ordered,
     filter_asset_class,
 )
@@ -55,6 +53,15 @@ from .join_optimizations import (
     build_custom_footnote_line_types,
     derive_cost_underlying_types,
     quarter_join_hints,
+)
+
+# Updated-only reimplementations of two plan-heavy builders that add lineage
+# breaks at the plan-explosion seams (8-level union tree; 5-pass anti-join
+# chain). Semantics are identical to production; parity is verified by the
+# benchmark fingerprint checks.
+from .plan_break_optimizations import (
+    build_allocation_input,
+    build_entity_hierarchy,
 )
 
 logger = logging.getLogger(__name__)

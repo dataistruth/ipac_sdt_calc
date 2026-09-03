@@ -75,6 +75,7 @@ def _assert_updated_package_synced() -> None:
         "join_optimizations.py",
         "orchestrator.py",
         "output_reconcile.py",
+        "plan_break_optimizations.py",
     ]
     missing = [
         name for name in required
