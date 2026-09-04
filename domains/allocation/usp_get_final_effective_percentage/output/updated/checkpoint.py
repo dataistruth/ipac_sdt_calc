@@ -16,7 +16,12 @@ logger = logging.getLogger(__name__)
 
 _STATS_KEY = "spark.databricks.delta.stats.collect"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
-DEFAULT_CHECKPOINT_PROFILE = "conservative"
+# Prod-copy default: "full" materializes every production seam (no bypass),
+# which keeps the advised checkpoint at nde_post_miss_fused / eff_nd_fused that
+# feeds compute_effective_percentage_non_dated. The old "conservative" default
+# bypassed nde_post_miss_fused, forcing a 759-node plan to replay into the
+# non-dated effective-percentage stage and regressing the run vs production.
+DEFAULT_CHECKPOINT_PROFILE = "full"
 
 _CONSERVATIVE_BYPASSES = frozenset(
     {

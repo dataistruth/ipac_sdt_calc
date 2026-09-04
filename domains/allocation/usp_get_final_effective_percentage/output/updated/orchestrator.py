@@ -17,6 +17,8 @@ import time
 from collections import defaultdict
 from typing import Any, Callable
 
+from pyspark.sql import DataFrame, SparkSession
+
 from .checkpoint import (
     DEFAULT_CHECKPOINT_PROFILE,
     checkpoint,
@@ -59,6 +61,12 @@ from .read_optimizations import (
     load_quarters,
 )
 
+logger = logging.getLogger(__name__)
+
+# Prod-copy revert: the optimized cost_pct builder is no longer swapped in, so
+# report the base builder regardless of whether cost_pct_loader imported.
+_ACTIVE_CPBT_PROFILE = "base (prod-copy revert)"
+
 _base = isolated_output_module("orchestrator")
 _ORIGINAL_RUN_MODES = _base.run_modes
 _ORIGINAL_RUN_FINAL = _base.run_final_effective_percentages
@@ -100,14 +108,84 @@ def _checkpoint(spark, df, name, cfg):
         _record(f"checkpoint:{name}", time.time() - started)
 
 
+# --- New: post-builder checkpoints for hot (deep + slow) seams -------------
+# Builders whose OUTPUT should get an extra lineage break beyond production's
+# built-in seams. Populate from the plan-profile + timing logs: a builder
+# qualifies when its plan is BOTH tall (high depth/delta) AND slow (high
+# elapsed). Applied as a transparent post-builder wrapper -- prod calculation
+# logic stays untouched. Override per-run via the ``extra_checkpoint_builders``
+# kwarg (list, or comma-separated string from a notebook widget).
+_DEFAULT_POST_BUILDER_CHECKPOINTS: frozenset[str] = frozenset()
+
+_ACTIVE_POST_CHECKPOINTS: contextvars.ContextVar[frozenset[str]] = (
+    contextvars.ContextVar("fep_post_checkpoints", default=frozenset())
+)
+
+
+def _extract_spark_cfg(args, kwargs):
+    """Best-effort locate the SparkSession and cfg dict in builder args."""
+    spark = None
+    cfg = None
+    for value in (*args, *kwargs.values()):
+        if spark is None and isinstance(value, SparkSession):
+            spark = value
+        elif (
+            cfg is None
+            and isinstance(value, dict)
+            and "catalog" in value
+            and "schema" in value
+        ):
+            cfg = value
+        if spark is not None and cfg is not None:
+            break
+    return spark, cfg
+
+
+def _checkpoint_output(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap ``fn`` so its returned DataFrame is checkpointed when selected.
+
+    No-op unless ``name`` is in the active post-checkpoint set AND the return
+    value is a DataFrame AND both spark/cfg can be located in the call args.
+    """
+
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        if name in _ACTIVE_POST_CHECKPOINTS.get() and isinstance(
+            result, DataFrame
+        ):
+            spark, cfg = _extract_spark_cfg(args, kwargs)
+            if spark is not None and cfg is not None:
+                return _checkpoint(spark, result, f"post_{name}", cfg)
+        return result
+
+    return wrapped
+
+
+# --- Reverted to prod copy (2026-09-04) ------------------------------------
+# The updated pipeline now mirrors production: it runs the BASE builders
+# unchanged and only keeps (a) the fast Delta checkpoint writer (stats-off,
+# uncompressed -- same result as prod, cheaper I/O) and (b) the transparent
+# timing / plan-profiler instrumentation. The earlier builder swaps
+# (cost_pct_loader / read_optimizations) are removed, and the "conservative"
+# bypass of nde_post_miss_fused -- which replayed a 759-node plan into
+# compute_effective_percentage_non_dated and slowed the run -- is gone
+# (checkpoint.py now defaults to the "full" profile).
+#
+# Advised checkpoint: with the "full" profile every production seam is
+# materialized, including nde_post_miss_fused / eff_nd_fused feeding
+# compute_effective_percentage_non_dated.
+#
 # These replacements affect only the isolated module object loaded above.
 _base._checkpoint = _checkpoint
 _base._drop_checkpoints = drop_checkpoints
-_base.load_line_items = load_line_items
-_base.load_quarters = load_quarters
-_base.build_lookthrough_input_modes14 = build_lookthrough_input_modes14
-if build_cost_percentage_by_type_optimized is not None:
-    _base.build_cost_percentage_by_type = build_cost_percentage_by_type_optimized
+# Prod-copy: base read/cost builders are intentionally NOT swapped. Re-enable
+# one at a time only after a measured, parity-verified win:
+#   _base.load_line_items = load_line_items
+#   _base.load_quarters = load_quarters
+#   _base.build_lookthrough_input_modes14 = build_lookthrough_input_modes14
+#   if build_cost_percentage_by_type_optimized is not None:
+#       _base.build_cost_percentage_by_type = build_cost_percentage_by_type_optimized
 
 _TIMED_GLOBALS = (
     "load_config",
@@ -172,6 +250,15 @@ for _name in _TIMED_GLOBALS:
     if callable(_fn):
         setattr(_base, _name, track_plan(_fn))
 
+# Outermost wrapper: checkpoint a builder's OUTPUT when it is selected as a
+# hot (deep + slow) seam. Layered after track_plan so the profiler still sees
+# the true pre-checkpoint plan; the extra materialization time is recorded
+# separately as ``checkpoint:post_<builder>`` in the timings.
+for _name in _TIMED_GLOBALS:
+    _fn = getattr(_base, _name, None)
+    if callable(_fn):
+        setattr(_base, _name, _checkpoint_output(_name, _fn))
+
 
 def _summarize(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     totals: dict[str, float] = defaultdict(float)
@@ -200,9 +287,13 @@ def _run_with_timings(
     checkpoint_profile: str = DEFAULT_CHECKPOINT_PROFILE,
     profile_plan: bool = False,
     plan_checkpoint_threshold: int = 30,
+    extra_checkpoint_builders: tuple[str, ...] = (),
     **kwargs,
 ):
     profile = normalize_checkpoint_profile(checkpoint_profile)
+    post_checkpoints = frozenset(_DEFAULT_POST_BUILDER_CHECKPOINTS).union(
+        extra_checkpoint_builders
+    )
     supplied_cfg = kwargs.get("cfg")
     if isinstance(supplied_cfg, dict):
         supplied_cfg["_checkpoint_profile"] = profile
@@ -211,6 +302,7 @@ def _run_with_timings(
             supplied_cfg["plan_checkpoint_threshold"] = plan_checkpoint_threshold
     events: list[dict[str, Any]] = []
     token = _ACTIVE_TIMINGS.set(events)
+    post_token = _ACTIVE_POST_CHECKPOINTS.set(post_checkpoints)
     profile_token, activity_token, checkpoint_activity = start_checkpoint_run(
         profile
     )
@@ -225,6 +317,7 @@ def _run_with_timings(
         if plan_token is not None:
             finish_plan_profile(plan_token)
         finish_checkpoint_run(profile_token, activity_token)
+        _ACTIVE_POST_CHECKPOINTS.reset(post_token)
         _ACTIVE_TIMINGS.reset(token)
 
     summary = _summarize(events)
@@ -237,8 +330,14 @@ def _run_with_timings(
             item["name"] for item in checkpoint_activity["written"]
         ],
         "bypassed_names": list(checkpoint_activity["bypassed"]),
+        "post_builder_checkpoints": sorted(post_checkpoints),
     }
     print(f"[updated timing] wall={wall:.3f}s")
+    if post_checkpoints:
+        print(
+            "[updated checkpoints] post-builder="
+            + ", ".join(sorted(post_checkpoints))
+        )
     print(
         f"[updated checkpoints] profile={profile} "
         f"written={checkpoint_summary['written_count']} "
@@ -266,7 +365,7 @@ def _run_with_timings(
             "updated_wall_seconds": wall,
             "timings": summary,
             "checkpoint_summary": checkpoint_summary,
-            "cpbt_profile": CPBT_OPTIMIZATION_PROFILE,
+            "cpbt_profile": _ACTIVE_CPBT_PROFILE,
             "plan_profile": plan_profile,
         }
     )
@@ -277,8 +376,9 @@ def _run_with_timings(
         result["optimization_profile"] = {
             "checkpoint_backend": "uc_delta_stats_off",
             "checkpoint_profile": profile,
-            "cpbt_profile": CPBT_OPTIMIZATION_PROFILE,
-            "logging_only_probe_actions_removed": 3,
+            "cpbt_profile": _ACTIVE_CPBT_PROFILE,
+            "builders": "prod-copy (no swaps)",
+            "post_builder_checkpoints": sorted(post_checkpoints),
         }
         if profile_plan:
             result["plan_profile"] = plan_profile
@@ -303,16 +403,32 @@ def _pop_plan_flags(kwargs: dict[str, Any]) -> tuple[bool, int]:
     return profile_plan, threshold
 
 
+def _pop_extra_checkpoints(kwargs: dict[str, Any]) -> tuple[str, ...]:
+    """Extract the extra post-builder checkpoint seams from caller kwargs.
+
+    Accepts a list/tuple of builder names, or a comma-separated string (handy
+    for a notebook text widget). Empty / unset -> no extra checkpoints.
+    """
+    value = kwargs.pop("extra_checkpoint_builders", None)
+    if not value:
+        return ()
+    if isinstance(value, str):
+        return tuple(part.strip() for part in value.split(",") if part.strip())
+    return tuple(str(part).strip() for part in value if str(part).strip())
+
+
 def run_modes(*args, **kwargs):
     """Run modes with optimized checkpoints and detailed step timings."""
     profile = _pop_checkpoint_profile(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
+    extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
         _ORIGINAL_RUN_MODES,
         *args,
         checkpoint_profile=profile,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
+        extra_checkpoint_builders=extra_checkpoints,
         **kwargs,
     )
 
@@ -321,12 +437,14 @@ def run_final_effective_percentages(*args, **kwargs):
     """Updated entry point matching the production callable."""
     profile = _pop_checkpoint_profile(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
+    extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
         _ORIGINAL_RUN_FINAL,
         *args,
         checkpoint_profile=profile,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
+        extra_checkpoint_builders=extra_checkpoints,
         **kwargs,
     )
 
