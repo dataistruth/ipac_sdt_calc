@@ -20,10 +20,12 @@ from typing import Any, Callable
 from pyspark.sql import DataFrame, SparkSession
 
 from .checkpoint import (
+    DEFAULT_CHECKPOINT_BACKEND,
     DEFAULT_CHECKPOINT_PROFILE,
     checkpoint,
     drop_checkpoints,
     finish_checkpoint_run,
+    normalize_checkpoint_backend,
     normalize_checkpoint_profile,
     start_checkpoint_run,
 )
@@ -285,26 +287,29 @@ def _run_with_timings(
     fn: Callable[..., Any],
     *args,
     checkpoint_profile: str = DEFAULT_CHECKPOINT_PROFILE,
+    checkpoint_backend: str = DEFAULT_CHECKPOINT_BACKEND,
     profile_plan: bool = False,
     plan_checkpoint_threshold: int = 30,
     extra_checkpoint_builders: tuple[str, ...] = (),
     **kwargs,
 ):
     profile = normalize_checkpoint_profile(checkpoint_profile)
+    backend = normalize_checkpoint_backend(checkpoint_backend)
     post_checkpoints = frozenset(_DEFAULT_POST_BUILDER_CHECKPOINTS).union(
         extra_checkpoint_builders
     )
     supplied_cfg = kwargs.get("cfg")
     if isinstance(supplied_cfg, dict):
         supplied_cfg["_checkpoint_profile"] = profile
+        supplied_cfg["_checkpoint_backend"] = backend
         if profile_plan:
             supplied_cfg["profile_plan"] = True
             supplied_cfg["plan_checkpoint_threshold"] = plan_checkpoint_threshold
     events: list[dict[str, Any]] = []
     token = _ACTIVE_TIMINGS.set(events)
     post_token = _ACTIVE_POST_CHECKPOINTS.set(post_checkpoints)
-    profile_token, activity_token, checkpoint_activity = start_checkpoint_run(
-        profile
+    profile_token, activity_token, backend_token, checkpoint_activity = (
+        start_checkpoint_run(profile, backend)
     )
     plan_token = None
     plan_records: list[dict[str, Any]] = []
@@ -316,7 +321,7 @@ def _run_with_timings(
     finally:
         if plan_token is not None:
             finish_plan_profile(plan_token)
-        finish_checkpoint_run(profile_token, activity_token)
+        finish_checkpoint_run(profile_token, activity_token, backend_token)
         _ACTIVE_POST_CHECKPOINTS.reset(post_token)
         _ACTIVE_TIMINGS.reset(token)
 
@@ -324,6 +329,7 @@ def _run_with_timings(
     wall = round(time.time() - started, 3)
     checkpoint_summary = {
         "profile": profile,
+        "backend": backend,
         "written_count": len(checkpoint_activity["written"]),
         "bypassed_count": len(checkpoint_activity["bypassed"]),
         "written_names": [
@@ -339,7 +345,7 @@ def _run_with_timings(
             + ", ".join(sorted(post_checkpoints))
         )
     print(
-        f"[updated checkpoints] profile={profile} "
+        f"[updated checkpoints] profile={profile} backend={backend} "
         f"written={checkpoint_summary['written_count']} "
         f"bypassed={checkpoint_summary['bypassed_count']}"
     )
@@ -374,7 +380,7 @@ def _run_with_timings(
         result["updated_wall_seconds"] = wall
         result["checkpoint_summary"] = checkpoint_summary
         result["optimization_profile"] = {
-            "checkpoint_backend": "uc_delta_stats_off",
+            "checkpoint_backend": backend,
             "checkpoint_profile": profile,
             "cpbt_profile": _ACTIVE_CPBT_PROFILE,
             "builders": "prod-copy (no swaps)",
@@ -389,6 +395,12 @@ def _pop_checkpoint_profile(kwargs: dict[str, Any]) -> str:
     if "CheckpointProfile" in kwargs:
         return kwargs.pop("CheckpointProfile")
     return kwargs.pop("checkpoint_profile", DEFAULT_CHECKPOINT_PROFILE)
+
+
+def _pop_checkpoint_backend(kwargs: dict[str, Any]) -> str:
+    if "CheckpointBackend" in kwargs:
+        return kwargs.pop("CheckpointBackend")
+    return kwargs.pop("checkpoint_backend", DEFAULT_CHECKPOINT_BACKEND)
 
 
 def _pop_plan_flags(kwargs: dict[str, Any]) -> tuple[bool, int]:
@@ -420,12 +432,14 @@ def _pop_extra_checkpoints(kwargs: dict[str, Any]) -> tuple[str, ...]:
 def run_modes(*args, **kwargs):
     """Run modes with optimized checkpoints and detailed step timings."""
     profile = _pop_checkpoint_profile(kwargs)
+    backend = _pop_checkpoint_backend(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
         _ORIGINAL_RUN_MODES,
         *args,
         checkpoint_profile=profile,
+        checkpoint_backend=backend,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,
@@ -436,12 +450,14 @@ def run_modes(*args, **kwargs):
 def run_final_effective_percentages(*args, **kwargs):
     """Updated entry point matching the production callable."""
     profile = _pop_checkpoint_profile(kwargs)
+    backend = _pop_checkpoint_backend(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
         _ORIGINAL_RUN_FINAL,
         *args,
         checkpoint_profile=profile,
+        checkpoint_backend=backend,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,

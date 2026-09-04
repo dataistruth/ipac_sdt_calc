@@ -40,7 +40,7 @@ dbutils.widgets.dropdown(
 dbutils.widgets.text("VolumePath", "", "11. Volume path (optional)")
 dbutils.widgets.dropdown(
     "CheckpointProfile",
-    "conservative",
+    "full",
     ["full", "conservative", "balanced"],
     "12. Checkpoint profile",
 )
@@ -54,6 +54,17 @@ dbutils.widgets.text(
     "PlanCheckpointThreshold",
     "30",
     "14. Plan checkpoint threshold",
+)
+dbutils.widgets.text(
+    "ExtraCheckpointBuilders",
+    "",
+    "15. Extra checkpoint builders (comma-sep)",
+)
+dbutils.widgets.dropdown(
+    "CheckpointBackend",
+    "delta",
+    ["delta", "local"],
+    "16. Checkpoint backend",
 )
 
 source_path = dbutils.widgets.get("source_path").strip()
@@ -72,6 +83,16 @@ profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
 plan_checkpoint_threshold = int(
     dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
 )
+# A/B lever: extra post-builder checkpoints beyond prod's built-in seams.
+# Comma-separated builder names, e.g.
+# "build_cost_percentage_snapshot_modes123,build_input_lines". Empty = none.
+extra_checkpoint_builders = dbutils.widgets.get(
+    "ExtraCheckpointBuilders"
+).strip()
+# Checkpoint backend: "delta" (durable, current) or "local" (localCheckpoint,
+# no metastore commit). Profiling showed ~40-50s of wall is Delta checkpoint
+# I/O; "local" is the A/B lever to cut it.
+checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
@@ -217,12 +238,16 @@ def _run_variant(variant: str, pass_number: int) -> dict:
     )
     if variant == "updated":
         run_kwargs["CheckpointProfile"] = checkpoint_profile
+        run_kwargs["CheckpointBackend"] = checkpoint_backend
         # Plan-size profiler is driven by the "13. Plan profiler" widget, not
         # by cfg. When on, the updated runner measures per-builder logical-plan
         # (DAG) growth and returns a ranked report in result["plan_profile"].
         if profile_plan:
             run_kwargs["profile_plan"] = True
             run_kwargs["plan_checkpoint_threshold"] = plan_checkpoint_threshold
+        # A/B: force extra lineage breaks on the named builders' outputs.
+        if extra_checkpoint_builders:
+            run_kwargs["extra_checkpoint_builders"] = extra_checkpoint_builders
 
     result = runner.run_final_effective_percentages(
         spark,

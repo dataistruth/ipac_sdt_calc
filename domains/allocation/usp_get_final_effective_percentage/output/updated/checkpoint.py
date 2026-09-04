@@ -48,6 +48,29 @@ _ACTIVE_ACTIVITY: ContextVar[dict[str, Any] | None] = ContextVar(
     default=None,
 )
 
+# Checkpoint backend: "delta" (durable UC Delta table, current default) or
+# "local" (df.localCheckpoint(eager=True) -- in-memory/local-disk, no metastore
+# commit). Profiling showed ~40-50s of the wall is Delta checkpoint I/O; the
+# "local" backend skips the commit to cut that. localCheckpoint drops column
+# alias/qualifier metadata, so we re-wrap with toDF(*columns) for parity with a
+# Delta read (matches production's _USE_LOCAL_CHECKPOINT path).
+DEFAULT_CHECKPOINT_BACKEND = "delta"
+_VALID_BACKENDS = frozenset({"delta", "local"})
+_ACTIVE_BACKEND: ContextVar[str] = ContextVar(
+    "fep_checkpoint_backend",
+    default=DEFAULT_CHECKPOINT_BACKEND,
+)
+
+
+def normalize_checkpoint_backend(value: object) -> str:
+    backend = str(value or DEFAULT_CHECKPOINT_BACKEND).strip().lower()
+    if backend not in _VALID_BACKENDS:
+        choices = ", ".join(sorted(_VALID_BACKENDS))
+        raise ValueError(
+            f"Unknown checkpoint backend {value!r}; expected one of: {choices}"
+        )
+    return backend
+
 
 def _safe_name(value: object) -> str:
     return _SAFE_NAME.sub("_", str(value))
@@ -63,24 +86,29 @@ def normalize_checkpoint_profile(value: object) -> str:
     return profile
 
 
-def start_checkpoint_run(profile: object):
-    """Activate a checkpoint profile and collect activity for one invocation."""
+def start_checkpoint_run(profile: object, backend: object = None):
+    """Activate a checkpoint profile + backend and collect activity."""
     normalized = normalize_checkpoint_profile(profile)
+    normalized_backend = normalize_checkpoint_backend(backend)
     activity: dict[str, Any] = {
         "profile": normalized,
+        "backend": normalized_backend,
         "written": [],
         "bypassed": [],
     }
     return (
         _ACTIVE_PROFILE.set(normalized),
         _ACTIVE_ACTIVITY.set(activity),
+        _ACTIVE_BACKEND.set(normalized_backend),
         activity,
     )
 
 
-def finish_checkpoint_run(profile_token, activity_token) -> None:
+def finish_checkpoint_run(profile_token, activity_token, backend_token=None) -> None:
     _ACTIVE_ACTIVITY.reset(activity_token)
     _ACTIVE_PROFILE.reset(profile_token)
+    if backend_token is not None:
+        _ACTIVE_BACKEND.reset(backend_token)
 
 
 def _get_conf(spark: SparkSession, key: str) -> tuple[bool, str | None]:
@@ -125,6 +153,33 @@ def checkpoint(
         print(f"[updated checkpoint] {name}: bypassed (profile={profile})")
         return df
 
+    backend = normalize_checkpoint_backend(
+        cfg.get("_checkpoint_backend", _ACTIVE_BACKEND.get())
+    )
+    cfg["_checkpoint_backend"] = backend
+
+    # --- local backend: in-memory lineage break, no metastore Delta commit ---
+    if backend == "local":
+        started = time.time()
+        cp = df.localCheckpoint(eager=True)
+        # localCheckpoint strips table-qualifier metadata from columns; re-wrap
+        # to mimic the fresh schema a spark.table() read would give (parity with
+        # the delta path, and required by aliased downstream joins).
+        cp = cp.toDF(*cp.columns)
+        elapsed = time.time() - started
+        cfg.setdefault("_updated_checkpoint_timings", []).append(
+            {"name": name, "elapsed_seconds": round(elapsed, 3)}
+        )
+        if activity is not None:
+            activity["written"].append(
+                {"name": name, "elapsed_seconds": round(elapsed, 3)}
+            )
+        print(
+            f"[updated checkpoint] {name}: {elapsed:.3f}s "
+            f"(backend=local, profile={profile})"
+        )
+        return cp
+
     started = time.time()
     run_id = _safe_name(cfg.get("run_id", "0"))
     fqn = (
@@ -159,7 +214,7 @@ def checkpoint(
         )
     print(
         f"[updated checkpoint] {name}: {elapsed:.3f}s "
-        f"(stats=off, profile={profile})"
+        f"(backend=delta, stats=off, profile={profile})"
     )
     return spark.table(fqn)
 
