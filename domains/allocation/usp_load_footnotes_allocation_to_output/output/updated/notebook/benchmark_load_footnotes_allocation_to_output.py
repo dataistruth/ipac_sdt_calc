@@ -28,6 +28,12 @@ dbutils.widgets.dropdown(
     "RankForRulePickup", "1", ["1", "2"], "9. Rank for rule pickup"
 )
 dbutils.widgets.text("ParallelWorkers", "4", "10. Updated parallel workers")
+dbutils.widgets.dropdown(
+    "ProfilePlan", "off", ["off", "on"], "11. Plan profiler"
+)
+dbutils.widgets.text(
+    "PlanCheckpointThreshold", "30", "12. Plan checkpoint threshold"
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -39,6 +45,10 @@ catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
 rank_for_rule_pickup = int(dbutils.widgets.get("RankForRulePickup").strip())
 parallel_workers = int(dbutils.widgets.get("ParallelWorkers").strip() or "4")
+profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+plan_checkpoint_threshold = int(
+    dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
+)
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
@@ -131,6 +141,14 @@ def _run_variant(variant: str, pass_number: int, snapshot: dict) -> dict:
         f"PASS {pass_number} | {variant.upper()} | {datetime.now().isoformat()}\n"
         f"{'=' * 72}"
     )
+    updated_kwargs = {}
+    if variant == "updated":
+        updated_kwargs["parallel_workers"] = parallel_workers
+        # Plan-size profiler is driven by the "11. Plan profiler" widget.
+        if profile_plan:
+            updated_kwargs["profile_plan"] = True
+            updated_kwargs["plan_checkpoint_threshold"] = plan_checkpoint_threshold
+
     started = time.time()
     result = runner.run_load_footnotes_allocation_to_output(
         spark,
@@ -141,13 +159,16 @@ def _run_variant(variant: str, pass_number: int, snapshot: dict) -> dict:
         CatalogName=catalog,
         SchemaName=schema,
         RankForRulePickup=rank_for_rule_pickup,
-        **({"parallel_workers": parallel_workers} if variant == "updated" else {}),
+        **updated_kwargs,
     )
     wall = round(time.time() - started, 3)
     metrics = capture_metrics(spark, catalog, schema, run_id)
     summary = summarize_metrics(metrics)
     reported = result.get("elapsed_seconds") if isinstance(result, dict) else None
     timings = result.get("timings", []) if isinstance(result, dict) else []
+    plan_profile = (
+        result.get("plan_profile", []) if isinstance(result, dict) else []
+    )
     print(
         f"[benchmark] {variant}: wall={wall:.3f}s reported={reported} "
         f"output_rows={summary['allocation_output_rows']} "
@@ -162,6 +183,7 @@ def _run_variant(variant: str, pass_number: int, snapshot: dict) -> dict:
         "input_rows": summary["allocation_input_rows"],
         "metrics": metrics,
         "timings": timings,
+        "plan_profile": plan_profile,
     }
 
 
@@ -270,4 +292,26 @@ for row in records:
         display(
             spark.createDataFrame(timing_rows, schema=timing_schema)
             .orderBy("elapsed_seconds", ascending=False)
+        )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Plan-size profile (only when "11. Plan profiler" = on)
+# MAGIC Ranks builders by how much they grow the Spark logical plan (DAG),
+# MAGIC including a `depth` column. Rendered via the shared
+# MAGIC `AllocationV2.plan_profiler` package so every optimized SP notebook
+# MAGIC shows the same table. Largest `delta` = best `checkpoint()` seam.
+
+from AllocationV2.plan_profiler import build_plan_profile_display
+
+for row in records:
+    if row["variant"] == "updated" and row.get("plan_profile"):
+        print(f"\nPlan profile — pass {row['pass']}")
+        display(
+            build_plan_profile_display(
+                spark,
+                row["plan_profile"],
+                threshold=plan_checkpoint_threshold,
+            )
         )

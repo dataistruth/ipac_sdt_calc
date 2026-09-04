@@ -393,31 +393,18 @@ for row in records:
 # MAGIC ## Plan-size profile (only when "13. Plan profiler" = on)
 # MAGIC Ranks builders by how much they grow the Spark logical plan (DAG).
 # MAGIC The largest `delta` is the seam where adding a `checkpoint()` helps most.
+# MAGIC Rendered via the shared `AllocationV2.plan_profiler` package so every
+# MAGIC optimized SP notebook shows the same columns (incl. `depth`).
 
-_plan_schema = StructType([
-    StructField("func", StringType(), True),
-    StructField("nodes", LongType(), True),
-    StructField("depth", LongType(), True),
-    StructField("delta", LongType(), True),
-    StructField("checkpoint_candidate", StringType(), True),
-])
+from AllocationV2.plan_profiler import build_plan_profile_display
 
 for row in records:
     if row["variant"] == "updated" and row.get("plan_profile"):
         print(f"\nPlan profile — pass {row['pass']}")
-        plan_rows = [
-            (
-                str(item.get("func")),
-                _as_int(item.get("nodes")),
-                _as_int(item.get("depth")),
-                _as_int(item.get("delta")),
-                "yes"
-                if (item.get("delta") or 0) >= plan_checkpoint_threshold
-                else "",
-            )
-            for item in row["plan_profile"]
-        ]
         display(
-            spark.createDataFrame(plan_rows, schema=_plan_schema)
-            .orderBy("delta", ascending=False)
+            build_plan_profile_display(
+                spark,
+                row["plan_profile"],
+                threshold=plan_checkpoint_threshold,
+            )
         )
