@@ -24,6 +24,7 @@ from Common_V2.core.helpers import ns, ns0, read_table
 
 from ..underlyings import _build_asset_class_relationship
 from .checkpoint import checkpoint
+from .plan_profiler import track_plan
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 _MAX_DEPTH = 8
 
 
+@track_plan
 def build_entity_hierarchy(
     spark: SparkSession,
     cfg: dict,
@@ -244,6 +246,7 @@ def build_entity_hierarchy(
     return df_all, df_asset_class_rel
 
 
+@track_plan
 def build_allocation_input(
     spark: SparkSession,
     cfg: dict,

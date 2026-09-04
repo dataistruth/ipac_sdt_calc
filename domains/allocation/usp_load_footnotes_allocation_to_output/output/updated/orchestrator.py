@@ -63,8 +63,25 @@ from .plan_break_optimizations import (
     build_allocation_input,
     build_entity_hierarchy,
 )
+from .plan_profiler import plan_profile_report, track_plan
 
 logger = logging.getLogger(__name__)
+
+# Instrument the plan-relevant builders imported from production modules so the
+# plan-size profiler can attribute logical-plan (DAG) growth to each of them.
+# ``track_plan`` is a transparent passthrough unless ``cfg['profile_plan']`` is
+# truthy, so this adds zero overhead in production. Production modules are not
+# edited — we only rebind the local references used by this orchestrator.
+# (``build_entity_hierarchy`` / ``build_allocation_input`` are already decorated
+# at their definitions in ``plan_break_optimizations``.)
+build_cost_percentage_data = track_plan(build_cost_percentage_data)
+build_underlyings_footnotes_ordered = track_plan(
+    build_underlyings_footnotes_ordered
+)
+build_temp_allocation_input = track_plan(build_temp_allocation_input)
+build_temp_book_effective = track_plan(build_temp_book_effective)
+build_temp_final_effective_pct = track_plan(build_temp_final_effective_pct)
+build_zero_exclude_lines = track_plan(build_zero_exclude_lines)
 
 
 @contextmanager
@@ -109,6 +126,9 @@ def run_load_footnotes_allocation_to_output(
     t0 = time.time()
     timings: list[dict[str, Any]] = []
     parallel_workers = max(1, min(int(kwargs.pop("parallel_workers", 4)), 8))
+    # Plan-size profiler flags (default off; zero overhead unless enabled).
+    profile_plan_kw = kwargs.pop("profile_plan", None)
+    plan_threshold_kw = kwargs.pop("plan_checkpoint_threshold", None)
     planning_pool = None
 
     if verbose:
@@ -140,7 +160,20 @@ def run_load_footnotes_allocation_to_output(
                 )
 
             # Keep checkpoint state invocation-local for thread safety.
-            cfg = {**cfg, "_checkpoint_tables": []}
+            # ``_plan_profile`` accumulates per-builder plan-size records when
+            # ``cfg['profile_plan']`` is enabled (see plan_profiler).
+            cfg = {**cfg, "_checkpoint_tables": [], "_plan_profile": []}
+
+            # Resolve plan-profiler flags: explicit kwargs win, else honor any
+            # value already in cfg, else fall back to the defaults.
+            if profile_plan_kw is not None:
+                cfg["profile_plan"] = bool(profile_plan_kw)
+            else:
+                cfg.setdefault("profile_plan", False)
+            if plan_threshold_kw is not None:
+                cfg["plan_checkpoint_threshold"] = int(plan_threshold_kw)
+            else:
+                cfg.setdefault("plan_checkpoint_threshold", 30)
 
             if rank_for_rule_pickup is not None:
                 cfg["rank_for_rule_pickup"] = rank_for_rule_pickup
@@ -492,6 +525,11 @@ def run_load_footnotes_allocation_to_output(
             )
             status["timings"] = timings + checkpoint_timings
             status["updated_wall_seconds"] = wall
+            if isinstance(cfg, dict) and cfg.get("profile_plan"):
+                try:
+                    status["plan_profile"] = plan_profile_report(cfg)
+                except Exception:
+                    logger.warning("[PLAN] report failed", exc_info=True)
             status["optimization_profile"] = {
                 "checkpoint_backend": "uc_delta_stats_off",
                 "checkpoint_count": len(checkpoint_timings),
