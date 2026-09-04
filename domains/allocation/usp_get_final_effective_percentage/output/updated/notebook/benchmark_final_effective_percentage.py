@@ -44,6 +44,17 @@ dbutils.widgets.dropdown(
     ["full", "conservative", "balanced"],
     "12. Checkpoint profile",
 )
+dbutils.widgets.dropdown(
+    "ProfilePlan",
+    "off",
+    ["off", "on"],
+    "13. Plan profiler",
+)
+dbutils.widgets.text(
+    "PlanCheckpointThreshold",
+    "30",
+    "14. Plan checkpoint threshold",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -57,6 +68,10 @@ schema = dbutils.widgets.get("SchemaName").strip()
 result_type = dbutils.widgets.get("ResultType").strip()
 volume_path = dbutils.widgets.get("VolumePath").strip()
 checkpoint_profile = dbutils.widgets.get("CheckpointProfile").strip().lower()
+profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+plan_checkpoint_threshold = int(
+    dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
+)
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
@@ -202,6 +217,12 @@ def _run_variant(variant: str, pass_number: int) -> dict:
     )
     if variant == "updated":
         run_kwargs["CheckpointProfile"] = checkpoint_profile
+        # Plan-size profiler is driven by the "13. Plan profiler" widget, not
+        # by cfg. When on, the updated runner measures per-builder logical-plan
+        # (DAG) growth and returns a ranked report in result["plan_profile"].
+        if profile_plan:
+            run_kwargs["profile_plan"] = True
+            run_kwargs["plan_checkpoint_threshold"] = plan_checkpoint_threshold
 
     result = runner.run_final_effective_percentages(
         spark,
@@ -232,6 +253,10 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         "checkpoint_summary",
         result.get("checkpoint_summary", {}) if isinstance(result, dict) else {},
     )
+    plan_profile = profile_data.get(
+        "plan_profile",
+        result.get("plan_profile", []) if isinstance(result, dict) else [],
+    )
     print(
         f"[benchmark] {variant}: wall={wall:.3f}s "
         f"reported={reported} rows={summary['total_rows']}"
@@ -248,6 +273,7 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         "checkpoint_profile": checkpoint_summary.get("profile"),
         "checkpoints_written": checkpoint_summary.get("written_count"),
         "checkpoints_bypassed": checkpoint_summary.get("bypassed_count"),
+        "plan_profile": plan_profile,
     }
 
 
@@ -359,4 +385,39 @@ for row in records:
         display(
             spark.createDataFrame(timing_rows, schema=_timings_schema)
             .orderBy("elapsed_seconds", ascending=False)
+        )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Plan-size profile (only when "13. Plan profiler" = on)
+# MAGIC Ranks builders by how much they grow the Spark logical plan (DAG).
+# MAGIC The largest `delta` is the seam where adding a `checkpoint()` helps most.
+
+_plan_schema = StructType([
+    StructField("func", StringType(), True),
+    StructField("nodes", LongType(), True),
+    StructField("depth", LongType(), True),
+    StructField("delta", LongType(), True),
+    StructField("checkpoint_candidate", StringType(), True),
+])
+
+for row in records:
+    if row["variant"] == "updated" and row.get("plan_profile"):
+        print(f"\nPlan profile — pass {row['pass']}")
+        plan_rows = [
+            (
+                str(item.get("func")),
+                _as_int(item.get("nodes")),
+                _as_int(item.get("depth")),
+                _as_int(item.get("delta")),
+                "yes"
+                if (item.get("delta") or 0) >= plan_checkpoint_threshold
+                else "",
+            )
+            for item in row["plan_profile"]
+        ]
+        display(
+            spark.createDataFrame(plan_rows, schema=_plan_schema)
+            .orderBy("delta", ascending=False)
         )

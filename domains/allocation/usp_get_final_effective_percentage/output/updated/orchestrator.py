@@ -47,6 +47,12 @@ except Exception as _cpbt_import_error:  # pragma: no cover - deploy safety net
         _cpbt_import_error,
     )
 from .parent import isolated_output_module
+from .plan_profiler import (
+    finish_plan_profile,
+    plan_profile_report,
+    start_plan_profile,
+    track_plan,
+)
 from .read_optimizations import (
     build_lookthrough_input_modes14,
     load_line_items,
@@ -156,6 +162,16 @@ for _name in _TIMED_GLOBALS:
     if callable(_fn):
         setattr(_base, _name, _timed(_name, _fn))
 
+# Wrap the same builders with the plan-size profiler (outer of _timed, so it
+# observes the real DataFrame args/return). ``track_plan`` is a transparent
+# passthrough unless a plan sink is active (see plan_profiler), so this adds
+# zero overhead outside profiling runs. Builders that don't return a DataFrame
+# are recorded as no-ops automatically.
+for _name in _TIMED_GLOBALS:
+    _fn = getattr(_base, _name, None)
+    if callable(_fn):
+        setattr(_base, _name, track_plan(_fn))
+
 
 def _summarize(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     totals: dict[str, float] = defaultdict(float)
@@ -182,21 +198,32 @@ def _run_with_timings(
     fn: Callable[..., Any],
     *args,
     checkpoint_profile: str = DEFAULT_CHECKPOINT_PROFILE,
+    profile_plan: bool = False,
+    plan_checkpoint_threshold: int = 30,
     **kwargs,
 ):
     profile = normalize_checkpoint_profile(checkpoint_profile)
     supplied_cfg = kwargs.get("cfg")
     if isinstance(supplied_cfg, dict):
         supplied_cfg["_checkpoint_profile"] = profile
+        if profile_plan:
+            supplied_cfg["profile_plan"] = True
+            supplied_cfg["plan_checkpoint_threshold"] = plan_checkpoint_threshold
     events: list[dict[str, Any]] = []
     token = _ACTIVE_TIMINGS.set(events)
     profile_token, activity_token, checkpoint_activity = start_checkpoint_run(
         profile
     )
+    plan_token = None
+    plan_records: list[dict[str, Any]] = []
+    if profile_plan:
+        plan_token, plan_records = start_plan_profile()
     started = time.time()
     try:
         result = fn(*args, **kwargs)
     finally:
+        if plan_token is not None:
+            finish_plan_profile(plan_token)
         finish_checkpoint_run(profile_token, activity_token)
         _ACTIVE_TIMINGS.reset(token)
 
@@ -224,6 +251,15 @@ def _run_with_timings(
             f"(calls={item['calls']})"
         )
 
+    plan_profile: list[dict[str, Any]] = []
+    if profile_plan:
+        try:
+            plan_profile = plan_profile_report(
+                plan_records, plan_checkpoint_threshold
+            )
+        except Exception:
+            logger.warning("[PLAN] report failed", exc_info=True)
+
     _LAST_RUN_PROFILE.clear()
     _LAST_RUN_PROFILE.update(
         {
@@ -231,6 +267,7 @@ def _run_with_timings(
             "timings": summary,
             "checkpoint_summary": checkpoint_summary,
             "cpbt_profile": CPBT_OPTIMIZATION_PROFILE,
+            "plan_profile": plan_profile,
         }
     )
     if isinstance(result, dict):
@@ -243,6 +280,8 @@ def _run_with_timings(
             "cpbt_profile": CPBT_OPTIMIZATION_PROFILE,
             "logging_only_probe_actions_removed": 3,
         }
+        if profile_plan:
+            result["plan_profile"] = plan_profile
     return result
 
 
@@ -252,13 +291,28 @@ def _pop_checkpoint_profile(kwargs: dict[str, Any]) -> str:
     return kwargs.pop("checkpoint_profile", DEFAULT_CHECKPOINT_PROFILE)
 
 
+def _pop_plan_flags(kwargs: dict[str, Any]) -> tuple[bool, int]:
+    """Extract plan-profiler flags from caller kwargs.
+
+    ``profile_plan`` (default ``False``) is the master on/off switch;
+    ``plan_checkpoint_threshold`` (default ``30``) is the minimum node-count
+    growth for a builder to be flagged as a checkpoint candidate.
+    """
+    profile_plan = bool(kwargs.pop("profile_plan", False))
+    threshold = int(kwargs.pop("plan_checkpoint_threshold", 30))
+    return profile_plan, threshold
+
+
 def run_modes(*args, **kwargs):
     """Run modes with optimized checkpoints and detailed step timings."""
     profile = _pop_checkpoint_profile(kwargs)
+    profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     return _run_with_timings(
         _ORIGINAL_RUN_MODES,
         *args,
         checkpoint_profile=profile,
+        profile_plan=profile_plan,
+        plan_checkpoint_threshold=plan_threshold,
         **kwargs,
     )
 
@@ -266,10 +320,13 @@ def run_modes(*args, **kwargs):
 def run_final_effective_percentages(*args, **kwargs):
     """Updated entry point matching the production callable."""
     profile = _pop_checkpoint_profile(kwargs)
+    profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     return _run_with_timings(
         _ORIGINAL_RUN_FINAL,
         *args,
         checkpoint_profile=profile,
+        profile_plan=profile_plan,
+        plan_checkpoint_threshold=plan_threshold,
         **kwargs,
     )
 
@@ -282,6 +339,7 @@ def get_last_run_profile() -> dict[str, Any]:
         "checkpoint_summary": dict(
             _LAST_RUN_PROFILE.get("checkpoint_summary", {})
         ),
+        "plan_profile": list(_LAST_RUN_PROFILE.get("plan_profile", [])),
     }
 
 
