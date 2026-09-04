@@ -71,6 +71,12 @@ dbutils.widgets.text(
     "",
     "17. spark.sql.shuffle.partitions (blank=default)",
 )
+dbutils.widgets.dropdown(
+    "DeltaOptimizeWrite",
+    "off",
+    ["off", "on"],
+    "18. Delta optimizeWrite + autoCompact",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -110,6 +116,16 @@ if sql_shuffle_partitions:
         "[config] spark.sql.shuffle.partitions = "
         f"{spark.conf.get('spark.sql.shuffle.partitions')}"
     )
+# Delta optimize-write: coalesce small files on write (output table AND every
+# checkpoint temp table). The driver log showed the output table at 6661 files
+# for ~35 MB -- this fights that at the source. Applied to BOTH variants.
+delta_optimize_write = (
+    dbutils.widgets.get("DeltaOptimizeWrite").strip().lower() == "on"
+)
+if delta_optimize_write:
+    spark.conf.set("spark.databricks.delta.optimizeWrite.enabled", "true")
+    spark.conf.set("spark.databricks.delta.autoCompact.enabled", "true")
+    print("[config] delta optimizeWrite + autoCompact enabled")
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
