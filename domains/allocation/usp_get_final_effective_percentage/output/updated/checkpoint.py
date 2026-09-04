@@ -48,12 +48,19 @@ _ACTIVE_ACTIVITY: ContextVar[dict[str, Any] | None] = ContextVar(
     default=None,
 )
 
-# Checkpoint backend: "delta" (durable UC Delta table, current default) or
-# "local" (df.localCheckpoint(eager=True) -- in-memory/local-disk, no metastore
-# commit). Profiling showed ~40-50s of the wall is Delta checkpoint I/O; the
-# "local" backend skips the commit to cut that. localCheckpoint drops column
-# alias/qualifier metadata, so we re-wrap with toDF(*columns) for parity with a
-# Delta read (matches production's _USE_LOCAL_CHECKPOINT path).
+# Checkpoint backend: "delta" (durable UC Delta table, default) or "local"
+# (df.localCheckpoint(eager=True), no metastore commit).
+#
+# !! KNOWN-INCOMPATIBLE: "local" is EXPERIMENTAL and fails on this pipeline. !!
+# Several builders (e.g. compute_missing_entities) self-join a checkpointed
+# DataFrame against something derived from it. The Delta round-trip returns a
+# catalog relation, which Spark re-resolves with fresh attribute IDs so the
+# self-join disambiguates. localCheckpoint returns a LogicalRDD that CANNOT be
+# re-resolved that way, so self-join relation-dedup fails with
+# UNRESOLVED_COLUMN (it "suggests" the very column it claims is missing). The
+# toDF(*columns) re-wrap does not help -- the issue is attribute-ID dedup, not
+# column names. This is why production ships _USE_LOCAL_CHECKPOINT = False.
+# Kept only to document the failure mode; leave the default on "delta".
 DEFAULT_CHECKPOINT_BACKEND = "delta"
 _VALID_BACKENDS = frozenset({"delta", "local"})
 _ACTIVE_BACKEND: ContextVar[str] = ContextVar(

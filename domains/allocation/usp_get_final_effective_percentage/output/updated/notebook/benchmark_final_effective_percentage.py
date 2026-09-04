@@ -66,6 +66,11 @@ dbutils.widgets.dropdown(
     ["delta", "local"],
     "16. Checkpoint backend",
 )
+dbutils.widgets.text(
+    "SqlShufflePartitions",
+    "",
+    "17. spark.sql.shuffle.partitions (blank=default)",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -93,6 +98,18 @@ extra_checkpoint_builders = dbutils.widgets.get(
 # no metastore commit). Profiling showed ~40-50s of wall is Delta checkpoint
 # I/O; "local" is the A/B lever to cut it.
 checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
+# Session-wide shuffle-partition cap. The 200 default fans small joins into
+# many tiny tasks/files, inflating every Delta checkpoint write on this small
+# dataset. A small value (e.g. 4) cuts that overhead. Blank = leave the
+# cluster/AQE default. Applied to BOTH variants so the A/B stays fair; change
+# it across runs to measure the effect of 200 vs 4.
+sql_shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
+if sql_shuffle_partitions:
+    spark.conf.set("spark.sql.shuffle.partitions", sql_shuffle_partitions)
+    print(
+        "[config] spark.sql.shuffle.partitions = "
+        f"{spark.conf.get('spark.sql.shuffle.partitions')}"
+    )
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
