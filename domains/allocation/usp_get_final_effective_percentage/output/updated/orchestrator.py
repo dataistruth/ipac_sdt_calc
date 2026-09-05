@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextvars
 import functools
 import logging
+import re
 import time
 from collections import defaultdict
 from typing import Any, Callable
@@ -288,6 +289,7 @@ def _run_with_timings(
     *args,
     checkpoint_profile: str = DEFAULT_CHECKPOINT_PROFILE,
     checkpoint_backend: str = DEFAULT_CHECKPOINT_BACKEND,
+    local_delta_denylist: tuple[str, ...] = (),
     profile_plan: bool = False,
     plan_checkpoint_threshold: int = 30,
     extra_checkpoint_builders: tuple[str, ...] = (),
@@ -308,9 +310,13 @@ def _run_with_timings(
     events: list[dict[str, Any]] = []
     token = _ACTIVE_TIMINGS.set(events)
     post_token = _ACTIVE_POST_CHECKPOINTS.set(post_checkpoints)
-    profile_token, activity_token, backend_token, checkpoint_activity = (
-        start_checkpoint_run(profile, backend)
-    )
+    (
+        profile_token,
+        activity_token,
+        backend_token,
+        denylist_token,
+        checkpoint_activity,
+    ) = start_checkpoint_run(profile, backend, local_denylist=local_delta_denylist)
     plan_token = None
     plan_records: list[dict[str, Any]] = []
     if profile_plan:
@@ -321,7 +327,9 @@ def _run_with_timings(
     finally:
         if plan_token is not None:
             finish_plan_profile(plan_token)
-        finish_checkpoint_run(profile_token, activity_token, backend_token)
+        finish_checkpoint_run(
+            profile_token, activity_token, backend_token, denylist_token
+        )
         _ACTIVE_POST_CHECKPOINTS.reset(post_token)
         _ACTIVE_TIMINGS.reset(token)
 
@@ -337,6 +345,14 @@ def _run_with_timings(
         ],
         "bypassed_names": list(checkpoint_activity["bypassed"]),
         "post_builder_checkpoints": sorted(post_checkpoints),
+        "local_delta_denylist": list(
+            checkpoint_activity.get("local_delta_denylist", [])
+        ),
+        "forced_delta_names": [
+            item["name"]
+            for item in checkpoint_activity["written"]
+            if item.get("forced_from_local")
+        ],
     }
     print(f"[updated timing] wall={wall:.3f}s")
     if post_checkpoints:
@@ -349,6 +365,11 @@ def _run_with_timings(
         f"written={checkpoint_summary['written_count']} "
         f"bypassed={checkpoint_summary['bypassed_count']}"
     )
+    if backend == "local" and checkpoint_summary["forced_delta_names"]:
+        print(
+            "[updated checkpoints] forced-to-delta (self-join denylist): "
+            + ", ".join(checkpoint_summary["forced_delta_names"])
+        )
     for item in summary:
         print(
             f"[updated timing] {item['step']}: "
@@ -429,10 +450,31 @@ def _pop_extra_checkpoints(kwargs: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(part).strip() for part in value if str(part).strip())
 
 
+def _pop_local_denylist(kwargs: dict[str, Any]) -> tuple[str, ...]:
+    """Extract EXTRA local-backend delta-denylist prefixes from caller kwargs.
+
+    These are added on top of the built-in denylist in checkpoint.py. Accepts a
+    list/tuple or a comma/space-separated string (handy for a notebook widget).
+    Only consulted when the checkpoint backend is "local".
+    """
+    value = kwargs.pop("LocalDeltaDenylist", None)
+    if value is None:
+        value = kwargs.pop("local_delta_denylist", None)
+    else:
+        kwargs.pop("local_delta_denylist", None)
+    if not value:
+        return ()
+    if isinstance(value, str):
+        parts = re.split(r"[,\s]+", value)
+        return tuple(part.strip() for part in parts if part.strip())
+    return tuple(str(part).strip() for part in value if str(part).strip())
+
+
 def run_modes(*args, **kwargs):
     """Run modes with optimized checkpoints and detailed step timings."""
     profile = _pop_checkpoint_profile(kwargs)
     backend = _pop_checkpoint_backend(kwargs)
+    local_denylist = _pop_local_denylist(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
@@ -440,6 +482,7 @@ def run_modes(*args, **kwargs):
         *args,
         checkpoint_profile=profile,
         checkpoint_backend=backend,
+        local_delta_denylist=local_denylist,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,
@@ -451,6 +494,7 @@ def run_final_effective_percentages(*args, **kwargs):
     """Updated entry point matching the production callable."""
     profile = _pop_checkpoint_profile(kwargs)
     backend = _pop_checkpoint_backend(kwargs)
+    local_denylist = _pop_local_denylist(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
@@ -458,6 +502,7 @@ def run_final_effective_percentages(*args, **kwargs):
         *args,
         checkpoint_profile=profile,
         checkpoint_backend=backend,
+        local_delta_denylist=local_denylist,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,

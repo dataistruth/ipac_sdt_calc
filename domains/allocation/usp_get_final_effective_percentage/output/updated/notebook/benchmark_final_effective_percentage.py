@@ -31,10 +31,18 @@
 # MAGIC   breaks; A/B only. Profiling showed prod already checkpoints every deep
 # MAGIC   seam, so adding more usually only adds cost.
 # MAGIC - **16. Checkpoint backend** — `delta` (default) or `local`. `local`
-# MAGIC   (localCheckpoint) is EXPERIMENTAL and currently FAILS: several builders
-# MAGIC   self-join a checkpointed DF, and only the Delta round-trip lets Spark
-# MAGIC   re-resolve the relation (localCheckpoint -> UNRESOLVED_COLUMN). Keep
-# MAGIC   `delta`.
+# MAGIC   (localCheckpoint) skips the metastore commit / small-file I/O and is the
+# MAGIC   highest-upside lever (~40-50s of wall is Delta checkpoint I/O). It runs
+# MAGIC   as a HYBRID: safe seams use localCheckpoint, but a small built-in
+# MAGIC   denylist (compute_missing_entities feeders + downstream dated/cost
+# MAGIC   self-join feeders) is forced back to `delta`, because those results are
+# MAGIC   self-joined and localCheckpoint's LogicalRDD can't be re-resolved
+# MAGIC   (-> UNRESOLVED_COLUMN). Needs one validation run to confirm the denylist
+# MAGIC   is complete; if it crashes at a checkpoint, add that name via widget 19.
+# MAGIC - **19. Local backend delta-denylist (extra)** — comma-separated
+# MAGIC   checkpoint-name prefixes to ALSO force to `delta` when backend=`local`.
+# MAGIC   Used to extend the built-in denylist during hybrid tuning without a
+# MAGIC   redeploy. Only consulted when backend=`local`.
 # MAGIC - **17. spark.sql.shuffle.partitions** — the 200 default fans small joins
 # MAGIC   into ~32 near-empty tasks/files on this dataset; try `4`. Applied to
 # MAGIC   both variants for a fair A/B.
@@ -108,6 +116,11 @@ dbutils.widgets.dropdown(
     ["off", "on"],
     "18. Delta optimizeWrite + autoCompact",
 )
+dbutils.widgets.text(
+    "LocalDeltaDenylist",
+    "",
+    "19. Local backend delta-denylist (extra, comma-sep)",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -135,6 +148,11 @@ extra_checkpoint_builders = dbutils.widgets.get(
 # no metastore commit). Profiling showed ~40-50s of wall is Delta checkpoint
 # I/O; "local" is the A/B lever to cut it.
 checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
+# Hybrid tuning: extra checkpoint-name prefixes to force back to Delta when the
+# backend is "local" (e.g. a seam whose self-join surfaces during the validation
+# run). Added on top of the built-in denylist in checkpoint.py. Only used when
+# checkpoint_backend == "local". Comma/space separated; blank = built-ins only.
+local_delta_denylist = dbutils.widgets.get("LocalDeltaDenylist").strip()
 # Session-wide shuffle-partition cap. The 200 default fans small joins into
 # many tiny tasks/files, inflating every Delta checkpoint write on this small
 # dataset. A small value (e.g. 4) cuts that overhead. Blank = leave the
@@ -303,6 +321,9 @@ def _run_variant(variant: str, pass_number: int) -> dict:
     if variant == "updated":
         run_kwargs["CheckpointProfile"] = checkpoint_profile
         run_kwargs["CheckpointBackend"] = checkpoint_backend
+        # Hybrid: extra prefixes forced to Delta when backend="local".
+        if checkpoint_backend == "local" and local_delta_denylist:
+            run_kwargs["LocalDeltaDenylist"] = local_delta_denylist
         # Plan-size profiler is driven by the "13. Plan profiler" widget, not
         # by cfg. When on, the updated runner measures per-builder logical-plan
         # (DAG) growth and returns a ranked report in result["plan_profile"].

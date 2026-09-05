@@ -51,21 +51,53 @@ _ACTIVE_ACTIVITY: ContextVar[dict[str, Any] | None] = ContextVar(
 # Checkpoint backend: "delta" (durable UC Delta table, default) or "local"
 # (df.localCheckpoint(eager=True), no metastore commit).
 #
-# !! KNOWN-INCOMPATIBLE: "local" is EXPERIMENTAL and fails on this pipeline. !!
-# Several builders (e.g. compute_missing_entities) self-join a checkpointed
-# DataFrame against something derived from it. The Delta round-trip returns a
-# catalog relation, which Spark re-resolves with fresh attribute IDs so the
-# self-join disambiguates. localCheckpoint returns a LogicalRDD that CANNOT be
-# re-resolved that way, so self-join relation-dedup fails with
-# UNRESOLVED_COLUMN (it "suggests" the very column it claims is missing). The
-# toDF(*columns) re-wrap does not help -- the issue is attribute-ID dedup, not
-# column names. This is why production ships _USE_LOCAL_CHECKPOINT = False.
-# Kept only to document the failure mode; leave the default on "delta".
+# WHY A HYBRID: localCheckpoint is materially faster than the Delta round-trip
+# (no metastore commit, no small-file write/read), but a few builders (starting
+# with compute_missing_entities) self-join a checkpointed DataFrame against
+# something derived from it. The Delta round-trip returns a *catalog relation*,
+# which Spark re-resolves with fresh attribute IDs so the self-join
+# disambiguates. localCheckpoint returns a LogicalRDD that CANNOT be re-resolved
+# that way, so self-join relation-dedup fails with UNRESOLVED_COLUMN (it
+# "suggests" the very column it claims is missing). toDF(*columns) does not help
+# -- the issue is attribute-ID dedup, not column names.
+#
+# HYBRID STRATEGY: run backend="local" for the many safe, expensive seams, but
+# force "delta" for the small denylist of seams whose result later feeds a
+# self-join (see _LOCAL_DELTA_DENYLIST_DEFAULT). This keeps the big local
+# speedups while preserving correctness. The denylist is prefix-matched (names
+# carry a mode suffix, e.g. de_pre_cpbt_m1) and can be extended at runtime via
+# start_checkpoint_run(local_denylist=[...]) after a validation run confirms it.
 DEFAULT_CHECKPOINT_BACKEND = "delta"
 _VALID_BACKENDS = frozenset({"delta", "local"})
 _ACTIVE_BACKEND: ContextVar[str] = ContextVar(
     "fep_checkpoint_backend",
     default=DEFAULT_CHECKPOINT_BACKEND,
+)
+
+# Checkpoint-name PREFIXES that must stay on Delta even when backend="local",
+# because their result is self-joined downstream (localCheckpoint -> LogicalRDD
+# -> UNRESOLVED_COLUMN on self-join relation-dedup).
+#   * nde_pre_cpbt / de_pre_cpbt : unioned into the non_dated/dated inputs of
+#     compute_missing_entities, which self-joins them (CONFIRMED culprit -- the
+#     local run crashed at the checkpoint immediately after txfr_adj_fused).
+#   * nde_post_miss / de_post_miss : feed compute_effective_percentage_dated,
+#     which self-joins the dated-entity set (preemptive).
+#   * final_cost_pct : feeds build_final_cost_percentage crossJoin +
+#     compute_minimum_quarter self-join (preemptive).
+# Trim the preemptive entries after a clean validation run to reclaim more of
+# the local speedup.
+_LOCAL_DELTA_DENYLIST_DEFAULT = frozenset(
+    {
+        "nde_pre_cpbt",
+        "de_pre_cpbt",
+        "nde_post_miss",
+        "de_post_miss",
+        "final_cost_pct",
+    }
+)
+_ACTIVE_LOCAL_DENYLIST: ContextVar[frozenset[str]] = ContextVar(
+    "fep_local_delta_denylist",
+    default=_LOCAL_DELTA_DENYLIST_DEFAULT,
 )
 
 
@@ -77,6 +109,30 @@ def normalize_checkpoint_backend(value: object) -> str:
             f"Unknown checkpoint backend {value!r}; expected one of: {choices}"
         )
     return backend
+
+
+def normalize_local_denylist(extra: object) -> frozenset[str]:
+    """Merge caller-supplied denylist prefixes into the built-in defaults.
+
+    Accepts a comma/space separated string or any iterable of strings.
+    """
+    prefixes: set[str] = set(_LOCAL_DELTA_DENYLIST_DEFAULT)
+    if extra:
+        if isinstance(extra, str):
+            tokens = re.split(r"[,\s]+", extra)
+        else:
+            tokens = list(extra)
+        for token in tokens:
+            cleaned = str(token).strip()
+            if cleaned:
+                prefixes.add(cleaned)
+    return frozenset(prefixes)
+
+
+def _forces_delta_backend(name: object) -> bool:
+    """True when `name` matches a denylist prefix and must stay on Delta."""
+    safe = str(name)
+    return any(safe.startswith(prefix) for prefix in _ACTIVE_LOCAL_DENYLIST.get())
 
 
 def _safe_name(value: object) -> str:
@@ -93,13 +149,24 @@ def normalize_checkpoint_profile(value: object) -> str:
     return profile
 
 
-def start_checkpoint_run(profile: object, backend: object = None):
-    """Activate a checkpoint profile + backend and collect activity."""
+def start_checkpoint_run(
+    profile: object,
+    backend: object = None,
+    local_denylist: object = None,
+):
+    """Activate a checkpoint profile + backend and collect activity.
+
+    `local_denylist` (str or iterable) extends the built-in set of checkpoint
+    prefixes that stay on Delta even when backend="local". Use it to tune the
+    hybrid after a validation run without a redeploy.
+    """
     normalized = normalize_checkpoint_profile(profile)
     normalized_backend = normalize_checkpoint_backend(backend)
+    denylist = normalize_local_denylist(local_denylist)
     activity: dict[str, Any] = {
         "profile": normalized,
         "backend": normalized_backend,
+        "local_delta_denylist": sorted(denylist),
         "written": [],
         "bypassed": [],
     }
@@ -107,15 +174,23 @@ def start_checkpoint_run(profile: object, backend: object = None):
         _ACTIVE_PROFILE.set(normalized),
         _ACTIVE_ACTIVITY.set(activity),
         _ACTIVE_BACKEND.set(normalized_backend),
+        _ACTIVE_LOCAL_DENYLIST.set(denylist),
         activity,
     )
 
 
-def finish_checkpoint_run(profile_token, activity_token, backend_token=None) -> None:
+def finish_checkpoint_run(
+    profile_token,
+    activity_token,
+    backend_token=None,
+    denylist_token=None,
+) -> None:
     _ACTIVE_ACTIVITY.reset(activity_token)
     _ACTIVE_PROFILE.reset(profile_token)
     if backend_token is not None:
         _ACTIVE_BACKEND.reset(backend_token)
+    if denylist_token is not None:
+        _ACTIVE_LOCAL_DENYLIST.reset(denylist_token)
 
 
 def _get_conf(spark: SparkSession, key: str) -> tuple[bool, str | None]:
@@ -165,8 +240,15 @@ def checkpoint(
     )
     cfg["_checkpoint_backend"] = backend
 
+    # Hybrid: honor "local" everywhere except the self-join denylist, which is
+    # forced back to the durable Delta round-trip for correctness.
+    effective_backend = backend
+    forced_to_delta = backend == "local" and _forces_delta_backend(name)
+    if forced_to_delta:
+        effective_backend = "delta"
+
     # --- local backend: in-memory lineage break, no metastore Delta commit ---
-    if backend == "local":
+    if effective_backend == "local":
         started = time.time()
         cp = df.localCheckpoint(eager=True)
         # localCheckpoint strips table-qualifier metadata from columns; re-wrap
@@ -175,11 +257,11 @@ def checkpoint(
         cp = cp.toDF(*cp.columns)
         elapsed = time.time() - started
         cfg.setdefault("_updated_checkpoint_timings", []).append(
-            {"name": name, "elapsed_seconds": round(elapsed, 3)}
+            {"name": name, "elapsed_seconds": round(elapsed, 3), "backend": "local"}
         )
         if activity is not None:
             activity["written"].append(
-                {"name": name, "elapsed_seconds": round(elapsed, 3)}
+                {"name": name, "elapsed_seconds": round(elapsed, 3), "backend": "local"}
             )
         print(
             f"[updated checkpoint] {name}: {elapsed:.3f}s "
@@ -212,16 +294,16 @@ def checkpoint(
         _restore_conf(spark, _STATS_KEY, existed, previous)
 
     elapsed = time.time() - started
-    cfg.setdefault("_updated_checkpoint_timings", []).append(
-        {"name": name, "elapsed_seconds": round(elapsed, 3)}
-    )
+    timing = {"name": name, "elapsed_seconds": round(elapsed, 3), "backend": "delta"}
+    if forced_to_delta:
+        timing["forced_from_local"] = True
+    cfg.setdefault("_updated_checkpoint_timings", []).append(dict(timing))
     if activity is not None:
-        activity["written"].append(
-            {"name": name, "elapsed_seconds": round(elapsed, 3)}
-        )
+        activity["written"].append(dict(timing))
+    forced_note = " forced-from-local" if forced_to_delta else ""
     print(
         f"[updated checkpoint] {name}: {elapsed:.3f}s "
-        f"(backend=delta, stats=off, profile={profile})"
+        f"(backend=delta{forced_note}, stats=off, profile={profile})"
     )
     return spark.table(fqn)
 
