@@ -330,6 +330,20 @@ reconcile = importlib.import_module(f"{PACKAGE}.output.updated.output_reconcile"
 
 # COMMAND ----------
 
+# Defensive defaults for the updated-only tuning knobs. These are all set in the
+# config cell above; guarding them here means a partial / out-of-order cell run
+# (or a stale deployed copy of the config cell) can't NameError the A/B loop.
+_cfg_globals = globals()
+_cfg_globals.setdefault("checkpoint_profile", "prod")
+_cfg_globals.setdefault("checkpoint_backend", "local")
+_cfg_globals.setdefault("local_delta_denylist", "")
+_cfg_globals.setdefault("local_delta_denylist_mode", "extend")
+_cfg_globals.setdefault("checkpoint_coalesce", "")
+_cfg_globals.setdefault("profile_plan", False)
+_cfg_globals.setdefault("plan_checkpoint_threshold", 30)
+_cfg_globals.setdefault("extra_checkpoint_builders", "")
+
+
 def _run_variant(variant: str, pass_number: int) -> dict:
     module_name = ORIGINAL_MODULE if variant == "original" else UPDATED_MODULE
     runner = _import_fresh(module_name)
