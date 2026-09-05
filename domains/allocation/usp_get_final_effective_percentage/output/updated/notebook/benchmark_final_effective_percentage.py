@@ -98,7 +98,7 @@ dbutils.widgets.dropdown(
 )
 dbutils.widgets.dropdown(
     "ProfilePlan",
-    "off",
+    "on",
     ["off", "on"],
     "13. Plan profiler",
 )
@@ -114,13 +114,13 @@ dbutils.widgets.text(
 )
 dbutils.widgets.dropdown(
     "CheckpointBackend",
-    "delta",
+    "local",
     ["delta", "local"],
     "16. Checkpoint backend",
 )
 dbutils.widgets.text(
     "SqlShufflePartitions",
-    "",
+    "4",
     "17. spark.sql.shuffle.partitions (blank=default)",
 )
 dbutils.widgets.dropdown(
@@ -142,7 +142,7 @@ dbutils.widgets.dropdown(
 )
 dbutils.widgets.text(
     "CheckpointCoalesce",
-    "",
+    "2",
     "21. Checkpoint write coalesce (blank=off)",
 )
 
