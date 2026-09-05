@@ -111,22 +111,25 @@ def normalize_checkpoint_backend(value: object) -> str:
     return backend
 
 
-def normalize_local_denylist(extra: object) -> frozenset[str]:
-    """Merge caller-supplied denylist prefixes into the built-in defaults.
+def normalize_local_denylist(extra: object, mode: object = "extend") -> frozenset[str]:
+    """Resolve the effective local-backend delta-denylist prefixes.
 
-    Accepts a comma/space separated string or any iterable of strings.
+    `extra` is a comma/space separated string or any iterable of strings.
+    `mode`:
+      * "extend"  (default) -> built-in defaults UNION `extra`.
+      * "replace" -> use ONLY `extra` (lets a validation run TRIM the preemptive
+        built-ins down to the confirmed-critical seams). Guarded: an empty
+        `extra` in replace mode falls back to the defaults so a blank widget
+        never silently drops every self-join guard.
     """
-    prefixes: set[str] = set(_LOCAL_DELTA_DENYLIST_DEFAULT)
+    normalized_mode = str(mode or "extend").strip().lower()
+    supplied: set[str] = set()
     if extra:
-        if isinstance(extra, str):
-            tokens = re.split(r"[,\s]+", extra)
-        else:
-            tokens = list(extra)
-        for token in tokens:
-            cleaned = str(token).strip()
-            if cleaned:
-                prefixes.add(cleaned)
-    return frozenset(prefixes)
+        tokens = re.split(r"[,\s]+", extra) if isinstance(extra, str) else list(extra)
+        supplied = {str(token).strip() for token in tokens if str(token).strip()}
+    if normalized_mode == "replace":
+        return frozenset(supplied) if supplied else _LOCAL_DELTA_DENYLIST_DEFAULT
+    return frozenset(set(_LOCAL_DELTA_DENYLIST_DEFAULT) | supplied)
 
 
 def _forces_delta_backend(name: object) -> bool:
@@ -153,16 +156,18 @@ def start_checkpoint_run(
     profile: object,
     backend: object = None,
     local_denylist: object = None,
+    local_denylist_mode: object = "extend",
 ):
     """Activate a checkpoint profile + backend and collect activity.
 
-    `local_denylist` (str or iterable) extends the built-in set of checkpoint
-    prefixes that stay on Delta even when backend="local". Use it to tune the
-    hybrid after a validation run without a redeploy.
+    `local_denylist` (str or iterable) tunes the set of checkpoint prefixes that
+    stay on Delta even when backend="local"; `local_denylist_mode` selects
+    "extend" (add to built-ins) or "replace" (use only the supplied set). Use it
+    to tune the hybrid after a validation run without a redeploy.
     """
     normalized = normalize_checkpoint_profile(profile)
     normalized_backend = normalize_checkpoint_backend(backend)
-    denylist = normalize_local_denylist(local_denylist)
+    denylist = normalize_local_denylist(local_denylist, local_denylist_mode)
     activity: dict[str, Any] = {
         "profile": normalized,
         "backend": normalized_backend,

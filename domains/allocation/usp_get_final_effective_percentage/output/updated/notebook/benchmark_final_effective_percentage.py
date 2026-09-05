@@ -40,9 +40,17 @@
 # MAGIC   (-> UNRESOLVED_COLUMN). Needs one validation run to confirm the denylist
 # MAGIC   is complete; if it crashes at a checkpoint, add that name via widget 19.
 # MAGIC - **19. Local backend delta-denylist (extra)** — comma-separated
-# MAGIC   checkpoint-name prefixes to ALSO force to `delta` when backend=`local`.
-# MAGIC   Used to extend the built-in denylist during hybrid tuning without a
+# MAGIC   checkpoint-name prefixes to force to `delta` when backend=`local`.
+# MAGIC   Used to tune the built-in denylist during hybrid tuning without a
 # MAGIC   redeploy. Only consulted when backend=`local`.
+# MAGIC - **20. Local denylist mode** — `extend` (add widget-19 to the built-ins,
+# MAGIC   default) or `replace` (use ONLY widget 19). The confirmed win kept the
+# MAGIC   3 preemptive seams (`nde_post_miss_fused`, `de_post_miss_fused`,
+# MAGIC   `final_cost_pct_fused`, ~10s of delta I/O) on Delta. To try reclaiming
+# MAGIC   them, set mode=`replace` and widget 19=`nde_pre_cpbt,de_pre_cpbt` (the
+# MAGIC   only CONFIRMED-critical pair). If the run crashes with UNRESOLVED_COLUMN
+# MAGIC   at a seam, add that seam back to widget 19. A blank widget-19 in
+# MAGIC   `replace` mode safely falls back to the built-in denylist.
 # MAGIC - **17. spark.sql.shuffle.partitions** — the 200 default fans small joins
 # MAGIC   into ~32 near-empty tasks/files on this dataset; try `4`. Applied to
 # MAGIC   both variants for a fair A/B.
@@ -121,6 +129,12 @@ dbutils.widgets.text(
     "",
     "19. Local backend delta-denylist (extra, comma-sep)",
 )
+dbutils.widgets.dropdown(
+    "LocalDeltaDenylistMode",
+    "extend",
+    ["extend", "replace"],
+    "20. Local denylist mode",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -153,6 +167,12 @@ checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
 # run). Added on top of the built-in denylist in checkpoint.py. Only used when
 # checkpoint_backend == "local". Comma/space separated; blank = built-ins only.
 local_delta_denylist = dbutils.widgets.get("LocalDeltaDenylist").strip()
+# "extend" (add to built-ins) or "replace" (use only widget 19). Use "replace"
+# with widget 19 = "nde_pre_cpbt,de_pre_cpbt" to trim the preemptive seams and
+# measure whether they can safely run local.
+local_delta_denylist_mode = (
+    dbutils.widgets.get("LocalDeltaDenylistMode").strip().lower()
+)
 # Session-wide shuffle-partition cap. The 200 default fans small joins into
 # many tiny tasks/files, inflating every Delta checkpoint write on this small
 # dataset. A small value (e.g. 4) cuts that overhead. Blank = leave the
@@ -321,9 +341,11 @@ def _run_variant(variant: str, pass_number: int) -> dict:
     if variant == "updated":
         run_kwargs["CheckpointProfile"] = checkpoint_profile
         run_kwargs["CheckpointBackend"] = checkpoint_backend
-        # Hybrid: extra prefixes forced to Delta when backend="local".
-        if checkpoint_backend == "local" and local_delta_denylist:
-            run_kwargs["LocalDeltaDenylist"] = local_delta_denylist
+        # Hybrid: tune which prefixes stay on Delta when backend="local".
+        if checkpoint_backend == "local":
+            if local_delta_denylist:
+                run_kwargs["LocalDeltaDenylist"] = local_delta_denylist
+            run_kwargs["LocalDeltaDenylistMode"] = local_delta_denylist_mode
         # Plan-size profiler is driven by the "13. Plan profiler" widget, not
         # by cfg. When on, the updated runner measures per-builder logical-plan
         # (DAG) growth and returns a ranked report in result["plan_profile"].

@@ -290,6 +290,7 @@ def _run_with_timings(
     checkpoint_profile: str = DEFAULT_CHECKPOINT_PROFILE,
     checkpoint_backend: str = DEFAULT_CHECKPOINT_BACKEND,
     local_delta_denylist: tuple[str, ...] = (),
+    local_delta_denylist_mode: str = "extend",
     profile_plan: bool = False,
     plan_checkpoint_threshold: int = 30,
     extra_checkpoint_builders: tuple[str, ...] = (),
@@ -316,7 +317,12 @@ def _run_with_timings(
         backend_token,
         denylist_token,
         checkpoint_activity,
-    ) = start_checkpoint_run(profile, backend, local_denylist=local_delta_denylist)
+    ) = start_checkpoint_run(
+        profile,
+        backend,
+        local_denylist=local_delta_denylist,
+        local_denylist_mode=local_delta_denylist_mode,
+    )
     plan_token = None
     plan_records: list[dict[str, Any]] = []
     if profile_plan:
@@ -470,11 +476,22 @@ def _pop_local_denylist(kwargs: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(part).strip() for part in value if str(part).strip())
 
 
+def _pop_local_denylist_mode(kwargs: dict[str, Any]) -> str:
+    """Extract the denylist merge mode ("extend" or "replace") from kwargs."""
+    value = kwargs.pop("LocalDeltaDenylistMode", None)
+    if value is None:
+        value = kwargs.pop("local_delta_denylist_mode", None)
+    else:
+        kwargs.pop("local_delta_denylist_mode", None)
+    return str(value or "extend").strip().lower()
+
+
 def run_modes(*args, **kwargs):
     """Run modes with optimized checkpoints and detailed step timings."""
     profile = _pop_checkpoint_profile(kwargs)
     backend = _pop_checkpoint_backend(kwargs)
     local_denylist = _pop_local_denylist(kwargs)
+    local_denylist_mode = _pop_local_denylist_mode(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
@@ -483,6 +500,7 @@ def run_modes(*args, **kwargs):
         checkpoint_profile=profile,
         checkpoint_backend=backend,
         local_delta_denylist=local_denylist,
+        local_delta_denylist_mode=local_denylist_mode,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,
@@ -495,6 +513,7 @@ def run_final_effective_percentages(*args, **kwargs):
     profile = _pop_checkpoint_profile(kwargs)
     backend = _pop_checkpoint_backend(kwargs)
     local_denylist = _pop_local_denylist(kwargs)
+    local_denylist_mode = _pop_local_denylist_mode(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
@@ -503,6 +522,7 @@ def run_final_effective_percentages(*args, **kwargs):
         checkpoint_profile=profile,
         checkpoint_backend=backend,
         local_delta_denylist=local_denylist,
+        local_delta_denylist_mode=local_denylist_mode,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,
