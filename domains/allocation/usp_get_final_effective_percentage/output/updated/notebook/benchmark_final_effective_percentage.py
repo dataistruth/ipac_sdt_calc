@@ -30,27 +30,32 @@
 # MAGIC - **15. Extra checkpoint builders** — force extra post-builder lineage
 # MAGIC   breaks; A/B only. Profiling showed prod already checkpoints every deep
 # MAGIC   seam, so adding more usually only adds cost.
-# MAGIC - **16. Checkpoint backend** — `delta` (default) or `local`. `local`
+# MAGIC - **16. Checkpoint backend** — `delta` or `local`. `local`
 # MAGIC   (localCheckpoint) skips the metastore commit / small-file I/O and is the
-# MAGIC   highest-upside lever (~40-50s of wall is Delta checkpoint I/O). It runs
-# MAGIC   as a HYBRID: safe seams use localCheckpoint, but a small built-in
-# MAGIC   denylist (compute_missing_entities feeders + downstream dated/cost
-# MAGIC   self-join feeders) is forced back to `delta`, because those results are
-# MAGIC   self-joined and localCheckpoint's LogicalRDD can't be re-resolved
-# MAGIC   (-> UNRESOLVED_COLUMN). Needs one validation run to confirm the denylist
-# MAGIC   is complete; if it crashes at a checkpoint, add that name via widget 19.
+# MAGIC   highest-upside lever (validated: 166.7s -> 104.1s, ~38% faster,
+# MAGIC   fingerprints match). It runs as a HYBRID: safe seams use localCheckpoint,
+# MAGIC   but the MINIMAL validated denylist `nde_pre_cpbt` / `de_pre_cpbt` (the
+# MAGIC   compute_missing_entities self-join feeders) is forced back to `delta`
+# MAGIC   because localCheckpoint's LogicalRDD can't be re-resolved for a self-join
+# MAGIC   (-> UNRESOLVED_COLUMN). If a new mode/data shape crashes at some other
+# MAGIC   checkpoint, add that seam via widget 19.
 # MAGIC - **19. Local backend delta-denylist (extra)** — comma-separated
 # MAGIC   checkpoint-name prefixes to force to `delta` when backend=`local`.
-# MAGIC   Used to tune the built-in denylist during hybrid tuning without a
-# MAGIC   redeploy. Only consulted when backend=`local`.
+# MAGIC   Used to extend/override the built-in denylist without a redeploy. Only
+# MAGIC   consulted when backend=`local`.
 # MAGIC - **20. Local denylist mode** — `extend` (add widget-19 to the built-ins,
-# MAGIC   default) or `replace` (use ONLY widget 19). The confirmed win kept the
-# MAGIC   3 preemptive seams (`nde_post_miss_fused`, `de_post_miss_fused`,
-# MAGIC   `final_cost_pct_fused`, ~10s of delta I/O) on Delta. To try reclaiming
-# MAGIC   them, set mode=`replace` and widget 19=`nde_pre_cpbt,de_pre_cpbt` (the
-# MAGIC   only CONFIRMED-critical pair). If the run crashes with UNRESOLVED_COLUMN
-# MAGIC   at a seam, add that seam back to widget 19. A blank widget-19 in
+# MAGIC   default) or `replace` (use ONLY widget 19). The built-in default is now
+# MAGIC   the minimal validated pair `nde_pre_cpbt,de_pre_cpbt`; a 2026-09-05 run
+# MAGIC   proved `nde_post_miss_fused` / `de_post_miss_fused` / `final_cost_pct_fused`
+# MAGIC   run safely on local (reclaimed ~8s), so they are no longer force-delta'd.
+# MAGIC   Use `replace` only for further experiments; a blank widget-19 in
 # MAGIC   `replace` mode safely falls back to the built-in denylist.
+# MAGIC - **21. Checkpoint write coalesce** — coalesce each Delta checkpoint
+# MAGIC   write to N files (blank/0 = off). The write still emits several tiny
+# MAGIC   files per commit on this dataset; a small N (e.g. `2`) trims file-count
+# MAGIC   / commit overhead. In backend=`local` this hits exactly the remaining
+# MAGIC   forced-delta seams (`nde_pre_cpbt` / `de_pre_cpbt`), the last delta I/O
+# MAGIC   in the fast path. `coalesce` is a narrow op (no shuffle).
 # MAGIC - **17. spark.sql.shuffle.partitions** — the 200 default fans small joins
 # MAGIC   into ~32 near-empty tasks/files on this dataset; try `4`. Applied to
 # MAGIC   both variants for a fair A/B.
@@ -135,6 +140,11 @@ dbutils.widgets.dropdown(
     ["extend", "replace"],
     "20. Local denylist mode",
 )
+dbutils.widgets.text(
+    "CheckpointCoalesce",
+    "",
+    "21. Checkpoint write coalesce (blank=off)",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -173,6 +183,11 @@ local_delta_denylist = dbutils.widgets.get("LocalDeltaDenylist").strip()
 local_delta_denylist_mode = (
     dbutils.widgets.get("LocalDeltaDenylistMode").strip().lower()
 )
+# Coalesce each Delta checkpoint write to this many files (blank/0 = off). On
+# this small dataset the write still emits several tiny files per commit; a
+# small value (e.g. 2) trims file-count/commit overhead. In backend="local" it
+# hits exactly the forced-delta self-join seams (nde_pre_cpbt / de_pre_cpbt).
+checkpoint_coalesce = dbutils.widgets.get("CheckpointCoalesce").strip()
 # Session-wide shuffle-partition cap. The 200 default fans small joins into
 # many tiny tasks/files, inflating every Delta checkpoint write on this small
 # dataset. A small value (e.g. 4) cuts that overhead. Blank = leave the
@@ -346,6 +361,10 @@ def _run_variant(variant: str, pass_number: int) -> dict:
             if local_delta_denylist:
                 run_kwargs["LocalDeltaDenylist"] = local_delta_denylist
             run_kwargs["LocalDeltaDenylistMode"] = local_delta_denylist_mode
+        # Coalesce the Delta checkpoint writes (applies to both backends; in
+        # "local" it hits only the forced-delta self-join seams).
+        if checkpoint_coalesce:
+            run_kwargs["CheckpointCoalesce"] = checkpoint_coalesce
         # Plan-size profiler is driven by the "13. Plan profiler" widget, not
         # by cfg. When on, the updated runner measures per-builder logical-plan
         # (DAG) growth and returns a ranked report in result["plan_profile"].

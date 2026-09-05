@@ -78,21 +78,20 @@ _ACTIVE_BACKEND: ContextVar[str] = ContextVar(
 # because their result is self-joined downstream (localCheckpoint -> LogicalRDD
 # -> UNRESOLVED_COLUMN on self-join relation-dedup).
 #   * nde_pre_cpbt / de_pre_cpbt : unioned into the non_dated/dated inputs of
-#     compute_missing_entities, which self-joins them (CONFIRMED culprit -- the
-#     local run crashed at the checkpoint immediately after txfr_adj_fused).
-#   * nde_post_miss / de_post_miss : feed compute_effective_percentage_dated,
-#     which self-joins the dated-entity set (preemptive).
-#   * final_cost_pct : feeds build_final_cost_percentage crossJoin +
-#     compute_minimum_quarter self-join (preemptive).
-# Trim the preemptive entries after a clean validation run to reclaim more of
-# the local speedup.
+#     compute_missing_entities, which self-joins them. CONFIRMED-critical -- the
+#     first local run crashed at the checkpoint immediately after txfr_adj_fused.
+#
+# This is the MINIMAL validated denylist. An earlier version also force-delta'd
+# nde_post_miss / de_post_miss / final_cost_pct preemptively, but a validation
+# run (2026-09-05, modes 1+2+3, fingerprints matched) proved those three run
+# safely on localCheckpoint, so they were removed to reclaim ~8s (they went
+# 4.93->2.42s, 3.20->1.95s, 2.15->0.74s and total wall dropped 112.3s->104.1s).
+# If a new mode/data shape surfaces another self-join failure, add the seam back
+# via the notebook widget (LocalDeltaDenylist) before editing this default.
 _LOCAL_DELTA_DENYLIST_DEFAULT = frozenset(
     {
         "nde_pre_cpbt",
         "de_pre_cpbt",
-        "nde_post_miss",
-        "de_post_miss",
-        "final_cost_pct",
     }
 )
 _ACTIVE_LOCAL_DENYLIST: ContextVar[frozenset[str]] = ContextVar(
@@ -138,6 +137,36 @@ def _forces_delta_backend(name: object) -> bool:
     return any(safe.startswith(prefix) for prefix in _ACTIVE_LOCAL_DENYLIST.get())
 
 
+# Optional coalesce applied to the Delta checkpoint write. On this small dataset
+# (and with shuffle.partitions capped at 4) a full-parallel write still emits
+# several tiny files per checkpoint; coalescing to a handful reduces the file
+# count and the per-commit overhead. It targets the Delta write path only, so in
+# backend="local" mode it applies exactly to the forced-delta self-join seams
+# (nde_pre_cpbt / de_pre_cpbt). None = leave partitioning as-is (current
+# behavior). coalesce() is a narrow op (no shuffle); keep the value >= 1.
+DEFAULT_CHECKPOINT_COALESCE: int | None = None
+_ACTIVE_COALESCE: ContextVar[int | None] = ContextVar(
+    "fep_checkpoint_coalesce",
+    default=DEFAULT_CHECKPOINT_COALESCE,
+)
+
+
+def normalize_coalesce(value: object) -> int | None:
+    """Coerce a coalesce setting to a positive int, or None to disable it."""
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("", "0", "none", "off", "false"):
+        return None
+    try:
+        count = int(float(text))
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Invalid checkpoint coalesce {value!r}; expected a positive integer"
+        )
+    return count if count > 0 else None
+
+
 def _safe_name(value: object) -> str:
     return _SAFE_NAME.sub("_", str(value))
 
@@ -157,21 +186,26 @@ def start_checkpoint_run(
     backend: object = None,
     local_denylist: object = None,
     local_denylist_mode: object = "extend",
+    coalesce: object = None,
 ):
     """Activate a checkpoint profile + backend and collect activity.
 
     `local_denylist` (str or iterable) tunes the set of checkpoint prefixes that
     stay on Delta even when backend="local"; `local_denylist_mode` selects
-    "extend" (add to built-ins) or "replace" (use only the supplied set). Use it
-    to tune the hybrid after a validation run without a redeploy.
+    "extend" (add to built-ins) or "replace" (use only the supplied set).
+    `coalesce` (int or None) coalesces each Delta checkpoint write to that many
+    output files (None = leave as-is). Use it to tune the hybrid after a
+    validation run without a redeploy.
     """
     normalized = normalize_checkpoint_profile(profile)
     normalized_backend = normalize_checkpoint_backend(backend)
     denylist = normalize_local_denylist(local_denylist, local_denylist_mode)
+    normalized_coalesce = normalize_coalesce(coalesce)
     activity: dict[str, Any] = {
         "profile": normalized,
         "backend": normalized_backend,
         "local_delta_denylist": sorted(denylist),
+        "coalesce": normalized_coalesce,
         "written": [],
         "bypassed": [],
     }
@@ -180,6 +214,7 @@ def start_checkpoint_run(
         _ACTIVE_ACTIVITY.set(activity),
         _ACTIVE_BACKEND.set(normalized_backend),
         _ACTIVE_LOCAL_DENYLIST.set(denylist),
+        _ACTIVE_COALESCE.set(normalized_coalesce),
         activity,
     )
 
@@ -189,6 +224,7 @@ def finish_checkpoint_run(
     activity_token,
     backend_token=None,
     denylist_token=None,
+    coalesce_token=None,
 ) -> None:
     _ACTIVE_ACTIVITY.reset(activity_token)
     _ACTIVE_PROFILE.reset(profile_token)
@@ -196,6 +232,8 @@ def finish_checkpoint_run(
         _ACTIVE_BACKEND.reset(backend_token)
     if denylist_token is not None:
         _ACTIVE_LOCAL_DENYLIST.reset(denylist_token)
+    if coalesce_token is not None:
+        _ACTIVE_COALESCE.reset(coalesce_token)
 
 
 def _get_conf(spark: SparkSession, key: str) -> tuple[bool, str | None]:
@@ -284,11 +322,17 @@ def checkpoint(
     if fqn not in checkpoint_tables:
         checkpoint_tables.append(fqn)
 
+    # Optional coalesce to shrink file-count / commit overhead on the write.
+    coalesce = normalize_coalesce(
+        cfg.get("_checkpoint_coalesce", _ACTIVE_COALESCE.get())
+    )
+    writer_source = df.coalesce(coalesce) if coalesce else df
+
     existed, previous = _get_conf(spark, _STATS_KEY)
     try:
         spark.conf.set(_STATS_KEY, "false")
         (
-            df.write.format("delta")
+            writer_source.write.format("delta")
             .mode("overwrite")
             .option("overwriteSchema", "true")
             .option("delta.dataSkippingNumIndexedCols", "0")
@@ -302,13 +346,16 @@ def checkpoint(
     timing = {"name": name, "elapsed_seconds": round(elapsed, 3), "backend": "delta"}
     if forced_to_delta:
         timing["forced_from_local"] = True
+    if coalesce:
+        timing["coalesce"] = coalesce
     cfg.setdefault("_updated_checkpoint_timings", []).append(dict(timing))
     if activity is not None:
         activity["written"].append(dict(timing))
     forced_note = " forced-from-local" if forced_to_delta else ""
+    coalesce_note = f" coalesce={coalesce}" if coalesce else ""
     print(
         f"[updated checkpoint] {name}: {elapsed:.3f}s "
-        f"(backend=delta{forced_note}, stats=off, profile={profile})"
+        f"(backend=delta{forced_note}{coalesce_note}, stats=off, profile={profile})"
     )
     return spark.table(fqn)
 
