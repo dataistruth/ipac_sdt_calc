@@ -34,39 +34,31 @@
 # MAGIC   (localCheckpoint) skips the metastore commit / small-file I/O and is the
 # MAGIC   highest-upside lever (validated: 166.7s -> 104.1s, ~38% faster,
 # MAGIC   fingerprints match). It runs as a HYBRID: safe seams use localCheckpoint,
-# MAGIC   but the MINIMAL validated denylist `nde_pre_cpbt` / `de_pre_cpbt` (the
-# MAGIC   compute_missing_entities self-join feeders) is forced back to `delta`
-# MAGIC   because localCheckpoint's LogicalRDD can't be re-resolved for a self-join
-# MAGIC   (-> UNRESOLVED_COLUMN). If a new mode/data shape crashes at some other
-# MAGIC   checkpoint, add that seam via widget 19.
+# MAGIC   but the MINIMAL validated denylist `final_cost_pct` (the effective_calc +
+# MAGIC   plugging self-join feeder) is forced off local because localCheckpoint's
+# MAGIC   LogicalRDD can't be re-resolved for a self-join (-> UNRESOLVED_COLUMN).
+# MAGIC   If a new mode/data shape crashes at some other checkpoint, add that seam
+# MAGIC   via widget 19.
 # MAGIC - **19. Local backend delta-denylist** — comma-separated checkpoint-name
 # MAGIC   prefixes that stay on `delta` even when backend=`local` (their result
 # MAGIC   feeds a self-join localCheckpoint can't re-resolve). Managed here and
-# MAGIC   passed through; pre-filled with `nde_pre_cpbt,de_pre_cpbt`. If a run
-# MAGIC   crashes at the effective_calc + plugging self-join (`DealID`), add
-# MAGIC   `final_cost_pct` (then `nde_post_miss,de_post_miss` if still unstable).
-# MAGIC   Only consulted when backend=`local`.
+# MAGIC   passed through; pre-filled with the minimal confirmed seam
+# MAGIC   `final_cost_pct` (fixes the effective_calc + plugging self-join
+# MAGIC   `DealID` crash that is unique to this SP; the pre_cpbt seams run fine
+# MAGIC   fully-local). If a new data shape crashes at compute_missing_entities,
+# MAGIC   add `nde_pre_cpbt,de_pre_cpbt`. Only consulted when backend=`local`.
 # MAGIC - **20. Local denylist mode** — `extend` (add widget-19 to the built-ins,
-# MAGIC   default) or `replace` (use ONLY widget 19). The built-in default is now
-# MAGIC   the minimal validated pair `nde_pre_cpbt,de_pre_cpbt`; a 2026-09-05 run
-# MAGIC   proved `nde_post_miss_fused` / `de_post_miss_fused` / `final_cost_pct_fused`
-# MAGIC   run safely on local (reclaimed ~8s), so they are no longer force-delta'd.
-# MAGIC   Use `replace` only for further experiments; a blank widget-19 in
-# MAGIC   `replace` mode safely falls back to the built-in denylist.
+# MAGIC   default) or `replace` (use ONLY widget 19). The built-in default is the
+# MAGIC   minimal confirmed seam `final_cost_pct`; the pre_cpbt and post_miss
+# MAGIC   seams run safely on local. Use `replace` only for further experiments;
+# MAGIC   a blank widget-19 in `replace` mode safely falls back to the built-in
+# MAGIC   denylist.
 # MAGIC - **21. Checkpoint write coalesce** — coalesce each Delta checkpoint
 # MAGIC   write to N files (blank/0 = off). The write still emits several tiny
 # MAGIC   files per commit on this dataset; a small N (e.g. `2`) trims file-count
 # MAGIC   / commit overhead. In backend=`local` this hits exactly the remaining
-# MAGIC   forced seams (`nde_pre_cpbt` / `de_pre_cpbt`), the last durable I/O
-# MAGIC   in the fast path. `coalesce` is a narrow op (no shuffle). Applied to
-# MAGIC   both the delta and parquet-volume write paths.
-# MAGIC - **22. Parquet checkpoint volume path** — when set AND backend=`local`,
-# MAGIC   the forced self-join seams (widget 19) round-trip through plain Parquet
-# MAGIC   under this volume path instead of Delta: `spark.read.parquet` gives a
-# MAGIC   fresh, re-resolvable relation (self-join safe) but skips Delta's
-# MAGIC   commit/metastore step, so it's faster than the forced-delta fallback.
-# MAGIC   Blank = off (those seams fall back to Delta). Widget 21's coalesce is
-# MAGIC   applied to the parquet write; temp dirs are run-scoped + auto-cleaned.
+# MAGIC   forced-delta seam (`final_cost_pct`), the last delta I/O in the fast
+# MAGIC   path. `coalesce` is a narrow op (no shuffle).
 # MAGIC - **17. spark.sql.shuffle.partitions** — the 200 default fans small joins
 # MAGIC   into ~32 near-empty tasks/files on this dataset; try `4`. Applied to
 # MAGIC   both variants for a fair A/B.
@@ -142,7 +134,7 @@ dbutils.widgets.dropdown(
 )
 dbutils.widgets.text(
     "LocalDeltaDenylist",
-    "nde_pre_cpbt,de_pre_cpbt",
+    "final_cost_pct",
     "19. Local backend delta-denylist (comma-sep)",
 )
 dbutils.widgets.dropdown(
@@ -155,11 +147,6 @@ dbutils.widgets.text(
     "CheckpointCoalesce",
     "2",
     "21. Checkpoint write coalesce (blank=off)",
-)
-dbutils.widgets.text(
-    "CheckpointVolumePath",
-    "/Volumes/qa7/datavolume/databrickdata/checkpoint",
-    "22. Parquet checkpoint volume path (blank=off)",
 )
 
 source_path = dbutils.widgets.get("source_path").strip()
@@ -191,31 +178,22 @@ checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
 # The delta-denylist is managed HERE (widget 19), comma-separated: these
 # checkpoint-name prefixes stay on Delta even when backend="local", because
 # their result feeds a self-join that localCheckpoint can't re-resolve
-# (UNRESOLVED_COLUMN). Pre-filled with the confirmed-critical pair
-# "nde_pre_cpbt,de_pre_cpbt". If a run crashes at the effective_calc + plugging
-# self-join (DealID), add "final_cost_pct" (and, if still unstable,
-# "nde_post_miss,de_post_miss") right here -- no redeploy. Only used when
+# (UNRESOLVED_COLUMN). Pre-filled with the minimal confirmed seam
+# "final_cost_pct" (the effective_calc + plugging DealID self-join feeder that
+# is unique to this SP). If a run also crashes at compute_missing_entities, add
+# "nde_pre_cpbt,de_pre_cpbt" right here -- no redeploy. Only used when
 # checkpoint_backend == "local".
 local_delta_denylist = dbutils.widgets.get("LocalDeltaDenylist").strip()
 # "extend" (add to built-ins) or "replace" (use only widget 19). Use "replace"
-# with widget 19 = "nde_pre_cpbt,de_pre_cpbt" to trim the preemptive seams and
-# measure whether they can safely run local.
+# with a trimmed widget 19 to measure whether a given seam can safely run local.
 local_delta_denylist_mode = (
     dbutils.widgets.get("LocalDeltaDenylistMode").strip().lower()
 )
 # Coalesce each Delta checkpoint write to this many files (blank/0 = off). On
 # this small dataset the write still emits several tiny files per commit; a
 # small value (e.g. 2) trims file-count/commit overhead. In backend="local" it
-# hits exactly the forced-delta self-join seams (nde_pre_cpbt / de_pre_cpbt).
+# hits exactly the forced self-join seam (final_cost_pct).
 checkpoint_coalesce = dbutils.widgets.get("CheckpointCoalesce").strip()
-# Parquet-backend base path (widget 22). When set AND backend="local", the
-# self-join denylist seams (widget 19) are written as plain Parquet under this
-# volume path and read back -- a fresh, re-resolvable relation (self-join safe)
-# that skips Delta's commit/metastore step, so it's faster than the forced-delta
-# fallback. Blank = disable (denylist seams fall back to Delta). The same
-# coalesce (widget 21) is applied to the parquet write. Temp dirs are
-# run-scoped and cleaned up best-effort at the end of the run.
-checkpoint_volume_path = dbutils.widgets.get("CheckpointVolumePath").strip()
 # Session-wide shuffle-partition cap. The 200 default fans small joins into
 # many tiny tasks/files, inflating every Delta checkpoint write on this small
 # dataset. A small value (e.g. 4) cuts that overhead. Blank = leave the
@@ -389,14 +367,10 @@ def _run_variant(variant: str, pass_number: int) -> dict:
             if local_delta_denylist:
                 run_kwargs["LocalDeltaDenylist"] = local_delta_denylist
             run_kwargs["LocalDeltaDenylistMode"] = local_delta_denylist_mode
-        # Coalesce the checkpoint writes (applies to both backends; in
-        # "local" it hits only the forced self-join seams -- delta or parquet).
+        # Coalesce the Delta checkpoint writes (applies to both backends; in
+        # "local" it hits only the forced-delta self-join seam).
         if checkpoint_coalesce:
             run_kwargs["CheckpointCoalesce"] = checkpoint_coalesce
-        # Parquet-on-volume backend for the forced self-join seams. When set,
-        # those seams round-trip through Parquet on this path instead of Delta.
-        if checkpoint_volume_path:
-            run_kwargs["CheckpointVolumePath"] = checkpoint_volume_path
         # Plan-size profiler is driven by the "13. Plan profiler" widget, not
         # by cfg. When on, the updated runner measures per-builder logical-plan
         # (DAG) growth and returns a ranked report in result["plan_profile"].

@@ -68,12 +68,7 @@ _ACTIVE_ACTIVITY: ContextVar[dict[str, Any] | None] = ContextVar(
 # carry a mode suffix, e.g. de_pre_cpbt_m1) and can be extended at runtime via
 # start_checkpoint_run(local_denylist=[...]) after a validation run confirms it.
 DEFAULT_CHECKPOINT_BACKEND = "delta"
-# "parquet" = write plain Parquet to a volume/DBFS path and read it back. The
-# read-back is a fresh, re-resolvable file relation (so self-joins work, unlike
-# local) but it skips Delta's transaction-log commit + metastore registration
-# (the slow part), so it's the "faster-than-delta, still-correct" backend for
-# the self-join denylist. Requires a volume path (else it falls back to delta).
-_VALID_BACKENDS = frozenset({"delta", "local", "parquet"})
+_VALID_BACKENDS = frozenset({"delta", "local"})
 _ACTIVE_BACKEND: ContextVar[str] = ContextVar(
     "fep_checkpoint_backend",
     default=DEFAULT_CHECKPOINT_BACKEND,
@@ -85,20 +80,23 @@ _ACTIVE_BACKEND: ContextVar[str] = ContextVar(
 #   * nde_pre_cpbt / de_pre_cpbt : unioned into the non_dated/dated inputs of
 #     compute_missing_entities, which self-joins them (crash at the checkpoint
 #     right after txfr_adj_fused when left on local). CONFIRMED-critical.
+#   * final_cost_pct : feeds the effective_calc + plugging self-join (aliased
+#     T./Q. on DealID/Quarter/Tag/TypeID). Left on local it crashes with
+#     UNRESOLVED_COLUMN(`DealID`). CONFIRMED-critical (2026-09-05): forcing this
+#     seam off local is what makes THIS SP run clean (the other two SPs have no
+#     equivalent self-join and run fine fully-local).
 #
-# SPEED-OVER-SAFETY DEFAULT (requested 2026-09-05): only the two pre_cpbt seams
-# are forced to Delta; nde_post_miss / de_post_miss / final_cost_pct run on
-# local to chase the ~104s number. CAVEAT: localCheckpoint self-join resolution
-# is NON-DETERMINISTIC -- this exact set passed once (~104s) but a rerun crashed
-# with UNRESOLVED_COLUMN(`DealID`) at the effective_calc + plugging self-join
-# (aliased T./Q. on DealID/Quarter/Tag/TypeID), whose input derives from
-# final_cost_pct. If that crash reappears, add "final_cost_pct" (and, if still
-# unstable, "nde_post_miss"/"de_post_miss") back via the LocalDeltaDenylist
+# MINIMAL CONFIRMED DEFAULT (2026-09-05): only final_cost_pct needs to leave
+# local -- forcing just this one seam makes THIS SP run clean, and the two
+# pre_cpbt seams run fine fully-local. It is prefix-matched, so the fused /
+# mode-suffixed variants (final_cost_pct_fused, final_cost_pct_m*) are covered.
+# When backend="local" this seam is forced back to the durable Delta round-trip
+# for correctness. If a new data shape crashes at the compute_missing_entities
+# self-join, add "nde_pre_cpbt,de_pre_cpbt" back via the LocalDeltaDenylist
 # notebook widget -- no redeploy needed.
 _LOCAL_DELTA_DENYLIST_DEFAULT = frozenset(
     {
-        "nde_pre_cpbt",
-        "de_pre_cpbt",
+        "final_cost_pct",
     }
 )
 _ACTIVE_LOCAL_DENYLIST: ContextVar[frozenset[str]] = ContextVar(
@@ -174,26 +172,6 @@ def normalize_coalesce(value: object) -> int | None:
     return count if count > 0 else None
 
 
-# Base directory for the parquet backend. When set (and backend forces a
-# denylist seam off "local"), the forced write goes to parquet-on-volume
-# instead of delta. Blank/None disables it (forced seams fall back to delta).
-DEFAULT_CHECKPOINT_VOLUME_PATH: str | None = None
-_ACTIVE_VOLUME_PATH: ContextVar[str | None] = ContextVar(
-    "fep_checkpoint_volume_path",
-    default=DEFAULT_CHECKPOINT_VOLUME_PATH,
-)
-
-
-def normalize_volume_path(value: object) -> str | None:
-    """Coerce a volume/DBFS base path, or None to disable the parquet backend."""
-    if not value:
-        return None
-    text = str(value).strip()
-    if text.lower() in ("", "none", "off", "false"):
-        return None
-    return text.rstrip("/") or None
-
-
 def _safe_name(value: object) -> str:
     return _SAFE_NAME.sub("_", str(value))
 
@@ -214,7 +192,6 @@ def start_checkpoint_run(
     local_denylist: object = None,
     local_denylist_mode: object = "extend",
     coalesce: object = None,
-    volume_path: object = None,
 ):
     """Activate a checkpoint profile + backend and collect activity.
 
@@ -229,13 +206,11 @@ def start_checkpoint_run(
     normalized_backend = normalize_checkpoint_backend(backend)
     denylist = normalize_local_denylist(local_denylist, local_denylist_mode)
     normalized_coalesce = normalize_coalesce(coalesce)
-    normalized_volume = normalize_volume_path(volume_path)
     activity: dict[str, Any] = {
         "profile": normalized,
         "backend": normalized_backend,
         "local_delta_denylist": sorted(denylist),
         "coalesce": normalized_coalesce,
-        "volume_path": normalized_volume,
         "written": [],
         "bypassed": [],
     }
@@ -245,7 +220,6 @@ def start_checkpoint_run(
         _ACTIVE_BACKEND.set(normalized_backend),
         _ACTIVE_LOCAL_DENYLIST.set(denylist),
         _ACTIVE_COALESCE.set(normalized_coalesce),
-        _ACTIVE_VOLUME_PATH.set(normalized_volume),
         activity,
     )
 
@@ -256,7 +230,6 @@ def finish_checkpoint_run(
     backend_token=None,
     denylist_token=None,
     coalesce_token=None,
-    volume_token=None,
 ) -> None:
     _ACTIVE_ACTIVITY.reset(activity_token)
     _ACTIVE_PROFILE.reset(profile_token)
@@ -266,8 +239,6 @@ def finish_checkpoint_run(
         _ACTIVE_LOCAL_DENYLIST.reset(denylist_token)
     if coalesce_token is not None:
         _ACTIVE_COALESCE.reset(coalesce_token)
-    if volume_token is not None:
-        _ACTIVE_VOLUME_PATH.reset(volume_token)
 
 
 def _get_conf(spark: SparkSession, key: str) -> tuple[bool, str | None]:
@@ -317,60 +288,12 @@ def checkpoint(
     )
     cfg["_checkpoint_backend"] = backend
 
-    # Optional coalesce to shrink file-count / commit overhead on the write.
-    # Resolved up-front so both the delta and parquet write paths share it.
-    coalesce = normalize_coalesce(
-        cfg.get("_checkpoint_coalesce", _ACTIVE_COALESCE.get())
-    )
-    volume_base = normalize_volume_path(
-        cfg.get("_checkpoint_volume_path", _ACTIVE_VOLUME_PATH.get())
-    )
-
     # Hybrid: honor "local" everywhere except the self-join denylist, which is
-    # forced onto a durable, re-resolvable relation for correctness. Prefer the
-    # cheaper parquet-on-volume round-trip when a volume path is configured;
-    # otherwise fall back to the full Delta round-trip.
+    # forced back to the durable Delta round-trip for correctness.
     effective_backend = backend
-    forced_off_local = backend == "local" and _forces_delta_backend(name)
-    if forced_off_local:
-        effective_backend = "parquet" if volume_base else "delta"
-    elif backend == "parquet":
-        # Explicit global parquet backend still needs a volume; else use delta.
-        effective_backend = "parquet" if volume_base else "delta"
-
-    # --- parquet backend: write plain Parquet to a volume path + read back. ---
-    # Skips the Delta commit/metastore step (faster) while still returning a
-    # fresh file relation that Spark can re-resolve for self-joins.
-    if effective_backend == "parquet" and volume_base:
-        started = time.time()
-        run_id = _safe_name(cfg.get("run_id", "0"))
-        path = f"{volume_base}/_tmp_fep_updated_{_safe_name(name)}_{run_id}"
-        checkpoint_paths = cfg.setdefault("_checkpoint_paths", [])
-        if path not in checkpoint_paths:
-            checkpoint_paths.append(path)
-        writer_source = df.coalesce(coalesce) if coalesce else df
-        writer_source.write.mode("overwrite").parquet(path)
-        cp = spark.read.parquet(path)
-        elapsed = time.time() - started
-        timing = {
-            "name": name,
-            "elapsed_seconds": round(elapsed, 3),
-            "backend": "parquet",
-        }
-        if forced_off_local:
-            timing["forced_from_local"] = True
-        if coalesce:
-            timing["coalesce"] = coalesce
-        cfg.setdefault("_updated_checkpoint_timings", []).append(dict(timing))
-        if activity is not None:
-            activity["written"].append(dict(timing))
-        forced_note = " forced-from-local" if forced_off_local else ""
-        coalesce_note = f" coalesce={coalesce}" if coalesce else ""
-        print(
-            f"[updated checkpoint] {name}: {elapsed:.3f}s "
-            f"(backend=parquet-volume{forced_note}{coalesce_note}, profile={profile})"
-        )
-        return cp
+    forced_to_delta = backend == "local" and _forces_delta_backend(name)
+    if forced_to_delta:
+        effective_backend = "delta"
 
     # --- local backend: in-memory lineage break, no metastore Delta commit ---
     if effective_backend == "local":
@@ -404,6 +327,10 @@ def checkpoint(
     if fqn not in checkpoint_tables:
         checkpoint_tables.append(fqn)
 
+    # Optional coalesce to shrink file-count / commit overhead on the write.
+    coalesce = normalize_coalesce(
+        cfg.get("_checkpoint_coalesce", _ACTIVE_COALESCE.get())
+    )
     writer_source = df.coalesce(coalesce) if coalesce else df
 
     existed, previous = _get_conf(spark, _STATS_KEY)
@@ -422,14 +349,14 @@ def checkpoint(
 
     elapsed = time.time() - started
     timing = {"name": name, "elapsed_seconds": round(elapsed, 3), "backend": "delta"}
-    if forced_off_local:
+    if forced_to_delta:
         timing["forced_from_local"] = True
     if coalesce:
         timing["coalesce"] = coalesce
     cfg.setdefault("_updated_checkpoint_timings", []).append(dict(timing))
     if activity is not None:
         activity["written"].append(dict(timing))
-    forced_note = " forced-from-local" if forced_off_local else ""
+    forced_note = " forced-from-local" if forced_to_delta else ""
     coalesce_note = f" coalesce={coalesce}" if coalesce else ""
     print(
         f"[updated checkpoint] {name}: {elapsed:.3f}s "
@@ -439,13 +366,7 @@ def checkpoint(
 
 
 def drop_checkpoints(spark: SparkSession, cfg: dict) -> None:
-    """Drop only temporary tables registered by this run.
-
-    Parquet-backend paths are intentionally NOT deleted here: they are written
-    run-scoped with mode("overwrite"), so each run reuses (and overwrites) the
-    same location. Skipping the recursive volume delete avoids adding extra
-    wall time to the run.
-    """
+    """Drop only temporary tables registered by this run."""
     if cfg.get("_skip_cleanup"):
         return
     for fqn in dict.fromkeys(cfg.get("_checkpoint_tables", [])):

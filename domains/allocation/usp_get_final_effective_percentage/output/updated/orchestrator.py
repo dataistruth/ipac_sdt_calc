@@ -29,7 +29,6 @@ from .checkpoint import (
     normalize_checkpoint_backend,
     normalize_checkpoint_profile,
     normalize_coalesce,
-    normalize_volume_path,
     start_checkpoint_run,
 )
 try:
@@ -294,7 +293,6 @@ def _run_with_timings(
     local_delta_denylist: tuple[str, ...] = (),
     local_delta_denylist_mode: str = "extend",
     checkpoint_coalesce: int | None = None,
-    checkpoint_volume_path: str | None = None,
     profile_plan: bool = False,
     plan_checkpoint_threshold: int = 30,
     extra_checkpoint_builders: tuple[str, ...] = (),
@@ -303,7 +301,6 @@ def _run_with_timings(
     profile = normalize_checkpoint_profile(checkpoint_profile)
     backend = normalize_checkpoint_backend(checkpoint_backend)
     coalesce = normalize_coalesce(checkpoint_coalesce)
-    volume_path = normalize_volume_path(checkpoint_volume_path)
     post_checkpoints = frozenset(_DEFAULT_POST_BUILDER_CHECKPOINTS).union(
         extra_checkpoint_builders
     )
@@ -312,7 +309,6 @@ def _run_with_timings(
         supplied_cfg["_checkpoint_profile"] = profile
         supplied_cfg["_checkpoint_backend"] = backend
         supplied_cfg["_checkpoint_coalesce"] = coalesce
-        supplied_cfg["_checkpoint_volume_path"] = volume_path
         if profile_plan:
             supplied_cfg["profile_plan"] = True
             supplied_cfg["plan_checkpoint_threshold"] = plan_checkpoint_threshold
@@ -325,7 +321,6 @@ def _run_with_timings(
         backend_token,
         denylist_token,
         coalesce_token,
-        volume_token,
         checkpoint_activity,
     ) = start_checkpoint_run(
         profile,
@@ -333,7 +328,6 @@ def _run_with_timings(
         local_denylist=local_delta_denylist,
         local_denylist_mode=local_delta_denylist_mode,
         coalesce=coalesce,
-        volume_path=volume_path,
     )
     plan_token = None
     plan_records: list[dict[str, Any]] = []
@@ -351,7 +345,6 @@ def _run_with_timings(
             backend_token,
             denylist_token,
             coalesce_token,
-            volume_token,
         )
         _ACTIVE_POST_CHECKPOINTS.reset(post_token)
         _ACTIVE_TIMINGS.reset(token)
@@ -376,13 +369,7 @@ def _run_with_timings(
             for item in checkpoint_activity["written"]
             if item.get("forced_from_local")
         ],
-        "forced_parquet_names": [
-            item["name"]
-            for item in checkpoint_activity["written"]
-            if item.get("forced_from_local") and item.get("backend") == "parquet"
-        ],
         "coalesce": coalesce,
-        "volume_path": volume_path,
     }
     print(f"[updated timing] wall={wall:.3f}s")
     if post_checkpoints:
@@ -394,25 +381,13 @@ def _run_with_timings(
         f"[updated checkpoints] profile={profile} backend={backend} "
         f"written={checkpoint_summary['written_count']} "
         f"bypassed={checkpoint_summary['bypassed_count']} "
-        f"coalesce={coalesce if coalesce else 'off'} "
-        f"volume={volume_path or 'off'}"
+        f"coalesce={coalesce if coalesce else 'off'}"
     )
     if backend == "local" and checkpoint_summary["forced_delta_names"]:
-        parquet_names = set(checkpoint_summary["forced_parquet_names"])
-        delta_names = [
-            n for n in checkpoint_summary["forced_delta_names"]
-            if n not in parquet_names
-        ]
-        if parquet_names:
-            print(
-                "[updated checkpoints] forced-to-parquet-volume (self-join "
-                "denylist): " + ", ".join(sorted(parquet_names))
-            )
-        if delta_names:
-            print(
-                "[updated checkpoints] forced-to-delta (self-join denylist): "
-                + ", ".join(delta_names)
-            )
+        print(
+            "[updated checkpoints] forced-to-delta (self-join denylist): "
+            + ", ".join(checkpoint_summary["forced_delta_names"])
+        )
     for item in summary:
         print(
             f"[updated timing] {item['step']}: "
@@ -533,16 +508,6 @@ def _pop_checkpoint_coalesce(kwargs: dict[str, Any]) -> int | None:
     return normalize_coalesce(value)
 
 
-def _pop_checkpoint_volume_path(kwargs: dict[str, Any]) -> str | None:
-    """Extract the parquet-backend volume base path from kwargs."""
-    value = kwargs.pop("CheckpointVolumePath", None)
-    if value is None:
-        value = kwargs.pop("checkpoint_volume_path", None)
-    else:
-        kwargs.pop("checkpoint_volume_path", None)
-    return normalize_volume_path(value)
-
-
 def run_modes(*args, **kwargs):
     """Run modes with optimized checkpoints and detailed step timings."""
     profile = _pop_checkpoint_profile(kwargs)
@@ -550,7 +515,6 @@ def run_modes(*args, **kwargs):
     local_denylist = _pop_local_denylist(kwargs)
     local_denylist_mode = _pop_local_denylist_mode(kwargs)
     checkpoint_coalesce = _pop_checkpoint_coalesce(kwargs)
-    checkpoint_volume_path = _pop_checkpoint_volume_path(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
@@ -561,7 +525,6 @@ def run_modes(*args, **kwargs):
         local_delta_denylist=local_denylist,
         local_delta_denylist_mode=local_delta_denylist_mode,
         checkpoint_coalesce=checkpoint_coalesce,
-        checkpoint_volume_path=checkpoint_volume_path,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,
@@ -576,7 +539,6 @@ def run_final_effective_percentages(*args, **kwargs):
     local_denylist = _pop_local_denylist(kwargs)
     local_denylist_mode = _pop_local_denylist_mode(kwargs)
     checkpoint_coalesce = _pop_checkpoint_coalesce(kwargs)
-    checkpoint_volume_path = _pop_checkpoint_volume_path(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
     return _run_with_timings(
@@ -587,7 +549,6 @@ def run_final_effective_percentages(*args, **kwargs):
         local_delta_denylist=local_denylist,
         local_delta_denylist_mode=local_delta_denylist_mode,
         checkpoint_coalesce=checkpoint_coalesce,
-        checkpoint_volume_path=checkpoint_volume_path,
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,
