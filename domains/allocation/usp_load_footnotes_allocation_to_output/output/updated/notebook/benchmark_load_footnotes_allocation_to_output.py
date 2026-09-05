@@ -29,10 +29,19 @@ dbutils.widgets.dropdown(
 )
 dbutils.widgets.text("ParallelWorkers", "4", "10. Updated parallel workers")
 dbutils.widgets.dropdown(
-    "ProfilePlan", "off", ["off", "on"], "11. Plan profiler"
+    "ProfilePlan", "on", ["off", "on"], "11. Plan profiler"
 )
 dbutils.widgets.text(
     "PlanCheckpointThreshold", "30", "12. Plan checkpoint threshold"
+)
+dbutils.widgets.dropdown(
+    "CheckpointBackend", "local", ["delta", "local"], "13. Checkpoint backend"
+)
+dbutils.widgets.text(
+    "SqlShufflePartitions", "4", "14. spark.sql.shuffle.partitions (blank=default)"
+)
+dbutils.widgets.text(
+    "LocalDeltaDenylist", "", "15. Local backend delta-denylist (comma-sep)"
 )
 
 source_path = dbutils.widgets.get("source_path").strip()
@@ -49,11 +58,28 @@ profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
 plan_checkpoint_threshold = int(
     dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
 )
+# Checkpoint backend: "local" (df.localCheckpoint, no metastore commit -- the
+# fast default) or "delta" (durable UC Delta temp table). If a local run crashes
+# with UNRESOLVED_COLUMN at a checkpoint (a self-join seam), add that checkpoint
+# name to widget 15 to force it back to delta.
+checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
+local_delta_denylist = dbutils.widgets.get("LocalDeltaDenylist").strip()
+# Session-wide shuffle-partition cap (blank = leave cluster/AQE default). The
+# 200 default fans small joins into many tiny tasks/files; 4 suits this dataset.
+sql_shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
 if not 1 <= parallel_workers <= 8:
     raise ValueError("ParallelWorkers must be between 1 and 8")
+if checkpoint_backend not in ("delta", "local"):
+    raise ValueError("CheckpointBackend must be 'delta' or 'local'")
+if sql_shuffle_partitions:
+    spark.conf.set("spark.sql.shuffle.partitions", sql_shuffle_partitions)
+    print(
+        "[config] spark.sql.shuffle.partitions = "
+        f"{spark.conf.get('spark.sql.shuffle.partitions')}"
+    )
 
 # COMMAND ----------
 
@@ -148,6 +174,10 @@ def _run_variant(variant: str, pass_number: int, snapshot: dict) -> dict:
         if profile_plan:
             updated_kwargs["profile_plan"] = True
             updated_kwargs["plan_checkpoint_threshold"] = plan_checkpoint_threshold
+        # Checkpoint backend + optional local-mode delta-denylist (widgets 13/15).
+        updated_kwargs["checkpoint_backend"] = checkpoint_backend
+        if checkpoint_backend == "local" and local_delta_denylist:
+            updated_kwargs["local_delta_denylist"] = local_delta_denylist
 
     started = time.time()
     result = runner.run_load_footnotes_allocation_to_output(

@@ -46,7 +46,12 @@ from ..underlyings import (
     filter_asset_class,
 )
 from ..writers import apply_deduction, write_allocation_output
-from .checkpoint import checkpoint, drop_checkpoints
+from .checkpoint import (
+    checkpoint,
+    drop_checkpoints,
+    normalize_checkpoint_backend,
+    normalize_local_denylist,
+)
 from .join_optimizations import (
     broadcast_part_v_lines,
     broadcast_zero_exclude_lines,
@@ -82,6 +87,20 @@ build_temp_allocation_input = track_plan(build_temp_allocation_input)
 build_temp_book_effective = track_plan(build_temp_book_effective)
 build_temp_final_effective_pct = track_plan(build_temp_final_effective_pct)
 build_zero_exclude_lines = track_plan(build_zero_exclude_lines)
+# Cover the remaining per-step transformation builders so plan-size growth is
+# attributed at every S3-S13 stage (track_plan is a no-op unless profiling is
+# on, and safely ignores builders that don't return a DataFrame).
+filter_asset_class = track_plan(filter_asset_class)
+update_form_quarters = track_plan(update_form_quarters)
+update_pfic_partv_quarters = track_plan(update_pfic_partv_quarters)
+update_pfic_quarters_by_config = track_plan(update_pfic_quarters_by_config)
+build_704c_config = track_plan(build_704c_config)
+build_allocation_percentage_temp = track_plan(build_allocation_percentage_temp)
+build_704c_allocation_output = track_plan(build_704c_allocation_output)
+apply_704c_deduction = track_plan(apply_704c_deduction)
+resolve_min_quarter = track_plan(resolve_min_quarter)
+build_effective_pct_allocation = track_plan(build_effective_pct_allocation)
+apply_deduction = track_plan(apply_deduction)
 
 
 @contextmanager
@@ -129,6 +148,10 @@ def run_load_footnotes_allocation_to_output(
     # Plan-size profiler flags (default off; zero overhead unless enabled).
     profile_plan_kw = kwargs.pop("profile_plan", None)
     plan_threshold_kw = kwargs.pop("plan_checkpoint_threshold", None)
+    # Checkpoint backend ("delta"/"local") + optional local-mode delta-denylist
+    # (comma/space separated checkpoint-name prefixes forced back to delta).
+    checkpoint_backend_kw = kwargs.pop("checkpoint_backend", None)
+    local_denylist_kw = kwargs.pop("local_delta_denylist", None)
     planning_pool = None
 
     if verbose:
@@ -174,6 +197,23 @@ def run_load_footnotes_allocation_to_output(
                 cfg["plan_checkpoint_threshold"] = int(plan_threshold_kw)
             else:
                 cfg.setdefault("plan_checkpoint_threshold", 30)
+
+            # Resolve checkpoint backend + denylist (see checkpoint.py). Keep
+            # the resolved values on cfg so every checkpoint() call in this run
+            # (including parallel stages) reads the same setting.
+            resolved_backend = normalize_checkpoint_backend(
+                checkpoint_backend_kw
+                if checkpoint_backend_kw is not None
+                else cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
+            )
+            cfg["_checkpoint_backend"] = resolved_backend
+            cfg["_local_delta_denylist"] = sorted(
+                normalize_local_denylist(
+                    local_denylist_kw
+                    if local_denylist_kw is not None
+                    else cfg.get("_local_delta_denylist")
+                )
+            )
 
             if rank_for_rule_pickup is not None:
                 cfg["rank_for_rule_pickup"] = rank_for_rule_pickup
@@ -530,8 +570,23 @@ def run_load_footnotes_allocation_to_output(
                     status["plan_profile"] = plan_profile_report(cfg)
                 except Exception:
                     logger.warning("[PLAN] report failed", exc_info=True)
+            resolved_backend = (
+                cfg.get("_checkpoint_backend", "delta")
+                if isinstance(cfg, dict)
+                else "delta"
+            )
             status["optimization_profile"] = {
-                "checkpoint_backend": "uc_delta_stats_off",
+                "checkpoint_backend": (
+                    "local"
+                    if resolved_backend == "local"
+                    else "uc_delta_stats_off"
+                ),
+                "checkpoint_backend_mode": resolved_backend,
+                "local_delta_denylist": (
+                    list(cfg.get("_local_delta_denylist", []))
+                    if isinstance(cfg, dict)
+                    else []
+                ),
                 "checkpoint_count": len(checkpoint_timings),
                 "spark_session_tuning": "none",
                 "parallel_workers": parallel_workers,

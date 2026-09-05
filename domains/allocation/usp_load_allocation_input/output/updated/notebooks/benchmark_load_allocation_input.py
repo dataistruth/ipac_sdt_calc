@@ -85,6 +85,21 @@ dbutils.widgets.text("TaxPeriodID", "1", "10. TaxPeriodID")
 dbutils.widgets.text("RunID", "16560", "11. RunID")
 dbutils.widgets.text("CatalogName", "QA7", "12. CatalogName")
 dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "13. SchemaName")
+dbutils.widgets.dropdown(
+    "ProfilePlan", "on", ["off", "on"], "14. Plan profiler (updated only)"
+)
+dbutils.widgets.text(
+    "PlanCheckpointThreshold", "30", "15. Plan checkpoint threshold"
+)
+dbutils.widgets.dropdown(
+    "CheckpointBackend", "local", ["delta", "local"], "16. Checkpoint backend"
+)
+dbutils.widgets.text(
+    "SqlShufflePartitions", "4", "17. spark.sql.shuffle.partitions (blank=default)"
+)
+dbutils.widgets.text(
+    "LocalDeltaDenylist", "", "18. Local backend delta-denylist (comma-sep)"
+)
 
 sp_name = dbutils.widgets.get("sp_name").strip()
 number_of_run = int(dbutils.widgets.get("number_of_run").strip() or "1")
@@ -99,9 +114,23 @@ schema_name = dbutils.widgets.get("SchemaName").strip()
 parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
 parallel_validations = dbutils.widgets.get("parallel_validations").strip().lower() == "true"
 parallel_finalize = dbutils.widgets.get("parallel_finalize").strip().lower() == "true"
+profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+plan_checkpoint_threshold = int(
+    dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
+)
+# Checkpoint backend: "local" (df.localCheckpoint, no metastore commit -- fast
+# default) or "delta" (durable UC temp Delta). If a local run crashes with
+# UNRESOLVED_COLUMN at a checkpoint (a self-join seam), add that checkpoint name
+# to widget 18 to force it back to delta.
+checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
+local_delta_denylist = dbutils.widgets.get("LocalDeltaDenylist").strip()
+# Session-wide shuffle-partition cap (blank = leave cluster/AQE default).
+sql_shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
 
 if parallel_workers < 1:
     raise ValueError("parallel_workers must be >= 1")
+if checkpoint_backend not in ("delta", "local"):
+    raise ValueError("CheckpointBackend must be 'delta' or 'local'")
 
 if number_of_run < 1:
     raise ValueError("number_of_run must be >= 1")
@@ -197,6 +226,16 @@ spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
 spark.conf.set("spark.databricks.delta.optimizeWrite.enabled", "true")
 spark.conf.set("spark.sql.autoBroadcastJoinThreshold", str(50 * 1024 * 1024))
 
+# Session-wide shuffle-partition cap (widget 17). The 200 default fans small
+# joins into many tiny tasks/files; 4 suits this dataset. Applied to BOTH
+# variants so the A/B stays fair. Blank = leave cluster/AQE default.
+if sql_shuffle_partitions:
+    spark.conf.set("spark.sql.shuffle.partitions", sql_shuffle_partitions)
+    print(
+        "[config] spark.sql.shuffle.partitions = "
+        f"{spark.conf.get('spark.sql.shuffle.partitions')}"
+    )
+
 print("Spark adaptive + Delta optimizeWrite enabled")
 
 # COMMAND ----------
@@ -273,6 +312,14 @@ def _run_pipeline(runner, variant: str, pass_num: int) -> dict:
         run_kwargs["parallel_workers"] = parallel_workers
         run_kwargs["parallel_validations"] = parallel_validations
         run_kwargs["parallel_finalize"] = parallel_finalize
+        # Plan-size profiler (widget 14/15).
+        if profile_plan:
+            run_kwargs["profile_plan"] = True
+            run_kwargs["plan_checkpoint_threshold"] = plan_checkpoint_threshold
+        # Checkpoint backend + optional local-mode delta-denylist (widgets 16/18).
+        run_kwargs["checkpoint_backend"] = checkpoint_backend
+        if checkpoint_backend == "local" and local_delta_denylist:
+            run_kwargs["local_delta_denylist"] = local_delta_denylist
 
     started_at = datetime.now()
     t0 = time.time()

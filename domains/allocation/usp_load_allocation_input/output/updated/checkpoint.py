@@ -31,6 +31,65 @@ logger = logging.getLogger(__name__)
 _CHECKPOINT_MAX_RETRIES = 3
 _CHECKPOINT_RETRY_DELAY = 5
 
+# Checkpoint backend: "delta" (durable UC Delta temp table) or "local"
+# (df.localCheckpoint(eager=True) -- no metastore commit / small-file I/O, so
+# materially faster). Selected per-run via cfg["_checkpoint_backend"].
+#
+# CAVEAT (learned in usp_get_final_effective_percentage): localCheckpoint returns
+# a LogicalRDD that Spark cannot re-resolve with fresh attribute IDs, so any
+# builder that self-joins a checkpointed DataFrame against something derived from
+# it fails with UNRESOLVED_COLUMN. The Delta round-trip returns a catalog
+# relation that re-resolves cleanly. To stay correct while defaulting to local,
+# checkpoint names matching cfg["_local_delta_denylist"] (prefix match) are
+# forced back to "delta". The denylist starts empty; if a local run crashes with
+# UNRESOLVED_COLUMN at some checkpoint, add that name via the notebook widget
+# (no redeploy) and, once known-stable, promote it into the default.
+DEFAULT_CHECKPOINT_BACKEND = "delta"
+_VALID_BACKENDS = frozenset({"delta", "local"})
+_LOCAL_DELTA_DENYLIST_DEFAULT: frozenset[str] = frozenset()
+
+
+def normalize_checkpoint_backend(value: object) -> str:
+    backend = str(value or DEFAULT_CHECKPOINT_BACKEND).strip().lower()
+    if backend not in _VALID_BACKENDS:
+        choices = ", ".join(sorted(_VALID_BACKENDS))
+        raise ValueError(
+            f"Unknown checkpoint backend {value!r}; expected one of: {choices}"
+        )
+    return backend
+
+
+def normalize_local_denylist(extra: object) -> frozenset[str]:
+    """Merge caller-supplied delta-denylist prefixes into the built-in default.
+
+    Accepts a comma/space separated string or any iterable of strings.
+    """
+    import re
+
+    prefixes: set[str] = set(_LOCAL_DELTA_DENYLIST_DEFAULT)
+    if extra:
+        tokens = re.split(r"[,\s]+", extra) if isinstance(extra, str) else list(extra)
+        for token in tokens:
+            cleaned = str(token).strip()
+            if cleaned:
+                prefixes.add(cleaned)
+    return frozenset(prefixes)
+
+
+def _resolve_backend(cfg: dict) -> str:
+    return normalize_checkpoint_backend(
+        cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
+    )
+
+
+def _forces_delta_backend(name: object, cfg: dict) -> bool:
+    """True when `name` matches a denylist prefix and must stay on Delta."""
+    denylist = cfg.get("_local_delta_denylist")
+    if denylist is None:
+        denylist = _LOCAL_DELTA_DENYLIST_DEFAULT
+    safe = str(name)
+    return any(safe.startswith(prefix) for prefix in denylist)
+
 CHECKPOINT_STEPS: frozenset[str] = frozenset(
     {
         "pfic_snapshot",
@@ -198,7 +257,27 @@ def pipeline_checkpoint(
     name: str,
     cfg: dict,
 ) -> DataFrame:
-    """UC Delta lineage break — fast temp Delta (stats off) by default."""
+    """Lineage break — local checkpoint by default, or fast/production Delta.
+
+    Backend precedence: an explicit "local" backend wins (in-memory, no metastore
+    commit) unless `name` is on the self-join delta-denylist; otherwise fall back
+    to the production or fast-Delta path.
+    """
+    backend = _resolve_backend(cfg)
+    forced_to_delta = backend == "local" and _forces_delta_backend(name, cfg)
+    if backend == "local" and not forced_to_delta:
+        started = time.time()
+        cp = df.localCheckpoint(eager=True)
+        # localCheckpoint drops table-qualifier metadata; re-wrap to mimic the
+        # fresh schema a spark.table() read would give (parity with delta path).
+        cp = cp.toDF(*cp.columns)
+        logger.info(
+            "[CHECKPOINT] %s: %.3fs (backend=local)",
+            name,
+            time.time() - started,
+        )
+        return cp
+
     if _use_production_checkpoint(cfg):
         return checkpoint_production(spark, df, name, cfg)
     return checkpoint(spark, df, name, cfg)
