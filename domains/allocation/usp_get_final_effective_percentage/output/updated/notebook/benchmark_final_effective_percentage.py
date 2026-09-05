@@ -10,6 +10,37 @@
 # MAGIC This notebook lives in `output/updated/notebook/`. Python modules live
 # MAGIC one folder up in `output/updated/`. Do not import-dir modules into
 # MAGIC this `notebook/` folder.
+# MAGIC
+# MAGIC ## Performance-tuning widgets (updated variant)
+# MAGIC
+# MAGIC These were added while investigating the updated pipeline's runtime.
+# MAGIC Findings from profiling + the driver log4j output:
+# MAGIC - **`build_cost_percentage_by_type` (~22s)** and
+# MAGIC   **`compute_effective_percentage_dated` (~15s)** are dominated by
+# MAGIC   **Delta checkpoint I/O**, not joins/compute (~40-50s of wall is
+# MAGIC   `saveAsTable` commits). Joins are already broadcast-optimized.
+# MAGIC - The output table `sm_finaleffectivepercentages` had **6661 files for
+# MAGIC   ~35 MB** (8724 Delta versions) — a small-file/commit-bloat problem.
+# MAGIC   Run `OPTIMIZE` + `VACUUM` on it before benchmarking.
+# MAGIC
+# MAGIC Knobs:
+# MAGIC - **12. Checkpoint profile** — `full` keeps every prod seam (incl. the
+# MAGIC   non-dated seam); avoid `conservative` (it bypasses `nde_post_miss_fused`
+# MAGIC   and replays a huge plan into the non-dated stage).
+# MAGIC - **15. Extra checkpoint builders** — force extra post-builder lineage
+# MAGIC   breaks; A/B only. Profiling showed prod already checkpoints every deep
+# MAGIC   seam, so adding more usually only adds cost.
+# MAGIC - **16. Checkpoint backend** — `delta` (default) or `local`. `local`
+# MAGIC   (localCheckpoint) is EXPERIMENTAL and currently FAILS: several builders
+# MAGIC   self-join a checkpointed DF, and only the Delta round-trip lets Spark
+# MAGIC   re-resolve the relation (localCheckpoint -> UNRESOLVED_COLUMN). Keep
+# MAGIC   `delta`.
+# MAGIC - **17. spark.sql.shuffle.partitions** — the 200 default fans small joins
+# MAGIC   into ~32 near-empty tasks/files on this dataset; try `4`. Applied to
+# MAGIC   both variants for a fair A/B.
+# MAGIC - **18. Delta optimizeWrite + autoCompact** — coalesces small files on
+# MAGIC   write (output + checkpoint temp tables); attacks the 6661-file problem
+# MAGIC   at the source. Applied to both variants.
 
 # COMMAND ----------
 
