@@ -57,8 +57,16 @@
 # MAGIC   write to N files (blank/0 = off). The write still emits several tiny
 # MAGIC   files per commit on this dataset; a small N (e.g. `2`) trims file-count
 # MAGIC   / commit overhead. In backend=`local` this hits exactly the remaining
-# MAGIC   forced-delta seams (`nde_pre_cpbt` / `de_pre_cpbt`), the last delta I/O
-# MAGIC   in the fast path. `coalesce` is a narrow op (no shuffle).
+# MAGIC   forced seams (`nde_pre_cpbt` / `de_pre_cpbt`), the last durable I/O
+# MAGIC   in the fast path. `coalesce` is a narrow op (no shuffle). Applied to
+# MAGIC   both the delta and parquet-volume write paths.
+# MAGIC - **22. Parquet checkpoint volume path** — when set AND backend=`local`,
+# MAGIC   the forced self-join seams (widget 19) round-trip through plain Parquet
+# MAGIC   under this volume path instead of Delta: `spark.read.parquet` gives a
+# MAGIC   fresh, re-resolvable relation (self-join safe) but skips Delta's
+# MAGIC   commit/metastore step, so it's faster than the forced-delta fallback.
+# MAGIC   Blank = off (those seams fall back to Delta). Widget 21's coalesce is
+# MAGIC   applied to the parquet write; temp dirs are run-scoped + auto-cleaned.
 # MAGIC - **17. spark.sql.shuffle.partitions** — the 200 default fans small joins
 # MAGIC   into ~32 near-empty tasks/files on this dataset; try `4`. Applied to
 # MAGIC   both variants for a fair A/B.
@@ -148,6 +156,11 @@ dbutils.widgets.text(
     "2",
     "21. Checkpoint write coalesce (blank=off)",
 )
+dbutils.widgets.text(
+    "CheckpointVolumePath",
+    "/Volumes/qa7/datavolume/databrickdata/checkpoint",
+    "22. Parquet checkpoint volume path (blank=off)",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -195,6 +208,14 @@ local_delta_denylist_mode = (
 # small value (e.g. 2) trims file-count/commit overhead. In backend="local" it
 # hits exactly the forced-delta self-join seams (nde_pre_cpbt / de_pre_cpbt).
 checkpoint_coalesce = dbutils.widgets.get("CheckpointCoalesce").strip()
+# Parquet-backend base path (widget 22). When set AND backend="local", the
+# self-join denylist seams (widget 19) are written as plain Parquet under this
+# volume path and read back -- a fresh, re-resolvable relation (self-join safe)
+# that skips Delta's commit/metastore step, so it's faster than the forced-delta
+# fallback. Blank = disable (denylist seams fall back to Delta). The same
+# coalesce (widget 21) is applied to the parquet write. Temp dirs are
+# run-scoped and cleaned up best-effort at the end of the run.
+checkpoint_volume_path = dbutils.widgets.get("CheckpointVolumePath").strip()
 # Session-wide shuffle-partition cap. The 200 default fans small joins into
 # many tiny tasks/files, inflating every Delta checkpoint write on this small
 # dataset. A small value (e.g. 4) cuts that overhead. Blank = leave the
@@ -368,10 +389,14 @@ def _run_variant(variant: str, pass_number: int) -> dict:
             if local_delta_denylist:
                 run_kwargs["LocalDeltaDenylist"] = local_delta_denylist
             run_kwargs["LocalDeltaDenylistMode"] = local_delta_denylist_mode
-        # Coalesce the Delta checkpoint writes (applies to both backends; in
-        # "local" it hits only the forced-delta self-join seams).
+        # Coalesce the checkpoint writes (applies to both backends; in
+        # "local" it hits only the forced self-join seams -- delta or parquet).
         if checkpoint_coalesce:
             run_kwargs["CheckpointCoalesce"] = checkpoint_coalesce
+        # Parquet-on-volume backend for the forced self-join seams. When set,
+        # those seams round-trip through Parquet on this path instead of Delta.
+        if checkpoint_volume_path:
+            run_kwargs["CheckpointVolumePath"] = checkpoint_volume_path
         # Plan-size profiler is driven by the "13. Plan profiler" widget, not
         # by cfg. When on, the updated runner measures per-builder logical-plan
         # (DAG) growth and returns a ranked report in result["plan_profile"].
