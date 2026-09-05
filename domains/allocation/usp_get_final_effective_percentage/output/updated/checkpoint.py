@@ -79,26 +79,21 @@ _ACTIVE_BACKEND: ContextVar[str] = ContextVar(
 # -> UNRESOLVED_COLUMN on self-join relation-dedup).
 #   * nde_pre_cpbt / de_pre_cpbt : unioned into the non_dated/dated inputs of
 #     compute_missing_entities, which self-joins them (crash at the checkpoint
-#     right after txfr_adj_fused when left on local).
-#   * nde_post_miss / de_post_miss : feed compute_effective_percentage_dated,
-#     which self-joins the dated-entity set.
-#   * final_cost_pct : feeds the effective_calc + plugging self-join (aliased
-#     T./Q. on DealID/Quarter/Tag/TypeID) and compute_minimum_quarter.
+#     right after txfr_adj_fused when left on local). CONFIRMED-critical.
 #
-# IMPORTANT: localCheckpoint self-join resolution is NON-DETERMINISTIC. A brief
-# experiment (2026-09-05) trimmed the last three and appeared to pass once
-# (~104s), but a rerun crashed with UNRESOLVED_COLUMN(`DealID`) at the
-# effective_calc + plugging stage -- the analyzer can't give the two aliased
-# sides of a self-join distinct attribute IDs off a LogicalRDD. So all five are
-# load-bearing on Delta; this is the clean, reliable default. Add more seams via
-# the notebook widget (LocalDeltaDenylist) if a new mode/data shape surfaces one.
+# SPEED-OVER-SAFETY DEFAULT (requested 2026-09-05): only the two pre_cpbt seams
+# are forced to Delta; nde_post_miss / de_post_miss / final_cost_pct run on
+# local to chase the ~104s number. CAVEAT: localCheckpoint self-join resolution
+# is NON-DETERMINISTIC -- this exact set passed once (~104s) but a rerun crashed
+# with UNRESOLVED_COLUMN(`DealID`) at the effective_calc + plugging self-join
+# (aliased T./Q. on DealID/Quarter/Tag/TypeID), whose input derives from
+# final_cost_pct. If that crash reappears, add "final_cost_pct" (and, if still
+# unstable, "nde_post_miss"/"de_post_miss") back via the LocalDeltaDenylist
+# notebook widget -- no redeploy needed.
 _LOCAL_DELTA_DENYLIST_DEFAULT = frozenset(
     {
         "nde_pre_cpbt",
         "de_pre_cpbt",
-        "nde_post_miss",
-        "de_post_miss",
-        "final_cost_pct",
     }
 )
 _ACTIVE_LOCAL_DENYLIST: ContextVar[frozenset[str]] = ContextVar(

@@ -39,10 +39,13 @@
 # MAGIC   because localCheckpoint's LogicalRDD can't be re-resolved for a self-join
 # MAGIC   (-> UNRESOLVED_COLUMN). If a new mode/data shape crashes at some other
 # MAGIC   checkpoint, add that seam via widget 19.
-# MAGIC - **19. Local backend delta-denylist (extra)** — comma-separated
-# MAGIC   checkpoint-name prefixes to force to `delta` when backend=`local`.
-# MAGIC   Used to extend/override the built-in denylist without a redeploy. Only
-# MAGIC   consulted when backend=`local`.
+# MAGIC - **19. Local backend delta-denylist** — comma-separated checkpoint-name
+# MAGIC   prefixes that stay on `delta` even when backend=`local` (their result
+# MAGIC   feeds a self-join localCheckpoint can't re-resolve). Managed here and
+# MAGIC   passed through; pre-filled with `nde_pre_cpbt,de_pre_cpbt`. If a run
+# MAGIC   crashes at the effective_calc + plugging self-join (`DealID`), add
+# MAGIC   `final_cost_pct` (then `nde_post_miss,de_post_miss` if still unstable).
+# MAGIC   Only consulted when backend=`local`.
 # MAGIC - **20. Local denylist mode** — `extend` (add widget-19 to the built-ins,
 # MAGIC   default) or `replace` (use ONLY widget 19). The built-in default is now
 # MAGIC   the minimal validated pair `nde_pre_cpbt,de_pre_cpbt`; a 2026-09-05 run
@@ -131,8 +134,8 @@ dbutils.widgets.dropdown(
 )
 dbutils.widgets.text(
     "LocalDeltaDenylist",
-    "",
-    "19. Local backend delta-denylist (extra, comma-sep)",
+    "nde_pre_cpbt,de_pre_cpbt",
+    "19. Local backend delta-denylist (comma-sep)",
 )
 dbutils.widgets.dropdown(
     "LocalDeltaDenylistMode",
@@ -172,10 +175,14 @@ extra_checkpoint_builders = dbutils.widgets.get(
 # no metastore commit). Profiling showed ~40-50s of wall is Delta checkpoint
 # I/O; "local" is the A/B lever to cut it.
 checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
-# Hybrid tuning: extra checkpoint-name prefixes to force back to Delta when the
-# backend is "local" (e.g. a seam whose self-join surfaces during the validation
-# run). Added on top of the built-in denylist in checkpoint.py. Only used when
-# checkpoint_backend == "local". Comma/space separated; blank = built-ins only.
+# The delta-denylist is managed HERE (widget 19), comma-separated: these
+# checkpoint-name prefixes stay on Delta even when backend="local", because
+# their result feeds a self-join that localCheckpoint can't re-resolve
+# (UNRESOLVED_COLUMN). Pre-filled with the confirmed-critical pair
+# "nde_pre_cpbt,de_pre_cpbt". If a run crashes at the effective_calc + plugging
+# self-join (DealID), add "final_cost_pct" (and, if still unstable,
+# "nde_post_miss,de_post_miss") right here -- no redeploy. Only used when
+# checkpoint_backend == "local".
 local_delta_denylist = dbutils.widgets.get("LocalDeltaDenylist").strip()
 # "extend" (add to built-ins) or "replace" (use only widget 19). Use "replace"
 # with widget 19 = "nde_pre_cpbt,de_pre_cpbt" to trim the preemptive seams and
