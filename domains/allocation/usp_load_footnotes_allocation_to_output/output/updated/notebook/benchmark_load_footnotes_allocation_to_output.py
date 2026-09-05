@@ -43,6 +43,9 @@ dbutils.widgets.text(
 dbutils.widgets.text(
     "LocalDeltaDenylist", "", "15. Local backend delta-denylist (comma-sep)"
 )
+dbutils.widgets.text(
+    "CheckpointCoalesce", "2", "16. Checkpoint write coalesce (blank=off)"
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -67,6 +70,11 @@ local_delta_denylist = dbutils.widgets.get("LocalDeltaDenylist").strip()
 # Session-wide shuffle-partition cap (blank = leave cluster/AQE default). The
 # 200 default fans small joins into many tiny tasks/files; 4 suits this dataset.
 sql_shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
+# Coalesce each Delta checkpoint write to this many files (blank/0 = off). On
+# this small dataset the write still emits several tiny files per commit; a
+# small value (e.g. 2) trims file-count / commit overhead. In backend="local"
+# it hits only the forced-delta self-join seams (widget 15).
+checkpoint_coalesce = dbutils.widgets.get("CheckpointCoalesce").strip()
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
@@ -178,6 +186,10 @@ def _run_variant(variant: str, pass_number: int, snapshot: dict) -> dict:
         updated_kwargs["checkpoint_backend"] = checkpoint_backend
         if checkpoint_backend == "local" and local_delta_denylist:
             updated_kwargs["local_delta_denylist"] = local_delta_denylist
+        # Coalesce the Delta checkpoint writes (widget 16). In "local" mode it
+        # hits only the forced-delta self-join seams.
+        if checkpoint_coalesce:
+            updated_kwargs["checkpoint_coalesce"] = checkpoint_coalesce
 
     started = time.time()
     result = runner.run_load_footnotes_allocation_to_output(

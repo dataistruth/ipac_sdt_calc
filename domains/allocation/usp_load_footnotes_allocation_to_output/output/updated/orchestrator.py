@@ -50,6 +50,7 @@ from .checkpoint import (
     checkpoint,
     drop_checkpoints,
     normalize_checkpoint_backend,
+    normalize_coalesce,
     normalize_local_denylist,
 )
 from .join_optimizations import (
@@ -152,6 +153,8 @@ def run_load_footnotes_allocation_to_output(
     # (comma/space separated checkpoint-name prefixes forced back to delta).
     checkpoint_backend_kw = kwargs.pop("checkpoint_backend", None)
     local_denylist_kw = kwargs.pop("local_delta_denylist", None)
+    # Optional coalesce for each Delta checkpoint write (None = leave as-is).
+    checkpoint_coalesce_kw = kwargs.pop("checkpoint_coalesce", None)
     planning_pool = None
 
     if verbose:
@@ -213,6 +216,13 @@ def run_load_footnotes_allocation_to_output(
                     if local_denylist_kw is not None
                     else cfg.get("_local_delta_denylist")
                 )
+            )
+            # Resolve checkpoint-write coalesce (explicit kwarg wins, else any
+            # value already on cfg). Applies to the Delta write path only.
+            cfg["_checkpoint_coalesce"] = normalize_coalesce(
+                checkpoint_coalesce_kw
+                if checkpoint_coalesce_kw is not None
+                else cfg.get("_checkpoint_coalesce")
             )
 
             if rank_for_rule_pickup is not None:
@@ -582,6 +592,11 @@ def run_load_footnotes_allocation_to_output(
                     else "uc_delta_stats_off"
                 ),
                 "checkpoint_backend_mode": resolved_backend,
+                "checkpoint_coalesce": (
+                    cfg.get("_checkpoint_coalesce")
+                    if isinstance(cfg, dict)
+                    else None
+                ),
                 "local_delta_denylist": (
                     list(cfg.get("_local_delta_denylist", []))
                     if isinstance(cfg, dict)

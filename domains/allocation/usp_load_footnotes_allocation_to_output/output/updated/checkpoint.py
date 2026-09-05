@@ -74,6 +74,27 @@ def _forces_delta_backend(name: object, cfg: dict) -> bool:
     return any(safe.startswith(prefix) for prefix in denylist)
 
 
+def normalize_coalesce(value: object) -> int | None:
+    """Coerce a coalesce setting to a positive int, or None to disable it.
+
+    Coalesces each Delta checkpoint write to N output files to trim file-count
+    and per-commit overhead on this small dataset. None = leave partitioning
+    as-is. coalesce() is a narrow op (no shuffle); keep the value >= 1.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("", "0", "none", "off", "false"):
+        return None
+    try:
+        count = int(float(text))
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Invalid checkpoint coalesce {value!r}; expected a positive integer"
+        )
+    return count if count > 0 else None
+
+
 def _safe_name(value: object) -> str:
     return _SAFE_NAME.sub("_", str(value))
 
@@ -143,6 +164,10 @@ def checkpoint(
     checkpoint_tables = cfg.setdefault("_checkpoint_tables", [])
     checkpoint_tables.append(fqn)
 
+    # Optional coalesce to shrink file-count / commit overhead on the write.
+    coalesce = normalize_coalesce(cfg.get("_checkpoint_coalesce"))
+    writer_source = df.coalesce(coalesce) if coalesce else df
+
     existed, previous = _get_conf(spark, _STATS_KEY)
     try:
         spark.conf.set(_STATS_KEY, "false")
@@ -151,7 +176,7 @@ def checkpoint(
             try:
                 spark.sql(f"DROP TABLE IF EXISTS {fqn}")
                 (
-                    df.write.format("delta")
+                    writer_source.write.format("delta")
                     .mode("overwrite")
                     .option("overwriteSchema", "true")
                     .option("delta.dataSkippingNumIndexedCols", "0")
@@ -189,11 +214,13 @@ def checkpoint(
         {"step": f"checkpoint:{name}", "elapsed_seconds": elapsed}
     )
     forced_note = " forced-from-local" if forced_to_delta else ""
+    coalesce_note = f" coalesce={coalesce}" if coalesce else ""
     logger.info(
-        "[updated checkpoint] %s: %.3fs (backend=delta%s, stats=off)",
+        "[updated checkpoint] %s: %.3fs (backend=delta%s%s, stats=off)",
         name,
         elapsed,
         forced_note,
+        coalesce_note,
     )
     return spark.table(fqn)
 
