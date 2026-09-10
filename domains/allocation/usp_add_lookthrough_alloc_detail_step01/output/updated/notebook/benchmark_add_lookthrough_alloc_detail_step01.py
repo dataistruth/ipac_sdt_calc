@@ -209,6 +209,9 @@ def _run_variant(variant: str, pass_number: int) -> dict:
     plan_profile = (
         result.get("plan_profile", []) if isinstance(result, dict) else []
     )
+    plan_details = (
+        result.get("plan_details", []) if isinstance(result, dict) else []
+    )
     print(
         f"[benchmark] {variant}: wall={wall:.3f}s reported={reported} "
         f"tables_with_rows={summary['tables_with_rows']} "
@@ -224,6 +227,7 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         "metrics": metrics,
         "timings": timings,
         "plan_profile": plan_profile,
+        "plan_details": plan_details,
     }
 
 
@@ -335,3 +339,33 @@ for row in records:
                 threshold=plan_checkpoint_threshold,
             )
         )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Plan explain + operations — printed (per checkpoint & section)
+# MAGIC Text output (copy/paste-able, shows in job logs) with the ranked
+# MAGIC node/depth/ops summary **and** the full `.explain()` optimized-plan tree
+# MAGIC for the `base_lt_out` checkpoint and every section — mirroring what the
+# MAGIC prior SPs printed at each checkpoint.
+
+from AllocationV2.plan_profiler import plan_profile_report
+
+for row in records:
+    if row["variant"] != "updated" or not row.get("plan_details"):
+        continue
+    print("\n" + "=" * 78)
+    print(f"PLAN DETAIL — pass {row['pass']} (updated)")
+    print("=" * 78)
+    # Ranked summary: func | nodes | depth | (+delta) | ops  (+ checkpoint flag).
+    plan_profile_report(row["plan_profile"], threshold=plan_checkpoint_threshold)
+    # Full optimized-plan tree per checkpoint / section.
+    for d in row["plan_details"]:
+        ops = " ".join(f"{k}={v}" for k, v in sorted(d.get("ops", {}).items()))
+        print(
+            f"\n{'-' * 78}\n"
+            f"{d['name']}: nodes={d['nodes']} depth={d['depth']} "
+            f"(+{d['delta']}){('  ' + ops) if ops else ''}\n"
+            f"{'-' * 78}"
+        )
+        print(d.get("explain") or "(no plan captured)")

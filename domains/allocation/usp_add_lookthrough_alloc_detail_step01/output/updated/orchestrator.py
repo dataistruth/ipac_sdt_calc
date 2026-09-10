@@ -22,12 +22,16 @@ same three levers used by the prior optimized SPs:
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import Any, Iterator
+
+_MAX_EXPLAIN_CHARS = 12000
 
 from Common_V2.core.config import load_common_config
 from Common_V2.core.generic_result_storer import GenericResultStorer
@@ -79,6 +83,49 @@ _SECTIONS: tuple[tuple[str, Any], ...] = (
     ("cy_adjustment", _write_cy_adjustment),
     ("k1_text_allocation_detail", _write_k1_text_allocation_detail),
 )
+
+
+def _capture_plan_text(df) -> str:
+    """Optimized-logical-plan tree string for ``df`` (classic + Connect safe).
+
+    Runs in the main thread only (redirect_stdout is process-wide). Analyze-only:
+    no Spark job. Mirrors the shared profiler's extraction so the printed
+    ``.explain`` matches the node/depth/ops metrics.
+    """
+    jdf = getattr(df, "_jdf", None)
+    if jdf is not None:
+        try:
+            text = jdf.queryExecution().optimizedPlan().numberedTreeString()
+            return text[:_MAX_EXPLAIN_CHARS]
+        except Exception:
+            pass
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buffer):
+            df.explain(mode="extended")
+    except Exception:
+        return ""
+    return buffer.getvalue()[:_MAX_EXPLAIN_CHARS]
+
+
+def _record_plan_detail(cfg: dict, name: str, df, base_nodes: int) -> None:
+    """Append {name, nodes, depth, delta, ops, explain} for one checkpoint/section."""
+    metrics = measure_plan(df)
+    detail = {
+        "name": name,
+        "nodes": metrics["nodes"] if metrics else 0,
+        "depth": metrics["depth"] if metrics else 0,
+        "delta": (metrics["nodes"] - base_nodes) if metrics else 0,
+        "ops": metrics["ops"] if metrics else {},
+        "explain": _capture_plan_text(df),
+    }
+    cfg.setdefault("_plan_details", []).append(detail)
+    # Also feed the shared plan-profile ranking (func/nodes/depth/delta/ops).
+    if metrics:
+        cfg.setdefault("_plan_profile", []).append(
+            {k: detail[k] for k in ("nodes", "depth", "delta", "ops")}
+            | {"func": name}
+        )
 
 
 @contextmanager
@@ -257,6 +304,8 @@ def run_add_lookthrough_allocation_detail_step01(
         if profile_plan:
             base_metrics = measure_plan(base_lt_out)
             base_nodes = base_metrics["nodes"] if base_metrics else 0
+            # Capture the checkpoint's own plan detail (explain + nodes/depth/ops).
+            _record_plan_detail(cfg, "checkpoint:base_lt_out", base_lt_out, 0)
 
         # Sections 3-13: build the 12 independent detail frames concurrently, then
         # merge (union same-named tables) into the master result set.
@@ -273,10 +322,9 @@ def run_add_lookthrough_allocation_detail_step01(
             section_pool.shutdown(wait=True)
             section_pool = None
 
-            # Merge + measure plans in the main thread (measure_plan is not
-            # thread-safe on Spark Connect; it also runs no Spark job).
+            # Merge + measure plans in the main thread (measure_plan / explain are
+            # not thread-safe on Spark Connect; they also run no Spark job).
             master: dict[str, Any] = cfg["_parquet_results"]
-            plan_records = cfg["_plan_profile"]
             for res in sorted(section_results, key=lambda r: r["name"]):
                 timings.append(
                     {
@@ -287,22 +335,12 @@ def run_add_lookthrough_allocation_detail_step01(
                 produced = res["produced"]
                 for table, df in produced.items():
                     if profile_plan:
-                        metrics = measure_plan(df)
-                        if metrics:
-                            label = (
-                                res["name"]
-                                if len(produced) == 1
-                                else f"{res['name']}:{table}"
-                            )
-                            plan_records.append(
-                                {
-                                    "func": label,
-                                    "nodes": metrics["nodes"],
-                                    "depth": metrics["depth"],
-                                    "delta": metrics["nodes"] - base_nodes,
-                                    "ops": metrics["ops"],
-                                }
-                            )
+                        label = (
+                            res["name"]
+                            if len(produced) == 1
+                            else f"{res['name']}:{table}"
+                        )
+                        _record_plan_detail(cfg, label, df, base_nodes)
                     if table in master:
                         master[table] = master[table].unionByName(df)
                     else:
@@ -357,6 +395,9 @@ def run_add_lookthrough_allocation_detail_step01(
             if isinstance(cfg, dict) and cfg.get("profile_plan"):
                 try:
                     status["plan_profile"] = plan_profile_report(cfg)
+                    # Per-checkpoint / per-section .explain() text + ops for the
+                    # dedicated "plan detail" notebook cell.
+                    status["plan_details"] = list(cfg.get("_plan_details", []))
                 except Exception:
                     logger.warning("[PLAN] report failed", exc_info=True)
             resolved_backend = (
