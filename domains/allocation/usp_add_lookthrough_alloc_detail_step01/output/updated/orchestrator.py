@@ -92,45 +92,25 @@ def _timed(timings: list[dict[str, Any]], step: str) -> Iterator[None]:
         )
 
 
-def _run_section(
-    spark,
-    cfg: dict,
-    name: str,
-    writer,
-    base_nodes: int,
-    profile_plan: bool,
-) -> dict:
+def _run_section(spark, cfg: dict, name: str, writer) -> dict:
     """Run one production section writer on an isolated cfg copy.
 
-    Returns the section's collected ``{table: DataFrame}`` plus timing and
-    per-table plan-size records. The cfg copy is shallow, so the checkpointed
-    ``_base_lt_out`` frame and all scalars are shared (read-only) while
-    ``_parquet_results`` stays thread-local.
+    Returns the section's collected ``{table: DataFrame}`` plus timing. The cfg
+    copy is shallow, so the checkpointed ``_base_lt_out`` frame and all scalars
+    are shared (read-only) while ``_parquet_results`` stays thread-local.
+
+    NOTE: plan measurement is intentionally NOT done here. ``measure_plan``'s
+    Spark Connect fallback uses a process-wide ``redirect_stdout``, which is not
+    thread-safe; running it in parallel workers can blank out the depth. Plans
+    are measured in the main thread during the merge loop instead.
     """
     started = time.time()
     local_cfg = {**cfg, "_parquet_results": {}}
     writer(spark, local_cfg)
     produced = local_cfg.get("_parquet_results", {}) or {}
-
-    records: list[dict[str, Any]] = []
-    if profile_plan:
-        for table, df in produced.items():
-            metrics = measure_plan(df)
-            if metrics:
-                label = name if len(produced) == 1 else f"{name}:{table}"
-                records.append(
-                    {
-                        "func": label,
-                        "nodes": metrics["nodes"],
-                        "depth": metrics["depth"],
-                        "delta": metrics["nodes"] - base_nodes,
-                        "ops": metrics["ops"],
-                    }
-                )
     return {
         "name": name,
         "produced": produced,
-        "records": records,
         "elapsed_seconds": round(time.time() - started, 3),
     }
 
@@ -286,15 +266,15 @@ def run_add_lookthrough_allocation_detail_step01(
                 thread_name_prefix="ltdetail-step01",
             )
             futures = [
-                section_pool.submit(
-                    _run_section, spark, cfg, name, writer, base_nodes, profile_plan
-                )
+                section_pool.submit(_run_section, spark, cfg, name, writer)
                 for name, writer in _SECTIONS
             ]
             section_results = [f.result() for f in futures]
             section_pool.shutdown(wait=True)
             section_pool = None
 
+            # Merge + measure plans in the main thread (measure_plan is not
+            # thread-safe on Spark Connect; it also runs no Spark job).
             master: dict[str, Any] = cfg["_parquet_results"]
             plan_records = cfg["_plan_profile"]
             for res in sorted(section_results, key=lambda r: r["name"]):
@@ -304,8 +284,25 @@ def run_add_lookthrough_allocation_detail_step01(
                         "elapsed_seconds": res["elapsed_seconds"],
                     }
                 )
-                plan_records.extend(res["records"])
-                for table, df in res["produced"].items():
+                produced = res["produced"]
+                for table, df in produced.items():
+                    if profile_plan:
+                        metrics = measure_plan(df)
+                        if metrics:
+                            label = (
+                                res["name"]
+                                if len(produced) == 1
+                                else f"{res['name']}:{table}"
+                            )
+                            plan_records.append(
+                                {
+                                    "func": label,
+                                    "nodes": metrics["nodes"],
+                                    "depth": metrics["depth"],
+                                    "delta": metrics["nodes"] - base_nodes,
+                                    "ops": metrics["ops"],
+                                }
+                            )
                     if table in master:
                         master[table] = master[table].unionByName(df)
                     else:
