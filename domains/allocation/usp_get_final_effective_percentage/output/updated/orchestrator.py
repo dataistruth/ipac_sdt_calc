@@ -404,7 +404,7 @@ def _run_with_timings(
         )
 
     plan_profile: list[dict[str, Any]] = []
-    checkpoint_profile: list[dict[str, Any]] = []
+    checkpoint_plan_profile: list[dict[str, Any]] = []
     if profile_plan:
         try:
             print("\n===== BUILDER-LEVEL PLAN PROFILE (where the plan grows) =====")
@@ -418,7 +418,7 @@ def _run_with_timings(
                 "\n===== CHECKPOINT-LEVEL PLAN PROFILE "
                 "(plan-node size truncated at each checkpoint; delta=nodes) ====="
             )
-            checkpoint_profile = plan_profile_report(
+            checkpoint_plan_profile = plan_profile_report(
                 ckpt_plan_records, plan_checkpoint_threshold
             )
         except Exception:
@@ -432,7 +432,7 @@ def _run_with_timings(
             "checkpoint_summary": checkpoint_summary,
             "cpbt_profile": _ACTIVE_CPBT_PROFILE,
             "plan_profile": plan_profile,
-            "checkpoint_profile": checkpoint_profile,
+            "checkpoint_plan_profile": checkpoint_plan_profile,
         }
     )
     if isinstance(result, dict):
@@ -448,7 +448,7 @@ def _run_with_timings(
         }
         if profile_plan:
             result["plan_profile"] = plan_profile
-            result["checkpoint_profile"] = checkpoint_profile
+            result["checkpoint_plan_profile"] = checkpoint_plan_profile
     return result
 
 

@@ -428,9 +428,11 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         "plan_profile",
         result.get("plan_profile", []) if isinstance(result, dict) else [],
     )
-    checkpoint_profile = profile_data.get(
-        "checkpoint_profile",
-        result.get("checkpoint_profile", []) if isinstance(result, dict) else [],
+    checkpoint_plan_profile = profile_data.get(
+        "checkpoint_plan_profile",
+        result.get("checkpoint_plan_profile", [])
+        if isinstance(result, dict)
+        else [],
     )
     print(
         f"[benchmark] {variant}: wall={wall:.3f}s "
@@ -449,7 +451,7 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         "checkpoints_written": checkpoint_summary.get("written_count"),
         "checkpoints_bypassed": checkpoint_summary.get("bypassed_count"),
         "plan_profile": plan_profile,
-        "checkpoint_profile": checkpoint_profile,
+        "checkpoint_plan_profile": checkpoint_plan_profile,
     }
 
 
@@ -596,12 +598,12 @@ for row in records:
 # MAGIC checkpoint truncate?" — so low-`nodes` checkpoints are collapse candidates.
 
 for row in records:
-    if row["variant"] == "updated" and row.get("checkpoint_profile"):
+    if row["variant"] == "updated" and row.get("checkpoint_plan_profile"):
         print(f"\nCheckpoint plan profile — pass {row['pass']}")
         display(
             build_plan_profile_display(
                 spark,
-                row["checkpoint_profile"],
+                row["checkpoint_plan_profile"],
                 threshold=plan_checkpoint_threshold,
             )
         )
