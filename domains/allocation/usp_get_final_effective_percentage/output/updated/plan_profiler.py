@@ -17,10 +17,13 @@ import logging as _logging
 
 try:
     from AllocationV2.plan_profiler import (
+        finish_checkpoint_plan_profile,
         finish_plan_profile,
         measure_plan,
         plan_profile_report,
+        start_checkpoint_plan_profile,
         start_plan_profile,
+        track_checkpoint_plan,
         track_plan,
     )
 except Exception as _exc:  # pragma: no cover - deploy safety net
@@ -46,6 +49,15 @@ except Exception as _exc:  # pragma: no cover - deploy safety net
     def finish_plan_profile(token):
         return None
 
+    def start_checkpoint_plan_profile():
+        return None, []
+
+    def finish_checkpoint_plan_profile(token):
+        return None
+
+    def track_checkpoint_plan(name, df):
+        return None
+
 
 __all__ = [
     "measure_plan",
@@ -53,4 +65,7 @@ __all__ = [
     "plan_profile_report",
     "start_plan_profile",
     "finish_plan_profile",
+    "start_checkpoint_plan_profile",
+    "finish_checkpoint_plan_profile",
+    "track_checkpoint_plan",
 ]

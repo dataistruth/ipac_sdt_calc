@@ -12,6 +12,8 @@ from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
 
+from .plan_profiler import track_checkpoint_plan
+
 logger = logging.getLogger(__name__)
 
 _STATS_KEY = "spark.databricks.delta.stats.collect"
@@ -282,6 +284,11 @@ def checkpoint(
             activity["bypassed"].append(name)
         print(f"[updated checkpoint] {name}: bypassed (profile={profile})")
         return df
+
+    # Checkpoint-level plan profile: measure the plan this break will truncate,
+    # BEFORE materializing it (no-op unless the checkpoint sink is active).
+    # Recorded in a SEPARATE sink from the builder profile.
+    track_checkpoint_plan(name, df)
 
     backend = normalize_checkpoint_backend(
         cfg.get("_checkpoint_backend", _ACTIVE_BACKEND.get())

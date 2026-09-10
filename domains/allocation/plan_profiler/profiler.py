@@ -30,9 +30,18 @@ logger = logging.getLogger(__name__)
 # Builders may run inside a ThreadPoolExecutor, so guard the shared sink.
 _LOCK = threading.Lock()
 
-# Active per-run record sink (list) or None when profiling is disabled.
+# Active per-run BUILDER record sink (list) or None when profiling is disabled.
 _PLAN_SINK: ContextVar[list | None] = ContextVar(
     "alloc_plan_profile_sink", default=None
+)
+
+# Active per-run CHECKPOINT record sink (list) or None when disabled. Kept
+# SEPARATE from _PLAN_SINK so builder-level growth and checkpoint-level
+# truncation are reported independently (a builder profile answers "where does
+# the plan grow?"; a checkpoint profile answers "how big is the plan each break
+# truncates?").
+_CHECKPOINT_SINK: ContextVar[list | None] = ContextVar(
+    "alloc_checkpoint_profile_sink", default=None
 )
 
 # Operators worth counting individually in the per-function histogram.
@@ -196,6 +205,67 @@ def finish_plan_profile(token) -> None:
         _PLAN_SINK.reset(token)
     except Exception:
         logger.debug("[PLAN] finish_plan_profile reset failed", exc_info=True)
+
+
+# --------------------------------------------------------------------------- #
+# Checkpoint-level plan profile (separate sink)
+# --------------------------------------------------------------------------- #
+def start_checkpoint_plan_profile() -> tuple:
+    """Activate a fresh CHECKPOINT record sink for one invocation.
+
+    Returns ``(token, records)`` — pass ``token`` to
+    :func:`finish_checkpoint_plan_profile`. Independent of the builder sink.
+    """
+    records: list = []
+    token = _CHECKPOINT_SINK.set(records)
+    return token, records
+
+
+def finish_checkpoint_plan_profile(token) -> None:
+    if token is None:
+        return
+    try:
+        _CHECKPOINT_SINK.reset(token)
+    except Exception:
+        logger.debug(
+            "[PLAN] finish_checkpoint_plan_profile reset failed", exc_info=True
+        )
+
+
+def track_checkpoint_plan(name: str, df) -> None:
+    """Record the plan a checkpoint truncates — measured BEFORE the lineage break.
+
+    Call this inside ``checkpoint()`` on the *incoming* DataFrame (pre
+    materialization), so the record reflects the full plan that the break
+    collapses. ``delta`` is set to ``nodes`` (the whole plan is truncated), so
+    the shared report/display rank checkpoints by how much each one truncates.
+    No-op unless a checkpoint sink is active (see
+    :func:`start_checkpoint_plan_profile`). Never raises.
+    """
+    sink = _CHECKPOINT_SINK.get()
+    if sink is None:
+        return
+    try:
+        metrics = measure_plan(df)
+        if not metrics:
+            return
+        record = {
+            "func": name,
+            "nodes": metrics["nodes"],
+            "depth": metrics["depth"],
+            "delta": metrics["nodes"],
+            "ops": metrics["ops"],
+        }
+        with _LOCK:
+            sink.append(record)
+        logger.info(
+            "[PLAN-CKPT] %s: nodes=%d depth=%d",
+            name,
+            record["nodes"],
+            record["depth"],
+        )
+    except Exception:
+        logger.debug("[PLAN] track_checkpoint_plan failed", exc_info=True)
 
 
 def track_plan(fn):

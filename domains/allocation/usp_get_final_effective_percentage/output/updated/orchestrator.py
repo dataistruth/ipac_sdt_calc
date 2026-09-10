@@ -54,8 +54,10 @@ except Exception as _cpbt_import_error:  # pragma: no cover - deploy safety net
     )
 from .parent import isolated_output_module
 from .plan_profiler import (
+    finish_checkpoint_plan_profile,
     finish_plan_profile,
     plan_profile_report,
+    start_checkpoint_plan_profile,
     start_plan_profile,
     track_plan,
 )
@@ -331,14 +333,20 @@ def _run_with_timings(
     )
     plan_token = None
     plan_records: list[dict[str, Any]] = []
+    ckpt_plan_token = None
+    ckpt_plan_records: list[dict[str, Any]] = []
     if profile_plan:
         plan_token, plan_records = start_plan_profile()
+        # Separate sink: plan each checkpoint truncates (see checkpoint.py).
+        ckpt_plan_token, ckpt_plan_records = start_checkpoint_plan_profile()
     started = time.time()
     try:
         result = fn(*args, **kwargs)
     finally:
         if plan_token is not None:
             finish_plan_profile(plan_token)
+        if ckpt_plan_token is not None:
+            finish_checkpoint_plan_profile(ckpt_plan_token)
         finish_checkpoint_run(
             profile_token,
             activity_token,
@@ -396,13 +404,25 @@ def _run_with_timings(
         )
 
     plan_profile: list[dict[str, Any]] = []
+    checkpoint_profile: list[dict[str, Any]] = []
     if profile_plan:
         try:
+            print("\n===== BUILDER-LEVEL PLAN PROFILE (where the plan grows) =====")
             plan_profile = plan_profile_report(
                 plan_records, plan_checkpoint_threshold
             )
         except Exception:
-            logger.warning("[PLAN] report failed", exc_info=True)
+            logger.warning("[PLAN] builder report failed", exc_info=True)
+        try:
+            print(
+                "\n===== CHECKPOINT-LEVEL PLAN PROFILE "
+                "(plan-node size truncated at each checkpoint; delta=nodes) ====="
+            )
+            checkpoint_profile = plan_profile_report(
+                ckpt_plan_records, plan_checkpoint_threshold
+            )
+        except Exception:
+            logger.warning("[PLAN] checkpoint report failed", exc_info=True)
 
     _LAST_RUN_PROFILE.clear()
     _LAST_RUN_PROFILE.update(
@@ -412,6 +432,7 @@ def _run_with_timings(
             "checkpoint_summary": checkpoint_summary,
             "cpbt_profile": _ACTIVE_CPBT_PROFILE,
             "plan_profile": plan_profile,
+            "checkpoint_profile": checkpoint_profile,
         }
     )
     if isinstance(result, dict):
@@ -427,6 +448,7 @@ def _run_with_timings(
         }
         if profile_plan:
             result["plan_profile"] = plan_profile
+            result["checkpoint_profile"] = checkpoint_profile
     return result
 
 

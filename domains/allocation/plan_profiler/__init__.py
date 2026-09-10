@@ -28,10 +28,13 @@ from __future__ import annotations
 
 from .display import build_plan_profile_display
 from .profiler import (
+    finish_checkpoint_plan_profile,
     finish_plan_profile,
     measure_plan,
     plan_profile_report,
+    start_checkpoint_plan_profile,
     start_plan_profile,
+    track_checkpoint_plan,
     track_plan,
 )
 
@@ -41,5 +44,8 @@ __all__ = [
     "plan_profile_report",
     "start_plan_profile",
     "finish_plan_profile",
+    "start_checkpoint_plan_profile",
+    "finish_checkpoint_plan_profile",
+    "track_checkpoint_plan",
     "build_plan_profile_display",
 ]

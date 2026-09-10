@@ -428,6 +428,10 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         "plan_profile",
         result.get("plan_profile", []) if isinstance(result, dict) else [],
     )
+    checkpoint_profile = profile_data.get(
+        "checkpoint_profile",
+        result.get("checkpoint_profile", []) if isinstance(result, dict) else [],
+    )
     print(
         f"[benchmark] {variant}: wall={wall:.3f}s "
         f"reported={reported} rows={summary['total_rows']}"
@@ -445,6 +449,7 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         "checkpoints_written": checkpoint_summary.get("written_count"),
         "checkpoints_bypassed": checkpoint_summary.get("bypassed_count"),
         "plan_profile": plan_profile,
+        "checkpoint_profile": checkpoint_profile,
     }
 
 
@@ -571,11 +576,32 @@ from AllocationV2.plan_profiler import build_plan_profile_display
 
 for row in records:
     if row["variant"] == "updated" and row.get("plan_profile"):
-        print(f"\nPlan profile — pass {row['pass']}")
+        print(f"\nBuilder plan profile — pass {row['pass']}")
         display(
             build_plan_profile_display(
                 spark,
                 row["plan_profile"],
+                threshold=plan_checkpoint_threshold,
+            )
+        )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Checkpoint-level plan profile (only when "13. Plan profiler" = on)
+# MAGIC Ranks each **checkpoint** by the plan-node size it truncates (measured
+# MAGIC on the DataFrame *before* the lineage break; `delta`=`nodes`). Tracked in
+# MAGIC a **separate** sink from the builder profile above: the builder table
+# MAGIC answers "where does the plan grow?", this one answers "how much does each
+# MAGIC checkpoint truncate?" — so low-`nodes` checkpoints are collapse candidates.
+
+for row in records:
+    if row["variant"] == "updated" and row.get("checkpoint_profile"):
+        print(f"\nCheckpoint plan profile — pass {row['pass']}")
+        display(
+            build_plan_profile_display(
+                spark,
+                row["checkpoint_profile"],
                 threshold=plan_checkpoint_threshold,
             )
         )
