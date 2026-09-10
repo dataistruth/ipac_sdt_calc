@@ -409,7 +409,7 @@ def _run_with_timings(
         try:
             print("\n===== BUILDER-LEVEL PLAN PROFILE (where the plan grows) =====")
             plan_profile = plan_profile_report(
-                plan_records, plan_checkpoint_threshold
+                plan_records, plan_checkpoint_threshold, label="BUILDER"
             )
         except Exception:
             logger.warning("[PLAN] builder report failed", exc_info=True)
@@ -419,7 +419,7 @@ def _run_with_timings(
                 "(plan-node size truncated at each checkpoint; delta=nodes) ====="
             )
             checkpoint_plan_profile = plan_profile_report(
-                ckpt_plan_records, plan_checkpoint_threshold
+                ckpt_plan_records, plan_checkpoint_threshold, label="CHECKPOINT"
             )
         except Exception:
             logger.warning("[PLAN] checkpoint report failed", exc_info=True)

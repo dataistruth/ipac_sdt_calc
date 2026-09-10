@@ -258,11 +258,13 @@ def track_checkpoint_plan(name: str, df) -> None:
         }
         with _LOCK:
             sink.append(record)
+        ops = " ".join(f"{k}={v}" for k, v in sorted(record["ops"].items()))
         logger.info(
-            "[PLAN-CKPT] %s: nodes=%d depth=%d",
+            "[PLAN-CKPT] %s: nodes=%d depth=%d%s",
             name,
             record["nodes"],
             record["depth"],
+            f"  {ops}" if ops else "",
         )
     except Exception:
         logger.debug("[PLAN] track_checkpoint_plan failed", exc_info=True)
@@ -312,12 +314,16 @@ def track_plan(fn):
                 )
                 with _LOCK:
                     target.append(record)
+                ops = " ".join(
+                    f"{k}={v}" for k, v in sorted(record["ops"].items())
+                )
                 logger.info(
-                    "[PLAN] %s: nodes=%d depth=%d (+%d)",
+                    "[PLAN] %s: nodes=%d depth=%d (+%d)%s",
                     fn.__name__,
                     record["nodes"],
                     record["depth"],
                     record["delta"],
+                    f"  {ops}" if ops else "",
                 )
         return result
 
@@ -327,11 +333,17 @@ def track_plan(fn):
 # --------------------------------------------------------------------------- #
 # Report
 # --------------------------------------------------------------------------- #
-def plan_profile_report(source, threshold: int | None = None) -> list:
-    """Print and return the plan-growth ranking.
+def plan_profile_report(
+    source, threshold: int | None = None, label: str = ""
+) -> list:
+    """Print + LOG and return the plan-growth ranking.
 
     ``source`` may be the records ``list`` returned by :func:`start_plan_profile`
     or a ``cfg`` dict carrying ``_plan_profile``. Empty when nothing recorded.
+    ``label`` (e.g. "BUILDER" / "CHECKPOINT") is included in the header so the
+    two reports are distinguishable in the driver run log. Each row is emitted
+    via both ``print`` (notebook cell) and ``logger.info`` (driver run log), so
+    node/depth/ops land in the run log too — not just the notebook display.
     """
     if isinstance(source, dict):
         records = list(source.get("_plan_profile", []))
@@ -345,16 +357,27 @@ def plan_profile_report(source, threshold: int | None = None) -> list:
         threshold = _DEFAULT_CHECKPOINT_THRESHOLD
     threshold = int(threshold)
 
+    tag = f" {label}" if label else ""
     if not records:
+        empty = f"[PLAN REPORT{tag}] no records captured"
+        print(empty)
+        logger.info(empty)
         return []
 
     ranked = sorted(records, key=lambda r: r["delta"], reverse=True)
-    print("[PLAN REPORT] ranked by plan-node growth (delta vs largest input)")
+    header = (
+        f"[PLAN REPORT{tag}] ranked by plan-node growth "
+        "(delta vs largest input); cols: nodes depth (+delta) ops"
+    )
+    print(header)
+    logger.info(header)
     for r in ranked:
         ops = " ".join(f"{k}={v}" for k, v in sorted(r["ops"].items()))
         flag = "  <-- checkpoint candidate" if r["delta"] >= threshold else ""
-        print(
+        line = (
             f"  {r['func']:<34} nodes={r['nodes']:>4} depth={r['depth']:>3} "
             f"(+{r['delta']}){('  ' + ops) if ops else ''}{flag}"
         )
+        print(line)
+        logger.info(line)
     return ranked
