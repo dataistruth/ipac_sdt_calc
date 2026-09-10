@@ -40,7 +40,7 @@ except Exception as _exc:  # pragma: no cover - deploy safety net
     def measure_plan(df):
         return None
 
-    def plan_profile_report(source, threshold=None):
+    def plan_profile_report(source, threshold=None, label=""):
         return []
 
     def start_plan_profile():

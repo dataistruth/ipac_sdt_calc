@@ -244,9 +244,22 @@ ORIGINAL_MODULE = f"{PACKAGE}.output.orchestrator"
 UPDATED_MODULE = f"{PACKAGE}.output.updated.orchestrator"
 
 
+# Shared packages that must ALSO be evicted so re-syncs take effect without a
+# manual Python restart (re-importing a .py file does not reload a module that
+# Python already imported this session).
+_SHARED_PKGS = ("AllocationV2.plan_profiler",)
+
+
 def _import_fresh(module_name: str):
     for loaded in list(sys.modules):
-        if loaded == PACKAGE or loaded.startswith(f"{PACKAGE}."):
+        if (
+            loaded == PACKAGE
+            or loaded.startswith(f"{PACKAGE}.")
+            or any(
+                loaded == pkg or loaded.startswith(f"{pkg}.")
+                for pkg in _SHARED_PKGS
+            )
+        ):
             del sys.modules[loaded]
     importlib.invalidate_caches()
     module = importlib.import_module(module_name)
