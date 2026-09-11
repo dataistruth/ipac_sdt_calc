@@ -31,8 +31,30 @@ _CONSERVATIVE_BYPASSES = frozenset(
         "nde_post_miss_fused",
     }
 )
+
+# "lean" (2026-09-10): keep the heavy plan-truncating checkpoints (all_ent_m0,
+# txfr_adj_fused, tcp_post_tag_m0, pickup_order_dated_pre_yearly, tcp_post_et_m0
+# and the mid-size seams) but COLLAPSE the 5 lowest-value breaks whose truncated
+# plan is trivial (<=15 nodes / depth<=7 per the checkpoint plan report). Each
+# materialization costs a write+read; for these seams that buys near-zero
+# lineage benefit, so bypassing lets the tiny plan flow into the next real
+# checkpoint instead. SAFE to bypass: none are self-join denylist seams, and a
+# bypass returns the ORIGINAL DataFrame (full lineage) -- it can never hit the
+# localCheckpoint self-join UNRESOLVED_COLUMN failure (that is unique to
+# localCheckpoint's LogicalRDD, not to un-checkpointed DataFrames).
+_LEAN_BYPASSES = frozenset(
+    {
+        "eff_dt_fused",           # 15 nodes / depth 7
+        "uc_ordered_common",      #  8 nodes / depth 6
+        "all_und_common_nolt",    #  1 node  / depth 0 (no-op break)
+        "input_lines_nolt",       #  1 node  / depth 0 (no-op break)
+        "eff_dated_s6_m0",        #  1 node  / depth 0 (no-op break)
+    }
+)
+
 CHECKPOINT_PROFILES = {
     "full": frozenset(),
+    "lean": _LEAN_BYPASSES,
     "conservative": _CONSERVATIVE_BYPASSES,
     "balanced": _CONSERVATIVE_BYPASSES
     | {

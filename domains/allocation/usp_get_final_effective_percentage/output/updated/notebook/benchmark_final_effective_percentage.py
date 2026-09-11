@@ -24,9 +24,13 @@
 # MAGIC   Run `OPTIMIZE` + `VACUUM` on it before benchmarking.
 # MAGIC
 # MAGIC Knobs:
-# MAGIC - **12. Checkpoint profile** — `full` keeps every prod seam (incl. the
-# MAGIC   non-dated seam); avoid `conservative` (it bypasses `nde_post_miss_fused`
-# MAGIC   and replays a huge plan into the non-dated stage).
+# MAGIC - **12. Checkpoint profile** — `lean` (default) keeps every heavy
+# MAGIC   plan-truncating seam but collapses the 5 lowest-value breaks
+# MAGIC   (`eff_dt_fused`, `uc_ordered_common`, `all_und_common_nolt`,
+# MAGIC   `input_lines_nolt`, `eff_dated_s6_m0` — all <=15 nodes); `full` keeps
+# MAGIC   every prod seam (incl. the non-dated seam); avoid `conservative` (it
+# MAGIC   bypasses `nde_post_miss_fused` and replays a huge plan into the
+# MAGIC   non-dated stage).
 # MAGIC - **15. Extra checkpoint builders** — force extra post-builder lineage
 # MAGIC   breaks; A/B only. Profiling showed prod already checkpoints every deep
 # MAGIC   seam, so adding more usually only adds cost.
@@ -95,8 +99,8 @@ dbutils.widgets.dropdown(
 dbutils.widgets.text("VolumePath", "", "11. Volume path (optional)")
 dbutils.widgets.dropdown(
     "CheckpointProfile",
-    "full",
-    ["full", "conservative", "balanced"],
+    "lean",
+    ["full", "lean", "conservative", "balanced"],
     "12. Checkpoint profile",
 )
 dbutils.widgets.dropdown(
@@ -148,6 +152,12 @@ dbutils.widgets.text(
     "2",
     "21. Checkpoint write coalesce (blank=off)",
 )
+dbutils.widgets.dropdown(
+    "SplitCpbtInputs",
+    "on",
+    ["off", "on"],
+    "22. Split cost_pct_by_type inputs (all_ent_m*/txfr_adj_fused)",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs").strip() or "1")
@@ -194,6 +204,15 @@ local_delta_denylist_mode = (
 # small value (e.g. 2) trims file-count/commit overhead. In backend="local" it
 # hits exactly the forced self-join seam (final_cost_pct).
 checkpoint_coalesce = dbutils.widgets.get("CheckpointCoalesce").strip()
+# Split the two heaviest seams by pre-checkpointing build_cost_percentage_by_type's
+# heavy inputs: non_dated/dated (feed all_ent_m*) and transfers_adj (feeds
+# txfr_adj_fused). Updated variant only; parity-safe (materializes inputs only).
+# A/B lever: run "on" vs "off" to measure whether the split helps. Under
+# backend="local" keep nde_pre_cpbt,de_pre_cpbt in widget 19 so the entity
+# pre-checkpoints force to Delta (self-join safety); transfers_adj is local-safe.
+split_cpbt_inputs = (
+    dbutils.widgets.get("SplitCpbtInputs").strip().lower() == "on"
+)
 # Session-wide shuffle-partition cap. The 200 default fans small joins into
 # many tiny tasks/files, inflating every Delta checkpoint write on this small
 # dataset. A small value (e.g. 4) cuts that overhead. Blank = leave the
@@ -407,6 +426,9 @@ def _run_variant(variant: str, pass_number: int) -> dict:
         # A/B: force extra lineage breaks on the named builders' outputs.
         if extra_checkpoint_builders:
             run_kwargs["extra_checkpoint_builders"] = extra_checkpoint_builders
+        # A/B: split the two heaviest seams (all_ent_m*, txfr_adj_fused) by
+        # pre-checkpointing build_cost_percentage_by_type's heavy inputs.
+        run_kwargs["SplitCpbtInputs"] = "on" if split_cpbt_inputs else "off"
 
     result = runner.run_final_effective_percentages(
         spark,

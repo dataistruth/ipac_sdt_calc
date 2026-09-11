@@ -29,15 +29,25 @@ and the production reference under `sdt_d` are not modified.
 
 4. **Checkpoint profiles**
    - `full`: writes every production lineage break.
-   - `conservative` (default): bypasses two single-consumer checkpoints that
+   - `lean` (benchmark default, added 2026-09-10): keeps every heavy
+     plan-truncating seam but collapses the 5 lowest-value breaks
+     (`eff_dt_fused` 15n, `uc_ordered_common` 8n, and the three no-op breaks
+     `all_und_common_nolt` / `input_lines_nolt` / `eff_dated_s6_m0`, all 1n).
+     Each of those materializations bought near-zero lineage benefit per the
+     checkpoint plan report. CAVEAT: `eff_dt_fused` was previously retained
+     (see note below) — watch `eff_dt_plug_fused` / `eff_nd_plug_fused`
+     timings; if they climb, drop `eff_dt_fused` from `_LEAN_BYPASSES` and
+     collapse `parent_ord_m0` (17n) or `tcp_by_type_fused` (19n) instead.
+   - `conservative`: bypasses two single-consumer checkpoints that
      are immediately followed by retained materialization barriers:
      `underlyings_common` and `nde_post_miss_fused`.
    - `balanced`: also bypasses `all_ent_pre_tag_m0` and `eff_dated_s6_m0`.
      Promote this profile only after multi-pass parity and performance testing.
 
-   `eff_dt_fused` and `eff_nd_fused` remain enabled. Benchmarking showed that
-   bypassing them moved their lineage into `apply_plugging` and made
-   `eff_nd_plug_fused` materially slower.
+   `eff_nd_fused` remains enabled (only `eff_dt_fused` is collapsed by `lean`).
+   Earlier benchmarking showed that bypassing BOTH moved their lineage into
+   `apply_plugging` and made `eff_nd_plug_fused` materially slower — hence the
+   `lean` caveat above.
 
    High-fan-out and plan-size circuit breakers remain enabled, including the
    common inputs, pre-CPBT inputs, `tcp_post_et_m0`, `all_ent_m0`,

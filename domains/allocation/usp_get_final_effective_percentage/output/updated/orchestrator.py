@@ -127,6 +127,19 @@ _ACTIVE_POST_CHECKPOINTS: contextvars.ContextVar[frozenset[str]] = (
     contextvars.ContextVar("fep_post_checkpoints", default=frozenset())
 )
 
+# --- Split of the two heaviest seams (all_ent_m*, txfr_adj_fused) ----------
+# Both originate inside the single build_cost_percentage_by_type builder, whose
+# call sites live in shared prod source (cannot be edited without changing the
+# ORIGINAL baseline). This updated-only toggle instead pre-checkpoints that
+# builder's heavy inputs (non_dated / dated -> all_ent_m*; transfers_adj ->
+# txfr_adj_fused) so the upstream lineage is truncated BEFORE the builder runs,
+# shrinking both large plans. Parity-safe (only materializes inputs; no calc
+# change). ON by default; toggle per-run via the SplitCpbtInputs widget.
+_DEFAULT_SPLIT_CPBT_INPUTS = True
+_ACTIVE_SPLIT_CPBT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "fep_split_cpbt_inputs", default=_DEFAULT_SPLIT_CPBT_INPUTS
+)
+
 
 def _extract_spark_cfg(args, kwargs):
     """Best-effort locate the SparkSession and cfg dict in builder args."""
@@ -168,6 +181,59 @@ def _checkpoint_output(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapped
 
 
+# build_cost_percentage_by_type(spark, cfg, cost_pct_snapshot, temp_cost_pct,
+#   all_underlyings, entity_underlyings, non_dated, dated, transfers_adj,
+#   checkpoint_fn=...). Indices 6/7/8 are the heavy inputs we pre-checkpoint.
+_CPBT_INPUT_SPLIT_SPECS = (
+    # (positional index, checkpoint name prefix, feeds which heavy seam)
+    (6, "nde_pre_cpbt_cpbtin"),  # non_dated -> all_ent_m* union + anti-join
+    (7, "de_pre_cpbt_cpbtin"),   # dated     -> all_ent_m* union + anti-join
+    (8, "txfr_adj_cpbtin"),      # transfers_adj -> txfr_adj_fused
+)
+
+
+def _split_cpbt_inputs(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Pre-checkpoint the heavy inputs of build_cost_percentage_by_type.
+
+    Truncates the upstream lineage feeding ``all_ent_m*`` (non_dated/dated
+    union + anti-join) and ``txfr_adj_fused`` (transfers_adj) BEFORE the builder
+    runs, so neither seam has to truncate a 600+ node plan on its own.
+
+    Parity-safe: only materializes inputs (identical data), no calculation
+    change. Self-join safety: the two entity inputs are named with the
+    ``nde_pre_cpbt`` / ``de_pre_cpbt`` denylist PREFIXES, so under
+    backend="local" they auto-force to Delta exactly like the existing pre-cpbt
+    seams (keep those prefixes in the LocalDeltaDenylist widget). transfers_adj
+    is local-safe (mirrors txfr_pre_cpbt). No-op unless the SplitCpbtInputs
+    toggle is on AND a checkpoint_fn and the expected positional inputs exist.
+    """
+
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        checkpoint_fn = kwargs.get("checkpoint_fn")
+        if (
+            _ACTIVE_SPLIT_CPBT.get()
+            and checkpoint_fn is not None
+            and len(args) >= 9
+            and isinstance(args[0], SparkSession)
+            and isinstance(args[1], dict)
+        ):
+            spark = args[0]
+            cfg = args[1]
+            mode = cfg.get("_current_mode", 1)
+            args = list(args)
+            for idx, prefix in _CPBT_INPUT_SPLIT_SPECS:
+                df = args[idx]
+                if isinstance(df, DataFrame):
+                    args[idx] = checkpoint_fn(
+                        spark, df, f"{prefix}_m{mode}", cfg
+                    )
+            args = tuple(args)
+        return fn(*args, **kwargs)
+
+    return wrapped
+
+
 # --- Reverted to prod copy (2026-09-04) ------------------------------------
 # The updated pipeline now mirrors production: it runs the BASE builders
 # unchanged and only keeps (a) the fast Delta checkpoint writer (stats-off,
@@ -185,6 +251,13 @@ def _checkpoint_output(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
 # These replacements affect only the isolated module object loaded above.
 _base._checkpoint = _checkpoint
 _base._drop_checkpoints = drop_checkpoints
+# Updated-only: pre-checkpoint the heavy build_cost_percentage_by_type inputs to
+# split the two largest seams (all_ent_m*, txfr_adj_fused). Installed as the
+# INNERMOST layer (before the _timed / track_plan / _checkpoint_output loops
+# below) so the plan profiler still observes the post-split builder plan.
+_base_build_cpbt = getattr(_base, "build_cost_percentage_by_type", None)
+if callable(_base_build_cpbt):
+    _base.build_cost_percentage_by_type = _split_cpbt_inputs(_base_build_cpbt)
 # Prod-copy: base read/cost builders are intentionally NOT swapped. Re-enable
 # one at a time only after a measured, parity-verified win:
 #   _base.load_line_items = load_line_items
@@ -298,11 +371,13 @@ def _run_with_timings(
     profile_plan: bool = False,
     plan_checkpoint_threshold: int = 30,
     extra_checkpoint_builders: tuple[str, ...] = (),
+    split_cpbt_inputs: bool = _DEFAULT_SPLIT_CPBT_INPUTS,
     **kwargs,
 ):
     profile = normalize_checkpoint_profile(checkpoint_profile)
     backend = normalize_checkpoint_backend(checkpoint_backend)
     coalesce = normalize_coalesce(checkpoint_coalesce)
+    split_cpbt = bool(split_cpbt_inputs)
     post_checkpoints = frozenset(_DEFAULT_POST_BUILDER_CHECKPOINTS).union(
         extra_checkpoint_builders
     )
@@ -317,6 +392,7 @@ def _run_with_timings(
     events: list[dict[str, Any]] = []
     token = _ACTIVE_TIMINGS.set(events)
     post_token = _ACTIVE_POST_CHECKPOINTS.set(post_checkpoints)
+    split_token = _ACTIVE_SPLIT_CPBT.set(split_cpbt)
     (
         profile_token,
         activity_token,
@@ -355,6 +431,7 @@ def _run_with_timings(
             coalesce_token,
         )
         _ACTIVE_POST_CHECKPOINTS.reset(post_token)
+        _ACTIVE_SPLIT_CPBT.reset(split_token)
         _ACTIVE_TIMINGS.reset(token)
 
     summary = _summarize(events)
@@ -378,8 +455,15 @@ def _run_with_timings(
             if item.get("forced_from_local")
         ],
         "coalesce": coalesce,
+        "split_cpbt_inputs": split_cpbt,
     }
     print(f"[updated timing] wall={wall:.3f}s")
+    print(
+        "[updated checkpoints] split_cpbt_inputs="
+        + ("on" if split_cpbt else "off")
+        + " (pre-checkpoints non_dated/dated -> all_ent_m*, "
+        "transfers_adj -> txfr_adj_fused)"
+    )
     if post_checkpoints:
         print(
             "[updated checkpoints] post-builder="
@@ -445,6 +529,7 @@ def _run_with_timings(
             "cpbt_profile": _ACTIVE_CPBT_PROFILE,
             "builders": "prod-copy (no swaps)",
             "post_builder_checkpoints": sorted(post_checkpoints),
+            "split_cpbt_inputs": split_cpbt,
         }
         if profile_plan:
             result["plan_profile"] = plan_profile
@@ -530,6 +615,25 @@ def _pop_checkpoint_coalesce(kwargs: dict[str, Any]) -> int | None:
     return normalize_coalesce(value)
 
 
+def _pop_split_cpbt_inputs(kwargs: dict[str, Any]) -> bool:
+    """Extract the SplitCpbtInputs toggle (on/off) from caller kwargs.
+
+    Accepts a bool or a string ("on"/"off"/"true"/"false"/"1"/"0"). Controls
+    whether build_cost_percentage_by_type's heavy inputs are pre-checkpointed to
+    split the all_ent_m* / txfr_adj_fused seams. Defaults to on.
+    """
+    value = kwargs.pop("SplitCpbtInputs", None)
+    if value is None:
+        value = kwargs.pop("split_cpbt_inputs", None)
+    else:
+        kwargs.pop("split_cpbt_inputs", None)
+    if value is None:
+        return _DEFAULT_SPLIT_CPBT_INPUTS
+    if isinstance(value, str):
+        return value.strip().lower() in ("on", "true", "1", "yes")
+    return bool(value)
+
+
 def run_modes(*args, **kwargs):
     """Run modes with optimized checkpoints and detailed step timings."""
     profile = _pop_checkpoint_profile(kwargs)
@@ -539,6 +643,7 @@ def run_modes(*args, **kwargs):
     checkpoint_coalesce = _pop_checkpoint_coalesce(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
+    split_cpbt = _pop_split_cpbt_inputs(kwargs)
     return _run_with_timings(
         _ORIGINAL_RUN_MODES,
         *args,
@@ -550,6 +655,7 @@ def run_modes(*args, **kwargs):
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,
+        split_cpbt_inputs=split_cpbt,
         **kwargs,
     )
 
@@ -563,6 +669,7 @@ def run_final_effective_percentages(*args, **kwargs):
     checkpoint_coalesce = _pop_checkpoint_coalesce(kwargs)
     profile_plan, plan_threshold = _pop_plan_flags(kwargs)
     extra_checkpoints = _pop_extra_checkpoints(kwargs)
+    split_cpbt = _pop_split_cpbt_inputs(kwargs)
     return _run_with_timings(
         _ORIGINAL_RUN_FINAL,
         *args,
@@ -574,6 +681,7 @@ def run_final_effective_percentages(*args, **kwargs):
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_threshold,
         extra_checkpoint_builders=extra_checkpoints,
+        split_cpbt_inputs=split_cpbt,
         **kwargs,
     )
 
