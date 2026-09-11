@@ -181,6 +181,15 @@ def _checkpoint_output(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapped
 
 
+def _is_dataframe(obj: Any) -> bool:
+    """Connect-safe DataFrame check (isinstance fails under Spark Connect)."""
+    return (
+        hasattr(obj, "explain")
+        and hasattr(obj, "schema")
+        and hasattr(obj, "columns")
+    )
+
+
 # build_cost_percentage_by_type(spark, cfg, cost_pct_snapshot, temp_cost_pct,
 #   all_underlyings, entity_underlyings, non_dated, dated, transfers_adj,
 #   checkpoint_fn=...). Indices 6/7/8 are the heavy inputs we pre-checkpoint.
@@ -211,20 +220,24 @@ def _split_cpbt_inputs(fn: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(fn)
     def wrapped(*args, **kwargs):
         checkpoint_fn = kwargs.get("checkpoint_fn")
+        # NB: Spark Connect DataFrames/SparkSession are NOT instances of the
+        # classic pyspark.sql types, so isinstance() checks silently fail on
+        # Databricks. Duck-type instead (matches plan_profiler's detection).
+        cfg = args[1] if len(args) >= 2 else None
         if (
             _ACTIVE_SPLIT_CPBT.get()
             and checkpoint_fn is not None
             and len(args) >= 9
-            and isinstance(args[0], SparkSession)
-            and isinstance(args[1], dict)
+            and isinstance(cfg, dict)
+            and "catalog" in cfg
+            and "schema" in cfg
         ):
             spark = args[0]
-            cfg = args[1]
             mode = cfg.get("_current_mode", 1)
             args = list(args)
             for idx, prefix in _CPBT_INPUT_SPLIT_SPECS:
                 df = args[idx]
-                if isinstance(df, DataFrame):
+                if _is_dataframe(df):
                     args[idx] = checkpoint_fn(
                         spark, df, f"{prefix}_m{mode}", cfg
                     )
