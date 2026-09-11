@@ -30,14 +30,18 @@ and the production reference under `sdt_d` are not modified.
 4. **Checkpoint profiles**
    - `full`: writes every production lineage break.
    - `lean` (benchmark default, added 2026-09-10): keeps every heavy
-     plan-truncating seam but collapses the 5 lowest-value breaks
-     (`eff_dt_fused` 15n, `uc_ordered_common` 8n, and the three no-op breaks
-     `all_und_common_nolt` / `input_lines_nolt` / `eff_dated_s6_m0`, all 1n).
-     Each of those materializations bought near-zero lineage benefit per the
-     checkpoint plan report. CAVEAT: `eff_dt_fused` was previously retained
-     (see note below) — watch `eff_dt_plug_fused` / `eff_nd_plug_fused`
-     timings; if they climb, drop `eff_dt_fused` from `_LEAN_BYPASSES` and
-     collapse `parent_ord_m0` (17n) or `tcp_by_type_fused` (19n) instead.
+     plan-truncating seam but collapses the low-value breaks. Round 1 (5):
+     `eff_dt_fused` 15n, `uc_ordered_common` 8n, and the three no-op breaks
+     `all_und_common_nolt` / `input_lines_nolt` / `eff_dated_s6_m0` (1n).
+     Round 2 (delta-only write savings): `entity_und_common_nolt` (1n no-op).
+     (`txfr_pre_cpbt_m1/m2/m3` were briefly collapsed with the transfers_adj
+     split, then restored when that split was reverted — they keep
+     `txfr_adj_fused` at its original plan size.) NOT collapsed
+     despite low node count: `tcp_by_type_fused` (19n, 3 consumers) and
+     `parent_ord_m0` (17n, used 4×) — fan-out barriers, collapsing re-runs the
+     7-step matching / DENSE_RANK window. CAVEAT: `eff_dt_fused` was previously
+     retained (see note below) — watch `eff_dt_plug_fused` / `eff_nd_plug_fused`
+     timings; if they climb, drop `eff_dt_fused` from `_LEAN_BYPASSES`.
    - `conservative`: bypasses two single-consumer checkpoints that
      are immediately followed by retained materialization barriers:
      `underlyings_common` and `nde_post_miss_fused`.

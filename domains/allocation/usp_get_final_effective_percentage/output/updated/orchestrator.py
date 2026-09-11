@@ -127,14 +127,15 @@ _ACTIVE_POST_CHECKPOINTS: contextvars.ContextVar[frozenset[str]] = (
     contextvars.ContextVar("fep_post_checkpoints", default=frozenset())
 )
 
-# --- Split of the two heaviest seams (all_ent_m*, txfr_adj_fused) ----------
-# Both originate inside the single build_cost_percentage_by_type builder, whose
+# --- Split of the heaviest seam all_ent_m* ---------------------------------
+# It originates inside the single build_cost_percentage_by_type builder, whose
 # call sites live in shared prod source (cannot be edited without changing the
 # ORIGINAL baseline). This updated-only toggle instead pre-checkpoints that
-# builder's heavy inputs (non_dated / dated -> all_ent_m*; transfers_adj ->
-# txfr_adj_fused) so the upstream lineage is truncated BEFORE the builder runs,
-# shrinking both large plans. Parity-safe (only materializes inputs; no calc
-# change). ON by default; toggle per-run via the SplitCpbtInputs widget.
+# builder's heavy entity inputs (non_dated / dated -> all_ent_m*) so the
+# upstream lineage is truncated BEFORE the builder runs, shrinking that plan
+# (662 -> ~334 nodes). Parity-safe (only materializes inputs; no calc change).
+# ON by default; toggle per-run via the SplitCpbtInputs widget. (The
+# transfers_adj -> txfr_adj_fused split was reverted 2026-09-10: minimal gain.)
 _DEFAULT_SPLIT_CPBT_INPUTS = True
 _ACTIVE_SPLIT_CPBT: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "fep_split_cpbt_inputs", default=_DEFAULT_SPLIT_CPBT_INPUTS
@@ -197,24 +198,27 @@ _CPBT_INPUT_SPLIT_SPECS = (
     # (positional index, checkpoint name prefix, feeds which heavy seam)
     (6, "nde_pre_cpbt_cpbtin"),  # non_dated -> all_ent_m* union + anti-join
     (7, "de_pre_cpbt_cpbtin"),   # dated     -> all_ent_m* union + anti-join
-    (8, "txfr_adj_cpbtin"),      # transfers_adj -> txfr_adj_fused
+    # (8, transfers_adj -> txfr_adj_fused): REVERTED 2026-09-10. The split only
+    # trimmed txfr_adj_fused 605->500 with depth unchanged (34) -- not worth the
+    # extra write. The per-mode txfr_pre_cpbt_m* barriers are restored to keep
+    # txfr_adj_fused at its original plan size.
 )
 
 
 def _split_cpbt_inputs(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Pre-checkpoint the heavy inputs of build_cost_percentage_by_type.
+    """Pre-checkpoint the heavy entity inputs of build_cost_percentage_by_type.
 
     Truncates the upstream lineage feeding ``all_ent_m*`` (non_dated/dated
-    union + anti-join) and ``txfr_adj_fused`` (transfers_adj) BEFORE the builder
-    runs, so neither seam has to truncate a 600+ node plan on its own.
+    union + anti-join) BEFORE the builder runs, so that seam doesn't truncate a
+    660+ node plan on its own (drops it to ~334).
 
     Parity-safe: only materializes inputs (identical data), no calculation
     change. Self-join safety: the two entity inputs are named with the
     ``nde_pre_cpbt`` / ``de_pre_cpbt`` denylist PREFIXES, so under
     backend="local" they auto-force to Delta exactly like the existing pre-cpbt
-    seams (keep those prefixes in the LocalDeltaDenylist widget). transfers_adj
-    is local-safe (mirrors txfr_pre_cpbt). No-op unless the SplitCpbtInputs
-    toggle is on AND a checkpoint_fn and the expected positional inputs exist.
+    seams (keep those prefixes in the LocalDeltaDenylist widget). No-op unless
+    the SplitCpbtInputs toggle is on AND a checkpoint_fn and the expected
+    positional inputs exist. (transfers_adj -> txfr_adj_fused reverted.)
     """
 
     @functools.wraps(fn)
@@ -474,8 +478,7 @@ def _run_with_timings(
     print(
         "[updated checkpoints] split_cpbt_inputs="
         + ("on" if split_cpbt else "off")
-        + " (pre-checkpoints non_dated/dated -> all_ent_m*, "
-        "transfers_adj -> txfr_adj_fused)"
+        + " (pre-checkpoints non_dated/dated -> all_ent_m*)"
     )
     if post_checkpoints:
         print(

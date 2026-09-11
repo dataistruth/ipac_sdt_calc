@@ -49,6 +49,16 @@ _LEAN_BYPASSES = frozenset(
         "all_und_common_nolt",    #  1 node  / depth 0 (no-op break)
         "input_lines_nolt",       #  1 node  / depth 0 (no-op break)
         "eff_dated_s6_m0",        #  1 node  / depth 0 (no-op break)
+        # Round 2 (2026-09-10) -- delta-only: each write costs ~1.5-2s I/O, so
+        # drop more low-plan, single/no-consumer seams. NOT collapsed:
+        # tcp_by_type_fused (3 consumers) and parent_ord_m0 (4 consumers) --
+        # low node count but fan-out barriers; collapsing them re-runs the
+        # 7-step matching / DENSE_RANK window. Self-join seams stay too.
+        "entity_und_common_nolt",  # 1 node / depth 0 no-op (empty nolt chain)
+        # NOTE: txfr_pre_cpbt_m1/m2/m3 were collapsed here alongside the
+        # transfers_adj split, then RESTORED 2026-09-10 when that split was
+        # reverted -- they are the transfer-chain barriers that keep
+        # txfr_adj_fused at its original plan size, so they stay active.
     }
 )
 
