@@ -1,23 +1,12 @@
-"""Parallel shared-view registration."""
+"""Compatibility entry for ordered shared-view registration."""
 
-import time
-
-from Common_V2.core.helpers import log_section, log_timing
-
-from .parallel_helpers import normalize_workers
-from .shared_views_builders import register_all
+from .ai_shared_views import register_shared_views as _register_shared_views
 
 
 def register_shared_views_parallel(spark, cfg, max_threads=None):
-    """Public name used by the orchestrator."""
-    workers = normalize_workers(
-        max_threads if max_threads is not None else cfg.get("max_threads", 4),
-        cfg.get("MaxThreads"),
-    )
-    log_section("register_shared_views")
-    started = time.time()
-    register_all(spark, cfg, workers)
-    log_timing("register_shared_views", started)
+    """Preserve the public API without parallel session-catalog mutation."""
+    del max_threads
+    return _register_shared_views(spark, cfg)
 
 
 register_shared_views = register_shared_views_parallel

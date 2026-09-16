@@ -1,4 +1,4 @@
-"""Optimized usp_load_allocation_input — sync this folder only to monolith output/updated/."""
+"""Isolated optimized candidate for usp_load_allocation_input."""
 
 from .load_allocation_input import run_load_allocation_input
 

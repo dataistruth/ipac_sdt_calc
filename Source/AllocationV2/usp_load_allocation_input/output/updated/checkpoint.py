@@ -19,16 +19,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_CHECKPOINT_BACKEND = "delta"
 _VALID_BACKENDS = frozenset({"delta", "local"})
 _LOCAL_DELTA_DENYLIST_DEFAULT: frozenset[str] = frozenset()
-DEFAULT_COLLAPSED_CHECKPOINTS: frozenset[str] = frozenset(
-    {
-        # Profiler evidence, RunID 16560 (2026-09-16):
-        # reclass_data=2 nodes, pfic_raw=1 node. pfic_flowup (25 nodes,
-        # CHECKPOINT measure) stays enabled — do not collapse it.
-        # The 490-node base_flowup_post_zero break also remains enabled.
-        "reclass_data",
-        "pfic_raw",
-    }
-)
+# Clean production baseline: preserve every production checkpoint until
+# action-time and A/B evidence justify changing an individual seam.
+DEFAULT_COLLAPSED_CHECKPOINTS: frozenset[str] = frozenset()
 _STATS_KEY = "spark.databricks.delta.stats.collect"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
 

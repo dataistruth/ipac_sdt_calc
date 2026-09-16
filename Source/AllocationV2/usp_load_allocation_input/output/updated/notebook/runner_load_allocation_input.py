@@ -1,160 +1,81 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Runner — `usp_load_allocation_input`
-# MAGIC
-# MAGIC Toggle **module_stem** only. Lives in `output/updated/notebook/`.
-# MAGIC Import-dir Python modules into `output/updated/`, not this folder.
-
-# COMMAND ----------
-
-sp_name = "usp_load_allocation_input"
+# MAGIC # Updated runner — `usp_load_allocation_input`
 
 # COMMAND ----------
 
 dbutils.widgets.removeAll()
-
-dbutils.widgets.dropdown(
-    "module_stem",
-    "updated.load_allocation_input",
-    [
-        "load_allocation_input",
-        "updated.load_allocation_input",
-        "updated.load_allocation_input_updated",
-    ],
-    "1. Module under output/",
-)
-dbutils.widgets.text(
-    "parallel_workers",
-    "4",
-    "2. Parallel workers (shared views + flow-up writes)",
-)
-dbutils.widgets.text(
-    "volume_path",
-    "/Volumes/qa7/datavolume/databrickdata/checkpoint",
-    "3. Checkpoint volume",
-)
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
-    "4. Monolith Source/",
+    "1. Monolith Source/",
 )
-dbutils.widgets.dropdown(
-    "ProfilePlan",
-    "on",
-    ["off", "on"],
-    "5. Plan profiler",
-)
+dbutils.widgets.text("EntityID", "115", "2. EntityID")
+dbutils.widgets.text("ClientID", "15348", "3. ClientID")
+dbutils.widgets.text("TaxPeriodID", "1", "4. TaxPeriodID")
+dbutils.widgets.text("RunID", "16560", "5. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
+dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.text(
-    "PlanCheckpointThreshold",
-    "30",
-    "6. Plan checkpoint threshold",
+    "VolumePath",
+    "/Volumes/qa7/datavolume/databrickdata/checkpoint",
+    "8. Volume path",
 )
+dbutils.widgets.text("MaxThreads", "4", "9. Max threads")
+dbutils.widgets.dropdown(
+    "ProfilePlan", "on", ["off", "on"], "10. Plan profiler"
+)
+dbutils.widgets.text("PlanCheckpointThreshold", "30", "11. Plan threshold")
 dbutils.widgets.dropdown(
     "CheckpointBackend",
     "delta",
     ["delta", "local"],
-    "7. Checkpoint backend",
+    "12. Checkpoint backend",
 )
 
-module_stem = dbutils.widgets.get("module_stem").strip()
-parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
-volume_path = dbutils.widgets.get("volume_path").strip()
-source_path = dbutils.widgets.get("source_path").strip()
-profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
-plan_checkpoint_threshold = int(
-    dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
-)
-checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
+# COMMAND ----------
 
-print(f"module_stem       : {module_stem}")
-print(f"parallel_workers  : {parallel_workers}")
-print(f"volume_path       : {volume_path}")
-print(f"ProfilePlan       : {profile_plan}")
-print(f"CheckpointBackend : {checkpoint_backend}")
-
+import importlib
 import os
 import sys
-import importlib
-from datetime import datetime
+import time
 
+source_path = dbutils.widgets.get("source_path").strip()
+if not os.path.isdir(source_path):
+    raise RuntimeError(f"Source path does not exist: {source_path}")
+if source_path not in sys.path:
+    sys.path.insert(0, source_path)
 
-def _source_from_notebook_path() -> str:
-    try:
-        ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
-        nb_path = ctx.notebookPath().get()
-        if "/Source/" in nb_path:
-            return nb_path.split("/Source/")[0] + "/Source"
-        marker = "/AllocationV2/"
-        if marker in nb_path:
-            return nb_path.split(marker)[0]
-    except Exception:
-        pass
-    return ""
-
-
-def ensure_source_on_path(path: str) -> str:
-    path = (path or "").strip()
-    if not path:
-        path = _source_from_notebook_path()
-    if not path:
-        raise ValueError(
-            "Set source_path to monolith Source/ (parent of AllocationV2/)."
-        )
-    alloc = os.path.join(path, "AllocationV2")
-    if not os.path.isdir(alloc):
-        raise FileNotFoundError(f"AllocationV2 not found at {alloc}")
-    if path not in sys.path:
-        sys.path.insert(0, path)
-    print(f"[path] sys.path ← {path}")
-    return path
-
-
-source_path = ensure_source_on_path(source_path)
-
-prefix = f"AllocationV2.{sp_name}.output"
-shared = "AllocationV2.plan_profiler"
-for name in list(sys.modules):
+package = "AllocationV2.usp_load_allocation_input"
+for loaded in list(sys.modules):
     if (
-        name == prefix
-        or name.startswith(prefix + ".")
-        or name == shared
-        or name.startswith(shared + ".")
+        loaded == package
+        or loaded.startswith(package + ".")
+        or loaded == "AllocationV2.plan_profiler"
+        or loaded.startswith("AllocationV2.plan_profiler.")
     ):
-        del sys.modules[name]
+        del sys.modules[loaded]
 importlib.invalidate_caches()
 
-module_name = f"{prefix}.{module_stem}"
-print(f"importing: {module_name}")
-lt_runner = importlib.import_module(module_name)
-
-# COMMAND ----------
-
-beginning_time = datetime.now()
-print(f"Beginning time: {beginning_time}")
-
-run_kwargs = {
-    "EntityID": 115,
-    "ClientID": 15348,
-    "TaxPeriodID": 1,
-    "RunID": 16560,
-    "CatalogName": "QA7",
-    "SchemaName": "IPC_2025_QA7_15348",
-    "VolumePath": volume_path,
-    "parallel_config_workers": parallel_workers,
-    "parallel_write_workers": parallel_workers,
-    "CheckpointBackend": checkpoint_backend,
-}
-if module_stem.startswith("updated."):
-    run_kwargs["profile_plan"] = profile_plan
-    run_kwargs["plan_checkpoint_threshold"] = plan_checkpoint_threshold
-
-result = lt_runner.run_load_allocation_input(spark, **run_kwargs)
-
-print(f"Elapsed: {datetime.now() - beginning_time}")
+runner = importlib.import_module(
+    f"{package}.output.updated.load_allocation_input"
+)
+started = time.time()
+result = runner.run_load_allocation_input(
+    spark,
+    EntityID=int(dbutils.widgets.get("EntityID")),
+    ClientID=int(dbutils.widgets.get("ClientID")),
+    TaxPeriodID=int(dbutils.widgets.get("TaxPeriodID")),
+    RunID=int(dbutils.widgets.get("RunID")),
+    CatalogName=dbutils.widgets.get("CatalogName").strip(),
+    SchemaName=dbutils.widgets.get("SchemaName").strip(),
+    VolumePath=dbutils.widgets.get("VolumePath").strip(),
+    MaxThreads=int(dbutils.widgets.get("MaxThreads")),
+    ProfilePlan=dbutils.widgets.get("ProfilePlan").strip().lower() == "on",
+    PlanCheckpointThreshold=int(
+        dbutils.widgets.get("PlanCheckpointThreshold")
+    ),
+    CheckpointBackend=dbutils.widgets.get("CheckpointBackend").strip(),
+)
+print(f"[runner] wall={time.time() - started:.3f}s")
 print(result)
-
-# COMMAND ----------
-
-if isinstance(result, dict) and result.get("timings"):
-    import pandas as pd
-    display(pd.DataFrame(result["timings"]).sort_values("elapsed_seconds", ascending=False))

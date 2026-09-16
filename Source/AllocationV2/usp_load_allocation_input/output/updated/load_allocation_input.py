@@ -1,126 +1,90 @@
 """
-load_allocation_input.py — optimized pipeline (updated package).
+load_allocation_input.py
 
-Monolith path:
-  Source/AllocationV2/usp_load_allocation_input/output/updated/
+Converted from: dbo.uspLoadAllocationInput
+Database: IPC_2025_DEV8_MayBuild (SQL Server: usazutaxw00073.us.deloitte.com)
+Conversion date: 2026-05-28
 
-Import:
-  AllocationV2.usp_load_allocation_input.output.updated.load_allocation_input
-  AllocationV2.usp_load_allocation_input.output.updated.load_allocation_input_updated  # shim
+Loads input data to AllocationInput table. Handles K1, Form 926/8886/199A/8865,
+PFIC footnote flowup, adjustments, at-risk, M1, GAAP-to-tax,
+tag percentages, and rounding.
+
+Supports three execution modes:
+  Mode 1 (Job)         — cfg passed via taskValues JSON (built by Job wrapper)
+  Mode 2 (Orchestrator) — cfg passed as dict (built by orchestrator)
+  Mode 3 (Standalone)  — cfg built from parameters via load_common_config
+
+Usage:1
+    from load_allocation_input import run_load_allocation_input
+
+    # Mode 3 (standalone):
+    result = run_load_allocation_input(
+        spark,
+        entity_id=123, client_id=456, tax_period_id=789, run_id=1001,
+        catalog="qa7", schema="IPC_2025_DEV8_MayBuild",
+    )
+
+    # Mode 1/2 (pre-built cfg):
+    result = run_load_allocation_input(spark, cfg=cfg)
 """
 
 from pyspark.sql import SparkSession
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import importlib
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
 
+# Common_V2: shared framework for all converted SPs
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
-
-from .checkpoint import checkpoint, log_checkpoint_plan, should_checkpoint
-from .step_timer import StepTimer
-from .shared_views import register_shared_views_parallel
-from . import ai_pfic_flowup_service as _pfic_flowup_svc
-from .parent import output_module
-from .plan_profiler import track_plan
-
-_log_pfic = _pfic_flowup_svc._log
-_log_pfic("wired into updated.load_allocation_input")
-
-_ai_config = output_module("ai_config_service")
-_ai_validation = output_module("ai_validation_service")
-_ai_hierarchy = output_module("ai_hierarchy_service")
-_ai_k1 = output_module("ai_k1_service")
-_ai_form = output_module("ai_form_service")
-_ai_pfic = output_module("ai_pfic_service")
-_ai_finalization = output_module("ai_finalization_service")
-
-load_config = _ai_config.load_config
-run_validations = _ai_validation.run_validations
-build_entity_hierarchy = _ai_hierarchy.build_entity_hierarchy
-build_lower_tier_funds = _ai_hierarchy.build_lower_tier_funds
-build_workflows = _ai_hierarchy.build_workflows
-build_k1_and_related_inputs = _ai_k1.build_k1_and_related_inputs
-build_all_form_inputs = _ai_form.build_all_form_inputs
-build_pfic_snapshot = _ai_pfic.build_pfic_snapshot
-build_pfic_elections = _ai_pfic.build_pfic_elections
-build_pfic_allocation_input = _ai_pfic.build_pfic_allocation_input
-apply_pfic_election_deletes = _ai_pfic.apply_pfic_election_deletes
-apply_part_v_vii_flags = _ai_pfic.apply_part_v_vii_flags
-build_pfic_flowup_pipeline = _pfic_flowup_svc.build_pfic_flowup_pipeline
-build_custom_footnote_input = _pfic_flowup_svc.build_custom_footnote_input
-check_pfic_xml_override_alert = _pfic_flowup_svc.check_pfic_xml_override_alert
-apply_tag_percentages = _ai_finalization.apply_tag_percentages
-write_allocation_input = _ai_finalization.write_allocation_input
-write_pfic_flowup = _ai_finalization.write_pfic_flowup
-apply_master_feed_override = _ai_finalization.apply_master_feed_override
-apply_blocker_entity_cleanup = _ai_finalization.apply_blocker_entity_cleanup
-apply_distribution_line_suppression = _ai_finalization.apply_distribution_line_suppression
-write_form_flowups = _ai_finalization.write_form_flowups
-purge_output_tables = _ai_finalization.purge_output_tables
-
-# Profile logical-plan growth at the updated orchestrator boundary. These
-# wrappers are transparent unless cfg["profile_plan"] is enabled.
-build_entity_hierarchy = track_plan(build_entity_hierarchy)
-build_lower_tier_funds = track_plan(build_lower_tier_funds)
-build_workflows = track_plan(build_workflows)
-build_k1_and_related_inputs = track_plan(build_k1_and_related_inputs)
-build_all_form_inputs = track_plan(build_all_form_inputs)
-build_pfic_snapshot = track_plan(build_pfic_snapshot)
-build_pfic_elections = track_plan(build_pfic_elections)
-build_pfic_allocation_input = track_plan(build_pfic_allocation_input)
-apply_pfic_election_deletes = track_plan(apply_pfic_election_deletes)
-apply_part_v_vii_flags = track_plan(apply_part_v_vii_flags)
-build_pfic_flowup_pipeline = track_plan(build_pfic_flowup_pipeline)
-build_custom_footnote_input = track_plan(build_custom_footnote_input)
-apply_tag_percentages = track_plan(apply_tag_percentages)
-apply_master_feed_override = track_plan(apply_master_feed_override)
-apply_blocker_entity_cleanup = track_plan(apply_blocker_entity_cleanup)
-apply_distribution_line_suppression = track_plan(
-    apply_distribution_line_suppression
+from .checkpoint import (
+    drop_checkpoints,
+    log_checkpoint_plan,
+    normalize_checkpoint_backend,
+    normalize_local_denylist,
+    pipeline_checkpoint,
 )
+from .ai_shared_views import register_shared_views
+from .parent import output_module
+from .plan_profiler import plan_profile_report, profile_action, track_plan
+
+# Unchanged services come from the production parent package.
+_config = output_module("ai_config_service")
+_validation = output_module("ai_validation_service")
+_hierarchy = output_module("ai_hierarchy_service")
+_k1 = output_module("ai_k1_service")
+_form = output_module("ai_form_service")
+_pfic = output_module("ai_pfic_service")
+_final = output_module("ai_finalization_service")
+_flowup = importlib.import_module(f"{__package__}.ai_pfic_flowup_service")
+
+load_config = _config.load_config
+run_validations = _validation.run_validations
+build_entity_hierarchy = track_plan(_hierarchy.build_entity_hierarchy)
+build_lower_tier_funds = track_plan(_hierarchy.build_lower_tier_funds)
+build_workflows = track_plan(_hierarchy.build_workflows)
+build_k1_and_related_inputs = track_plan(_k1.build_k1_and_related_inputs)
+build_all_form_inputs = track_plan(_form.build_all_form_inputs)
+build_pfic_snapshot = track_plan(_pfic.build_pfic_snapshot)
+build_pfic_elections = track_plan(_pfic.build_pfic_elections)
+build_pfic_allocation_input = track_plan(_pfic.build_pfic_allocation_input)
+apply_pfic_election_deletes = track_plan(_pfic.apply_pfic_election_deletes)
+apply_part_v_vii_flags = track_plan(_pfic.apply_part_v_vii_flags)
+build_pfic_flowup_pipeline = track_plan(_flowup.build_pfic_flowup_pipeline)
+build_custom_footnote_input = track_plan(_flowup.build_custom_footnote_input)
+check_pfic_xml_override_alert = _flowup.check_pfic_xml_override_alert
+apply_tag_percentages = track_plan(_final.apply_tag_percentages)
+apply_master_feed_override = track_plan(_final.apply_master_feed_override)
+apply_blocker_entity_cleanup = track_plan(_final.apply_blocker_entity_cleanup)
+apply_distribution_line_suppression = track_plan(
+    _final.apply_distribution_line_suppression
+)
+purge_output_tables = _final.purge_output_tables
+write_allocation_input = _final.write_allocation_input
+write_pfic_flowup = _final.write_pfic_flowup
+write_form_flowups = _final.write_form_flowups
 
 logger = logging.getLogger(__name__)
-
-_SPARK_PARQUET_CODEC_KEY = "spark.sql.parquet.compression.codec"
-
-
-def _begin_uncompressed_writes(spark: SparkSession) -> dict[str, str]:
-    """Session-level Parquet codec for Delta/Parquet writes (restored after)."""
-    previous: dict[str, str] = {}
-    try:
-        previous[_SPARK_PARQUET_CODEC_KEY] = spark.conf.get(_SPARK_PARQUET_CODEC_KEY)
-    except Exception:
-        pass
-    spark.conf.set(_SPARK_PARQUET_CODEC_KEY, "uncompressed")
-    return previous
-
-
-def _restore_write_compression(spark: SparkSession, previous: dict[str, str]) -> None:
-    for key, value in previous.items():
-        try:
-            spark.conf.set(key, value)
-        except Exception:
-            pass
-
-
-def _timed_fail(timer: StepTimer, reason: str, **extra: object) -> dict:
-    timer.print_summary()
-    return {"status": "FAIL", "reason": reason, "timings": timer.as_dict_list(), **extra}
-
-
-def _maybe_checkpoint(
-    spark: SparkSession,
-    timer: StepTimer,
-    df: Any,
-    name: str,
-    cfg: dict,
-) -> Any:
-    if not should_checkpoint(cfg, name):
-        return df
-    with timer.step(f"checkpoint_{name}"):
-        return checkpoint(spark, df, name, cfg)
 
 
 def run_load_allocation_input(
@@ -146,14 +110,28 @@ def run_load_allocation_input(
     execution_id: str = None,
     call_from: str = None,
     CallFrom: str = None,
-    parallel_config_workers: int = None,
-    ParallelConfigWorkers: int = None,
-    parallel_write_workers: int = None,
-    ParallelWriteWorkers: int = None,
-    checkpoint_backend: str = None,
+    max_threads: int = 4,
+    MaxThreads: int = None,
+    profile_plan: bool = False,
+    ProfilePlan: object = None,
+    plan_checkpoint_threshold: int = 30,
+    PlanCheckpointThreshold: int = None,
+    checkpoint_backend: str = "delta",
     CheckpointBackend: str = None,
+    LocalDeltaDenylist: object = "",
+    LocalDeltaDenylistMode: str = "extend",
     **kwargs,
 ) -> dict:
+    """Main entry point — orchestrates the full allocation input pipeline.
+
+    Supports three execution modes:
+      Mode 1 (Job):         cfg passed via taskValues JSON
+      Mode 2 (Orchestrator): cfg passed as dict
+      Mode 3 (Standalone):  cfg built from parameters via load_common_config
+
+    Returns dict with status and timing.
+    """
+    # Normalize params: Orchestrator sends PascalCase, standalone uses snake_case
     entity_id = entity_id or EntityID
     client_id = client_id or ClientID
     tax_period_id = tax_period_id or TaxPeriodID
@@ -166,41 +144,9 @@ def run_load_allocation_input(
     call_from = call_from or CallFrom
 
     t0 = time.time()
-    log_section("load_allocation_input (updated)")
-    timer = StepTimer(logger=logger)
+    log_section("run_load_allocation_input")
 
-    def _worker_count(
-        *values: object,
-        default: int = 4,
-    ) -> int:
-        for raw in values:
-            if raw is None:
-                continue
-            try:
-                n = int(raw)
-            except (TypeError, ValueError):
-                continue
-            if n >= 1:
-                return n
-        return max(1, default)
-
-    parallel_config_workers = _worker_count(
-        parallel_config_workers,
-        ParallelConfigWorkers,
-        kwargs.get("parallel_config_workers"),
-        kwargs.get("ParallelConfigWorkers"),
-        cfg.get("parallel_config_workers") if cfg else None,
-        default=4,
-    )
-    parallel_write_workers = _worker_count(
-        parallel_write_workers,
-        ParallelWriteWorkers,
-        kwargs.get("parallel_write_workers"),
-        kwargs.get("ParallelWriteWorkers"),
-        cfg.get("parallel_write_workers") if cfg else None,
-        default=parallel_config_workers,
-    )
-
+    # Mode 3 (standalone): build cfg from scratch; Modes 1/2 already have it
     if cfg is None:
         cfg = load_common_config(
             spark,
@@ -214,177 +160,205 @@ def run_load_allocation_input(
         )
     elif call_from is not None:
         cfg["call_from"] = call_from
-
-    cfg.setdefault("_checkpoint_tables", [])
-    cfg.setdefault("_parquet_results", {})
-    cfg.setdefault("_checkpoint_paths", [])
-    _ckpt_backend = (
-        checkpoint_backend
-        or CheckpointBackend
-        or kwargs.get("checkpoint_backend")
-        or kwargs.get("CheckpointBackend")
-        or cfg.get("checkpoint_backend")
+    cfg.setdefault("_checkpoint_tables", [])   # tracks temp tables for cleanup
+    cfg.setdefault("_parquet_results", {})     # accumulates DFs to persist at end
+    try:
+        workers = int(MaxThreads if MaxThreads is not None else max_threads)
+    except (TypeError, ValueError):
+        workers = 4
+    workers = max(1, min(workers, 8))
+    profile_value = ProfilePlan if ProfilePlan is not None else profile_plan
+    if isinstance(profile_value, str):
+        profile_value = profile_value.strip().lower() in {
+            "1", "true", "on", "yes"
+        }
+    cfg["profile_plan"] = bool(profile_value)
+    cfg["plan_checkpoint_threshold"] = int(
+        PlanCheckpointThreshold
+        if PlanCheckpointThreshold is not None
+        else plan_checkpoint_threshold
     )
-    if _ckpt_backend:
-        cfg["checkpoint_backend"] = str(_ckpt_backend).strip().lower()
-    if volume_path:
-        cfg["volume_path"] = volume_path.strip()
-    profile_plan = kwargs.pop("profile_plan", None)
-    if profile_plan is None:
-        profile_plan = kwargs.pop("ProfilePlan", None)
-    if profile_plan is not None:
-        flag = str(profile_plan).strip().lower()
-        cfg["profile_plan"] = flag in ("1", "true", "on", "yes") or profile_plan is True
-    else:
-        cfg.setdefault("profile_plan", False)
-    plan_threshold = kwargs.pop("plan_checkpoint_threshold", None)
-    if plan_threshold is None:
-        plan_threshold = kwargs.pop("PlanCheckpointThreshold", None)
-    if plan_threshold is not None:
-        cfg["plan_checkpoint_threshold"] = int(plan_threshold)
-    else:
-        cfg.setdefault("plan_checkpoint_threshold", 30)
+    cfg["max_threads"] = workers
+    cfg["_checkpoint_backend"] = normalize_checkpoint_backend(
+        CheckpointBackend or checkpoint_backend
+    )
+    cfg["_local_delta_denylist"] = normalize_local_denylist(
+        LocalDeltaDenylist, LocalDeltaDenylistMode
+    )
     cfg.setdefault("_plan_profile", [])
     cfg.setdefault("_checkpoint_plan_profile", [])
     cfg.setdefault("_action_plan_profile", [])
-    from .checkpoint import _resolve_backend
-
-    _backend = _resolve_backend(cfg)
-    _comp = cfg.get("checkpoint_compression", "uncompressed")
+    # Persist output-routing settings so the final flush works in every mode
+    # (Mode 1/2 pass cfg directly; Mode 3 built it above).
     if volume_path:
-        print(
-            f"[checkpoint] backend={_backend} compression={_comp} (UC temp Delta) | "
-            f"volume_path for flow-up outputs: {cfg['volume_path']}"
-        )
-    else:
-        print(f"[checkpoint] backend={_backend} compression={_comp} (UC temp Delta)")
+        cfg["volume_path"] = volume_path
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
-    cfg["parallel_config_workers"] = parallel_config_workers
-    cfg["parallel_write_workers"] = parallel_write_workers
-    cfg.setdefault("write_compression", "uncompressed")
-    cfg.setdefault("checkpoint_compression", cfg.get("write_compression", "uncompressed"))
     log_checkpoint_plan(cfg)
-    print(
-        f"[updated] parallel_config_workers={cfg['parallel_config_workers']} "
-        f"parallel_write_workers={cfg['parallel_write_workers']}"
-    )
-    print("[updated] PFIC flowup: output.updated.ai_pfic_flowup_service")
-    write_workers = cfg["parallel_write_workers"]
-    if write_workers > 1:
-        print(f"[write] parallel flow-up table writes: max_workers={write_workers}")
-    if str(cfg.get("write_compression", "")).lower() in ("uncompressed", "none"):
-        print("[write] parquet compression: uncompressed (Delta + flow-up outputs)")
+    print(f"[updated] max_threads={workers} profile_plan={cfg['profile_plan']}")
 
+    # RunStatus=FAIL early-abort (mirrors run_sm_apply_investment_level_rounding):
+    # load_common_config sets run_status="FAIL" when no AllocationRun row resolves.
+    # Abort before any heavy work rather than producing partial output.
     if cfg.get("run_status") == "FAIL":
-        return _timed_fail(timer, "run_status_fail")
+        logger.error(
+            f"RunStatus=FAIL - aborting. RunID={cfg.get('run_id')}, "
+            f"EntityID={cfg.get('entity_id')}"
+        )
+        return {"status": "FAIL", "reason": "run_status_fail"}
 
-    with timer.step("phase_1_config_and_shared_views"):
-        cfg = load_config(spark, cfg)
-        register_shared_views_parallel(spark, cfg)
+    # Phase 1: Load SP-specific scalars + register reusable temp views
+    t_phase = time.time()
+    cfg = load_config(spark, cfg)
+    # Temp-view registration mutates the shared session catalog; retain the
+    # production order instead of creating views concurrently.
+    register_shared_views(spark, cfg)
+    print(f"[phase 1] Config + shared views: {time.time() - t_phase:.1f}s")
 
-    with timer.step("phase_2_hierarchy_and_workflows"):
-        hierarchy_df = build_entity_hierarchy(spark, cfg)
-        lower_tier_df = build_lower_tier_funds(spark, cfg)
-        workflows = build_workflows(spark, cfg)
+    # Phase 2: Build entity hierarchy tree + lower-tier fund lookups + workflow IDs
+    t_phase = time.time()
+    hierarchy_df = build_entity_hierarchy(spark, cfg)
+    lower_tier_df = build_lower_tier_funds(spark, cfg)
+    workflows = build_workflows(spark, cfg)
+    print(f"[phase 2] Hierarchy + workflows: {time.time() - t_phase:.1f}s")
 
-    with timer.step("phase_3_validations"):
-        should_continue = run_validations(spark, cfg, lower_tier_df)
+    # Phase 3: Run pre-conditions (data integrity checks); abort early if invalid
+    t_phase = time.time()
+    should_continue = run_validations(spark, cfg, lower_tier_df)
+    print(f"[phase 3] Validations: {time.time() - t_phase:.1f}s")
     if not should_continue:
-        return _timed_fail(timer, "validation_failed")
+        drop_checkpoints(spark, cfg)
+        return {"status": "FAIL", "reason": "validation_failed"}
 
-    with timer.step("purge_output_tables"):
-        purge_output_tables(spark, cfg)
+    # Purge existing output rows for this RunID before rebuilding
+    t_phase = time.time()
+    purge_output_tables(spark, cfg)
+    print(f"[purge] Output tables: {time.time() - t_phase:.1f}s")
 
-    with timer.step("phase_4_form_inputs"):
-        allocation_input_df = build_all_form_inputs(spark, cfg)
+    # Phase 4: Build form inputs (926, 8886, 199A, 8865, at-risk, M1, GAAP-to-tax)
+    t_phase = time.time()
+    allocation_input_df = build_all_form_inputs(spark, cfg)
+    print(f"[phase 4] Form inputs: {time.time() - t_phase:.1f}s")
 
-    allocation_input_df = _maybe_checkpoint(
-        spark, timer, allocation_input_df, "form_inputs", cfg
+    # Phase 5: Build K1 line items + adjustments; union into main allocation DF
+    t_phase = time.time()
+    k1_df = build_k1_and_related_inputs(spark, cfg, workflows)
+    allocation_input_df = allocation_input_df.unionByName(k1_df, allowMissingColumns=True)
+    print(f"[phase 5] K1 + related inputs: {time.time() - t_phase:.1f}s")
+
+    # Phase 6: PFIC snapshot → elections → allocation input rows + custom footnotes
+    t_phase = time.time()
+    pfic_snapshot_df = build_pfic_snapshot(spark, cfg)
+    # Perf (playbook §3b): pfic_snapshot_df is a deep frame (large snapshot ⋈ workflows +
+    # blocked-filter anti-join chain) consumed lazily by 3 stages — build_pfic_elections,
+    # build_pfic_allocation_input, and build_pfic_flowup_pipeline — so it recomputes ~3×.
+    # Checkpoint once to break the re-evaluation. Logic-neutral (same rows).
+    pfic_snapshot_df = pipeline_checkpoint(
+        spark, pfic_snapshot_df, "pfic_snapshot", cfg
     )
-
-    with timer.step("phase_5_k1_and_related_inputs"):
-        k1_df = build_k1_and_related_inputs(spark, cfg, workflows)
-        allocation_input_df = allocation_input_df.unionByName(k1_df, allowMissingColumns=True)
-
-    with timer.step("phase_6a_pfic_snapshot"):
-        pfic_snapshot_df = build_pfic_snapshot(spark, cfg)
-
-    pfic_snapshot_df = _maybe_checkpoint(spark, timer, pfic_snapshot_df, "pfic_snapshot", cfg)
     pfic_snapshot_df.createOrReplaceTempView(f"_pfic_snapshot_{cfg['run_id']}")
+    pfic_elections = build_pfic_elections(spark, cfg, pfic_snapshot_df)
+    pfic_alloc_df = build_pfic_allocation_input(spark, cfg, pfic_snapshot_df, pfic_elections)
+    allocation_input_df = allocation_input_df.unionByName(pfic_alloc_df, allowMissingColumns=True)
 
-    with timer.step("phase_6b_pfic_elections_and_alloc"):
-        pfic_elections = build_pfic_elections(spark, cfg, pfic_snapshot_df)
-        pfic_alloc_df = build_pfic_allocation_input(spark, cfg, pfic_snapshot_df, pfic_elections)
-        allocation_input_df = allocation_input_df.unionByName(pfic_alloc_df, allowMissingColumns=True)
+    custom_fn_df = build_custom_footnote_input(spark, cfg)
+    allocation_input_df = allocation_input_df.unionByName(custom_fn_df, allowMissingColumns=True)
 
-    with timer.step("phase_6c_custom_footnote_input"):
-        custom_fn_df = build_custom_footnote_input(spark, cfg)
-        allocation_input_df = allocation_input_df.unionByName(custom_fn_df, allowMissingColumns=True)
+    print(f"[phase 6] PFIC + custom footnote: {time.time() - t_phase:.1f}s")
 
-    allocation_input_df = _maybe_checkpoint(spark, timer, allocation_input_df, "alloc_input", cfg)
+    # Checkpoint: materialize accumulated allocation DF to break lineage
+    t_phase = time.time()
+    allocation_input_df = pipeline_checkpoint(
+        spark, allocation_input_df, "alloc_input", cfg
+    )
+    print(f"[checkpoint] alloc_input: {time.time() - t_phase:.1f}s")
 
-    with timer.step("phase_7a_pfic_flowup_build"):
-        pfic_flowup_df = build_pfic_flowup_pipeline(
-            spark, cfg, pfic_snapshot_df, pfic_elections, lower_tier_df
-        )
+    # Phase 7a: PFIC flowup — tier-up foreign corp footnotes through entity hierarchy
+    t_phase = time.time()
+    pfic_flowup_df = build_pfic_flowup_pipeline(
+        spark, cfg, pfic_snapshot_df, pfic_elections, lower_tier_df
+    )
+    pfic_flowup_df = pipeline_checkpoint(
+        spark, pfic_flowup_df, "pfic_raw", cfg
+    )
+    print(f"[phase 7a] PFIC flowup build + checkpoint: {time.time() - t_phase:.1f}s")
 
-    with timer.step("phase_7b_pfic_election_deletes_and_flags"):
-        check_pfic_xml_override_alert(spark, cfg, pfic_flowup_df)
-        allocation_input_df, pfic_flowup_df = apply_pfic_election_deletes(
-            spark, cfg, allocation_input_df, pfic_flowup_df, pfic_elections, lower_tier_df
-        )
-        pfic_flowup_df = apply_part_v_vii_flags(spark, cfg, pfic_flowup_df)
+    # Phase 7b: Apply election-based deletes + set Part V/VII indicator flags
+    t_phase = time.time()
+    check_pfic_xml_override_alert(spark, cfg, pfic_flowup_df)
 
-    pfic_flowup_df = _maybe_checkpoint(spark, timer, pfic_flowup_df, "pfic_flowup", cfg)
-
-    with timer.step("post_filters"):
-        allocation_input_df = apply_master_feed_override(spark, cfg, allocation_input_df)
-        allocation_input_df = apply_blocker_entity_cleanup(spark, cfg, allocation_input_df)
-        allocation_input_df = apply_distribution_line_suppression(spark, cfg, allocation_input_df)
-        allocation_input_df = _maybe_checkpoint(
-            spark, timer, allocation_input_df, "distribution_line_suppression", cfg
-        )
-
-    allocation_input_df = _maybe_checkpoint(
-        spark, timer, allocation_input_df, "alloc_filtered", cfg
+    allocation_input_df, pfic_flowup_df = apply_pfic_election_deletes(
+        spark, cfg, allocation_input_df, pfic_flowup_df, pfic_elections, lower_tier_df
     )
 
-    with timer.step("phase_8_tag_percentages"):
-        allocation_input_df = apply_tag_percentages(spark, cfg, allocation_input_df)
+    pfic_flowup_df = apply_part_v_vii_flags(spark, cfg, pfic_flowup_df)
+
+    print(f"[phase 7b] Election deletes + Part V/VII: {time.time() - t_phase:.1f}s")
+
+    t_phase = time.time()
+    pfic_flowup_df = pipeline_checkpoint(
+        spark, pfic_flowup_df, "pfic_flowup", cfg
+    )
+    print(f"[checkpoint] pfic_flowup: {time.time() - t_phase:.1f}s")
+
+    # Post-processing filters: master feed override, blocker-entity cleanup, suppression
+    allocation_input_df = apply_master_feed_override(spark, cfg, allocation_input_df)
+    allocation_input_df = apply_blocker_entity_cleanup(spark, cfg, allocation_input_df)
+    allocation_input_df = apply_distribution_line_suppression(spark, cfg, allocation_input_df)
+
+    t_phase = time.time()
+    allocation_input_df = pipeline_checkpoint(
+        spark, allocation_input_df, "alloc_filtered", cfg
+    )
+    print(f"[checkpoint] alloc_filtered: {time.time() - t_phase:.1f}s")
+
+    # Phase 8: Apply investment-level tag percentages (PE Book Allocation only)
+    t_phase = time.time()
+    allocation_input_df = apply_tag_percentages(spark, cfg, allocation_input_df)
+    print(f"[phase 8] Tag percentages: {time.time() - t_phase:.1f}s")
 
     if cfg.get("investment_tag_workflow_id", 0) != 0:
-        allocation_input_df = _maybe_checkpoint(
-            spark, timer, allocation_input_df, "alloc_tagged", cfg
+        t_phase = time.time()
+        allocation_input_df = pipeline_checkpoint(
+            spark, allocation_input_df, "alloc_tagged", cfg
         )
+        print(f"[checkpoint] alloc_tagged: {time.time() - t_phase:.1f}s")
 
-    with timer.step("phase_9_write_outputs"):
-        write_allocation_input(spark, cfg, allocation_input_df)
-        write_pfic_flowup(spark, cfg, pfic_flowup_df)
-        write_form_flowups(spark, cfg)
+    # Phase 9: Final aggregation + Delta writes (AllocationInput, PFICFlowup, FormFlowups)
+    t_phase = time.time()
+    # These builders register temp views and mutate the collector map. Preserve
+    # production order; only the final writes to distinct tables are parallel.
+    write_allocation_input(spark, cfg, allocation_input_df)
+    write_pfic_flowup(spark, cfg, pfic_flowup_df)
+    write_form_flowups(spark, cfg)
+    print(f"[phase 9] Collect results (groupBy/agg): {time.time() - t_phase:.1f}s")
 
+    # Flush accumulated DataFrames as TWO separate writes:
+    #   1. AllocationInput  → Delta   (replaceWhere on RunID — idempotent re-runs)
+    #   2. all other tables → Parquet (GenericResultStorer.save_parquet_files)
     parquet_results = cfg.get("_parquet_results", {})
     run_id = cfg["run_id"]
     save_return_value = None
 
     if parquet_results:
         from datetime import datetime
+        from Common_V2.core.helpers import table_prefix
         from Common_V2.core.generic_result_storer import GenericResultStorer
         from pyspark.sql import functions as _F
-
         prefix = table_prefix(cfg)
         _schema_info = cfg.get("_schema_cache", {})
         _client_id = cfg.get("client_id", client_id)
         _entity_id = cfg.get("entity_id", entity_id)
         _execution_id = cfg.get("execution_id", execution_id) or "1"
         _volume_path = cfg.get("volume_path") or ""
-        small_tables = {
-            "Form926Flowup", "Form199AFlowup", "Form8865Flowup", "Form8886Flowup",
-            "AtRiskFlowup", "CustomFootnoteFlowup", "Form200616Flowup",
-            "PFICFootnoteFlowup", "PFICFootnoteFlowupWithTrackingKey",
-        }
+        # Tables that use coalesce(1) to avoid excessive small files
+        small_tables = {"Form926Flowup", "Form199AFlowup", "Form8865Flowup",
+                        "Form8886Flowup", "AtRiskFlowup", "CustomFootnoteFlowup",
+                        "Form200616Flowup", "PFICFootnoteFlowup",
+                        "PFICFootnoteFlowupWithTrackingKey"}
 
         def _align(df, tbl_name):
+            """Add missing target columns and project to the table's column order."""
             fqn = f"{prefix}.{tbl_name}"
             if tbl_name in _schema_info:
                 target_types = _schema_info[tbl_name]
@@ -396,138 +370,123 @@ def run_load_allocation_input(
             out = df
             for col_name in target_cols:
                 if col_name not in out.columns:
+                    # Cast the null literal to the target column type; an
+                    # untyped lit(None) is VOID and cannot be written to Parquet.
                     col_type = target_types.get(col_name)
-                    out = out.withColumn(
-                        col_name,
-                        _F.lit(None).cast(col_type) if col_type is not None else _F.lit(None),
-                    )
+                    if col_type is not None:
+                        out = out.withColumn(col_name, _F.lit(None).cast(col_type))
+                    else:
+                        out = out.withColumn(col_name, _F.lit(None))
             return out.select(target_cols)
 
-        use_uncompressed = str(cfg.get("write_compression", "")).lower() in (
-            "uncompressed",
-            "none",
-        )
-        write_conf_prev: dict[str, str] = {}
-        if use_uncompressed:
-            write_conf_prev = _begin_uncompressed_writes(spark)
+        # ── Write 1: AllocationInput → Delta ──────────────────────────────
+        alloc_df = parquet_results.get("AllocationInput")
+        if alloc_df is not None:
+            profile_action(
+                "AllocationInput.saveAsTable",
+                alloc_df,
+                lambda: (
+                    alloc_df.write.format("delta")
+                    .mode("overwrite")
+                    .option("replaceWhere", f"RunID = {run_id}")
+                    .saveAsTable(f"{prefix}.AllocationInput")
+                ),
+                cfg,
+            )
+            print("   [ok] AllocationInput (delta)")
 
-        try:
-            alloc_df = parquet_results.get("AllocationInput")
-            if alloc_df is not None:
-                with timer.step("write_allocation_input_delta"):
-                    writer = (
-                        alloc_df.write.format("delta")
-                        .mode("overwrite")
-                        .option("replaceWhere", f"RunID = {run_id}")
-                    )
-                    if use_uncompressed:
-                        writer = writer.option("compression", "uncompressed")
-                    writer.saveAsTable(f"{prefix}.AllocationInput")
-                    print("   [ok] AllocationInput (delta)")
+        # ── Write 2: all other tables → Parquet (via GenericResultStorer) ──
+        parquet_tables = {}
+        for tbl_name, df in parquet_results.items():
+            if tbl_name == "AllocationInput":
+                continue
+            write_df = _align(df, tbl_name)
+            if tbl_name in small_tables:
+                write_df = write_df.coalesce(1)
+            #if write_df.isEmpty():
+            #    print(f"   [skip] {tbl_name} (empty, skipped)")
+            #    continue
+            parquet_tables[tbl_name] = write_df
 
-            def _prepare_flowup_table(tbl_name: str, df) -> tuple[str, Any]:
-                write_df = _align(df, tbl_name)
-                if tbl_name in small_tables:
-                    write_df = write_df.coalesce(1)
-                return tbl_name, write_df
+        if parquet_tables:
+            try:
+                result_type = cfg.get("result_type", "deltalake")
+                storer_kwargs = dict(
+                    result_type=result_type,
+                    catalog_name=cfg.get("catalog", ""),
+                    database_name=cfg.get("schema", ""),
+                    run_id=run_id,
+                    client_id=_client_id,
+                    entity_id=_entity_id,
+                    execution_id=_execution_id,
+                    volume_path=_volume_path,
+                    sql_url_path=cfg.get("sql_url_path", ""),
+                    sql_username=cfg.get("sql_username", ""),
+                    sql_password=cfg.get("sql_password", ""),
+                )
+                print(
+                    f"[store] Writing {len(parquet_tables)} tables "
+                    f"(workers={workers}): {datetime.now()}"
+                )
 
-            parquet_tables: dict[str, Any] = {}
-            parallel_workers = int(cfg.get("parallel_write_workers", 1) or 1)
-            flowup_sources = {
-                n: d for n, d in parquet_results.items() if n != "AllocationInput"
-            }
-
-            with timer.step("prepare_parquet_flowup_tables"):
-                if parallel_workers > 1 and len(flowup_sources) > 1:
-                    with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
-                        futures = [
-                            executor.submit(_prepare_flowup_table, name, df)
-                            for name, df in flowup_sources.items()
-                        ]
-                        for fut in as_completed(futures):
-                            tbl_name, write_df = fut.result()
-                            parquet_tables[tbl_name] = write_df
-                else:
-                    for tbl_name, df in flowup_sources.items():
-                        name, write_df = _prepare_flowup_table(tbl_name, df)
-                        parquet_tables[name] = write_df
-
-            if parquet_tables:
-                storer_kwargs = {
-                    "result_type": cfg.get("result_type", "deltalake"),
-                    "catalog_name": cfg.get("catalog", ""),
-                    "database_name": cfg.get("schema", ""),
-                    "run_id": run_id,
-                    "client_id": _client_id,
-                    "entity_id": _entity_id,
-                    "execution_id": _execution_id,
-                    "volume_path": _volume_path,
-                    "sql_url_path": cfg.get("sql_url_path", ""),
-                    "sql_username": cfg.get("sql_username", ""),
-                    "sql_password": cfg.get("sql_password", ""),
-                }
-
-                def _save_one_flowup_table(tbl_name: str, write_df) -> str | None:
+                def _store_one(table_name, table_df):
                     storer = GenericResultStorer(spark, None)
-                    return storer.save_results(
-                        result={tbl_name: write_df},
-                        **storer_kwargs,
+                    return profile_action(
+                        f"{table_name}.save_results",
+                        table_df,
+                        lambda: storer.save_results(
+                            result={table_name: table_df},
+                            **storer_kwargs,
+                        ),
+                        cfg,
                     )
 
-                with timer.step("write_parquet_flowup_tables"):
-                    if parallel_workers > 1 and len(parquet_tables) > 1:
-                        print(
-                            f"[store] Writing {len(parquet_tables)} tables "
-                            f"(parallel_workers={parallel_workers}, "
-                            f"compression={cfg.get('write_compression')}): "
-                            f"{datetime.now()}"
+                if workers > 1 and len(parquet_tables) > 1:
+                    errors = []
+                    with ThreadPoolExecutor(
+                        max_workers=min(workers, len(parquet_tables))
+                    ) as pool:
+                        futures = {
+                            pool.submit(_store_one, name, df): name
+                            for name, df in parquet_tables.items()
+                        }
+                        for future in as_completed(futures):
+                            table_name = futures[future]
+                            try:
+                                value = future.result()
+                                if value and not save_return_value:
+                                    save_return_value = value
+                                print(f"   [ok] {table_name}")
+                            except Exception as exc:
+                                errors.append(f"{table_name}: {exc}")
+                    if errors:
+                        raise RuntimeError(
+                            "Parallel flow-up writes failed: "
+                            + "; ".join(errors)
                         )
-                        errors: list[str] = []
-                        with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
-                            futures = {
-                                executor.submit(_save_one_flowup_table, name, df): name
-                                for name, df in parquet_tables.items()
-                            }
-                            for fut in as_completed(futures):
-                                tbl = futures[fut]
-                                try:
-                                    ret = fut.result()
-                                    if ret and not save_return_value:
-                                        save_return_value = ret
-                                    print(f"   [ok] {tbl}")
-                                except Exception as exc:
-                                    errors.append(f"{tbl}: {exc}")
-                        if errors:
-                            raise RuntimeError(
-                                "Parallel flow-up writes failed: " + "; ".join(errors)
-                            )
-                    else:
-                        storer = GenericResultStorer(spark, None)
-                        save_return_value = storer.save_results(
-                            result=parquet_tables,
-                            **storer_kwargs,
-                        )
-                    print(
-                        f"[done] Stored {len(parquet_tables)} flow-up tables: "
-                        f"{datetime.now()}"
-                    )
-        finally:
-            if use_uncompressed:
-                _restore_write_compression(spark, write_conf_prev)
+                else:
+                    for table_name, table_df in parquet_tables.items():
+                        value = _store_one(table_name, table_df)
+                        if value and not save_return_value:
+                            save_return_value = value
+                        print(f"   [ok] {table_name}")
+                print(
+                    f"[done] Stored {len(parquet_tables)} flow-up tables: "
+                    f"{datetime.now()}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Parquet flow-up write failed (AllocationInput already committed): "
+                    f"{type(e).__name__}: {e}"
+                )
+                raise
 
     elapsed = time.time() - t0
-    cfg["step_timings"] = timer.as_dict_list()
-    timer.print_summary("load_allocation_input (updated)")
-    log_timing("load_allocation_input (updated)", t0)
-
+    log_timing("run_load_allocation_input", t0)
     plan_profile = None
     if cfg.get("profile_plan"):
-        try:
-            from .plan_profiler import plan_profile_report
-
-            plan_profile = plan_profile_report(cfg)
-        except Exception:
-            logger.warning("[PLAN] report failed", exc_info=True)
+        plan_profile = plan_profile_report(cfg)
+    drop_checkpoints(spark, cfg)  # clean up temp checkpoint tables
 
     if save_return_value and isinstance(save_return_value, str) and save_return_value.strip().startswith("{"):
         return save_return_value
@@ -535,13 +494,13 @@ def run_load_allocation_input(
     return {
         "status": "SUCCESS",
         "elapsed_seconds": round(elapsed, 1),
-        "tracked_step_seconds": timer.total_elapsed_seconds(),
-        "timings": timer.as_dict_list(),
-        "implementation": "updated.load_allocation_input",
-        "checkpoint_backend": cfg.get("checkpoint_backend"),
-        "volume_path": cfg.get("volume_path") or "",
-        "parallel_write_workers": int(cfg.get("parallel_write_workers", 1) or 1),
-        "parallel_config_workers": int(cfg.get("parallel_config_workers", 1) or 1),
-        "write_compression": cfg.get("write_compression"),
+        "implementation": "output.updated.load_allocation_input",
+        "max_threads": workers,
+        "checkpoint_backend": cfg.get("_checkpoint_backend"),
+        "checkpoint_timings": cfg.get("_checkpoint_elapsed", []),
         "plan_profile": plan_profile,
+        "checkpoint_plan_profile": cfg.get(
+            "_checkpoint_plan_profile_report", []
+        ),
+        "action_plan_profile": cfg.get("_action_plan_profile_report", []),
     }
