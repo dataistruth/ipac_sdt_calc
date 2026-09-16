@@ -57,7 +57,11 @@ def _append_messages(spark, cfg, messages):
     )
 
 
-def run_validations(spark, cfg, lower_tier_df, max_threads=4) -> bool:
+def run_validations(
+    spark, cfg, lower_tier_df, max_threads=4, workers=None, **_kwargs
+) -> bool:
+    if workers is not None:
+        max_threads = workers
     log_section("run_validations")
     started = time.time()
     if str(cfg.get("run_status") or "").upper() == "FAIL":
@@ -114,3 +118,17 @@ def run_validations(spark, cfg, lower_tier_df, max_threads=4) -> bool:
     _append_messages(spark, cfg, messages)
     log_timing("run_validations", started)
     return True
+
+
+def run_validations_parallel(
+    spark, cfg, lower_tier_df, workers=None, max_threads=4, **kwargs
+) -> bool:
+    """Public name used by the orchestrator."""
+    return run_validations(
+        spark,
+        cfg,
+        lower_tier_df,
+        max_threads=max_threads,
+        workers=workers,
+        **kwargs,
+    )

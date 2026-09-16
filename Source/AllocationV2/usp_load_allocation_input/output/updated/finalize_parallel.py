@@ -6,7 +6,11 @@ from .parent import output_module
 _final = output_module("ai_finalization_service")
 
 
-def collect_outputs(spark, cfg, allocation_input_df, pfic_flowup_df, max_threads=4):
+def collect_outputs(
+    spark, cfg, allocation_input_df, pfic_flowup_df, max_threads=4, workers=None, **_kwargs
+):
+    if workers is not None:
+        max_threads = workers
     def task(fn, *args):
         local = isolated_cfg(cfg)
         fn(spark, local, *args)
@@ -19,3 +23,24 @@ def collect_outputs(spark, cfg, allocation_input_df, pfic_flowup_df, max_threads
     ]
     for _, local in run_parallel(tasks, max_threads, "final_collectors"):
         merge_collector_cfg(cfg, local)
+
+
+def collect_results_parallel(
+    spark,
+    cfg,
+    allocation_input_df,
+    pfic_flowup_df,
+    workers=None,
+    max_threads=4,
+    **kwargs,
+):
+    """Public name used by the orchestrator."""
+    return collect_outputs(
+        spark,
+        cfg,
+        allocation_input_df,
+        pfic_flowup_df,
+        max_threads=max_threads,
+        workers=workers,
+        **kwargs,
+    )
