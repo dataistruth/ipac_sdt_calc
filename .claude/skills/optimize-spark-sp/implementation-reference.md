@@ -226,6 +226,7 @@ normalize_checkpoint_backend
 normalize_local_denylist
 checkpoint
 pipeline_checkpoint   # required alias of checkpoint
+inner_base_flowup_checkpoint  # Allocation Input 7a: (spark, df, cfg, label)
 drop_checkpoints
 log_checkpoint_plan
 should_checkpoint

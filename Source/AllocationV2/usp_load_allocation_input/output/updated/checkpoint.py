@@ -171,6 +171,26 @@ def pipeline_checkpoint(spark, df, name: str, cfg: dict):
     return checkpoint(spark, df, name, cfg)
 
 
+def use_inner_base_flowup_local_checkpoint(cfg: dict) -> bool:
+    """True when inner 7a breaks should follow the run's local backend."""
+    flag = cfg.get("checkpoint_inner_base_flowup_local")
+    if flag is not None:
+        return bool(flag)
+    backend = normalize_checkpoint_backend(
+        cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
+    )
+    return backend == "local"
+
+
+def inner_base_flowup_checkpoint(spark, df, cfg: dict, label: str):
+    """Inner PFIC 7a lineage break (post-reclass / post-zero).
+
+    Signature used by ``ai_pfic_flowup_service._flowup_checkpoint``.
+    """
+    name = f"base_flowup_{_safe_name(label)}"
+    return checkpoint(spark, df, name, cfg)
+
+
 def _use_production_checkpoint(cfg: dict) -> bool:
     """Updated packages default to stats-off Delta, not Common_V2."""
     return bool(cfg.get("checkpoint_use_production", False))

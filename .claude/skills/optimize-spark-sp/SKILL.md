@@ -71,7 +71,8 @@ Resolve these from the request and source tree; ask only when they cannot be inf
    `isinstance(obj, pyspark.sql.DataFrame)`.
 10. `output/updated/checkpoint.py` must export `checkpoint`, `pipeline_checkpoint`
     (alias of `checkpoint`), `drop_checkpoints`, `normalize_checkpoint_backend`,
-    and `normalize_local_denylist`. Default backend is `delta`. Delta writes
+    `normalize_local_denylist`, and `inner_base_flowup_checkpoint` (Allocation
+    Input inner 7a). Default backend is `delta`. Delta writes
     disable column statistics (`spark.databricks.delta.stats.collect=false` and
     `delta.dataSkippingNumIndexedCols=0`) and restore the prior Spark conf after
     the write. When backend is `local`, denylist prefixes stay on Delta (self-join
@@ -82,7 +83,8 @@ Resolve these from the request and source tree; ask only when they cannot be inf
     - `shared_views.register_shared_views_parallel`
     - `validation_parallel.run_validations_parallel` (accept `workers=`)
     - `finalize_parallel.collect_results_parallel` (accept `workers=`)
-    - `checkpoint.pipeline_checkpoint`, `drop_checkpoints`, `normalize_local_denylist`
+    - `checkpoint.pipeline_checkpoint`, `drop_checkpoints`, `normalize_local_denylist`,
+      `inner_base_flowup_checkpoint(spark, df, cfg, label)`
 
 ## Output package
 
