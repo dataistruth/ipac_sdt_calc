@@ -129,7 +129,6 @@ def run_load_allocation_input(
     ParallelFinalize: bool = None,
     finalize_workers: int = None,
     FinalizeWorkers: int = None,
-    **kwargs,
 ) -> dict:
     entity_id = entity_id or EntityID
     client_id = client_id or ClientID
@@ -166,8 +165,6 @@ def run_load_allocation_input(
     base_workers = _worker_count(
         parallel_workers,
         ParallelWorkers,
-        kwargs.get("parallel_workers"),
-        kwargs.get("ParallelWorkers"),
         cfg.get("parallel_workers") if cfg else None,
         default=4,
     )
@@ -175,16 +172,12 @@ def run_load_allocation_input(
     parallel_config_workers = _worker_count(
         parallel_config_workers,
         ParallelConfigWorkers,
-        kwargs.get("parallel_config_workers"),
-        kwargs.get("ParallelConfigWorkers"),
         cfg.get("parallel_config_workers") if cfg else None,
         default=base_workers,
     )
     parallel_write_workers = _worker_count(
         parallel_write_workers,
         ParallelWriteWorkers,
-        kwargs.get("parallel_write_workers"),
-        kwargs.get("ParallelWriteWorkers"),
         cfg.get("parallel_write_workers") if cfg else None,
         default=base_workers,
     )
