@@ -1,6 +1,11 @@
 """
 load_allocation_input.py — optimized pipeline (updated package).
 
+Optimizations retained:
+  - Thread-pool parallelism: shared-view load, validations, and phase-9 writes.
+  - RunID partition pruning (flowup_run_filter).
+  - Cached + broadcast shared views / lookups (ai_pfic_flowup_service, shared_views_builders).
+
 Monolith path:
   Source/AllocationV2/usp_load_allocation_input/output/updated/
 
@@ -18,16 +23,6 @@ from typing import Any
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
 
-from .checkpoint import (
-    drop_checkpoints,
-    log_checkpoint_plan,
-    normalize_checkpoint_backend,
-    normalize_local_denylist,
-    pipeline_checkpoint,
-    should_checkpoint,
-    _use_production_checkpoint,
-)
-from .plan_profiler import plan_profile_report, track_plan
 from .step_timer import StepTimer
 from .shared_views import register_shared_views_parallel
 from . import ai_pfic_flowup_service as _pfic_flowup_svc
@@ -68,30 +63,6 @@ apply_distribution_line_suppression = _ai_finalization.apply_distribution_line_s
 write_form_flowups = _ai_finalization.write_form_flowups
 purge_output_tables = _ai_finalization.purge_output_tables
 
-# Instrument each plan-relevant builder so the shared plan-size profiler can
-# attribute logical-plan (DAG) growth to it. ``track_plan`` is a transparent
-# passthrough with zero overhead unless ``cfg['profile_plan']`` is truthy, and
-# safely ignores builders that don't return a DataFrame. Production modules are
-# not edited — only the local references used by this orchestrator are rebound.
-build_entity_hierarchy = track_plan(build_entity_hierarchy)
-build_lower_tier_funds = track_plan(build_lower_tier_funds)
-build_workflows = track_plan(build_workflows)
-build_k1_and_related_inputs = track_plan(build_k1_and_related_inputs)
-build_all_form_inputs = track_plan(build_all_form_inputs)
-build_pfic_snapshot = track_plan(build_pfic_snapshot)
-build_pfic_elections = track_plan(build_pfic_elections)
-build_pfic_allocation_input = track_plan(build_pfic_allocation_input)
-apply_pfic_election_deletes = track_plan(apply_pfic_election_deletes)
-apply_part_v_vii_flags = track_plan(apply_part_v_vii_flags)
-build_pfic_flowup_pipeline = track_plan(build_pfic_flowup_pipeline)
-build_custom_footnote_input = track_plan(build_custom_footnote_input)
-apply_tag_percentages = track_plan(apply_tag_percentages)
-apply_master_feed_override = track_plan(apply_master_feed_override)
-apply_blocker_entity_cleanup = track_plan(apply_blocker_entity_cleanup)
-apply_distribution_line_suppression = track_plan(
-    apply_distribution_line_suppression
-)
-
 logger = logging.getLogger(__name__)
 
 _SPARK_PARQUET_CODEC_KEY = "spark.sql.parquet.compression.codec"
@@ -119,20 +90,6 @@ def _restore_write_compression(spark: SparkSession, previous: dict[str, str]) ->
 def _timed_fail(timer: StepTimer, reason: str, **extra: object) -> dict:
     timer.print_summary()
     return {"status": "FAIL", "reason": reason, "timings": timer.as_dict_list(), **extra}
-
-
-def _maybe_checkpoint(
-    spark: SparkSession,
-    timer: StepTimer,
-    df: Any,
-    name: str,
-    cfg: dict,
-) -> Any:
-    if not should_checkpoint(cfg, name):
-        return df
-    ckpt_fn = pipeline_checkpoint
-    with timer.step(f"checkpoint_{name}"):
-        return ckpt_fn(spark, df, name, cfg)
 
 
 def run_load_allocation_input(
@@ -184,13 +141,6 @@ def run_load_allocation_input(
     volume_path = volume_path or VolumePath or ""
     execution_id = execution_id or ExecutionID or "1"
     call_from = call_from or CallFrom
-
-    # Plan-size profiler flags (default off; zero overhead unless enabled) +
-    # checkpoint backend ("delta"/"local") + optional local-mode delta-denylist.
-    profile_plan_kw = kwargs.pop("profile_plan", None)
-    plan_threshold_kw = kwargs.pop("plan_checkpoint_threshold", None)
-    checkpoint_backend_kw = kwargs.pop("checkpoint_backend", None)
-    local_denylist_kw = kwargs.pop("local_delta_denylist", None)
 
     t0 = time.time()
     log_section("load_allocation_input (updated)")
@@ -257,31 +207,6 @@ def run_load_allocation_input(
     cfg.setdefault("_parquet_results", {})
     if volume_path:
         cfg["volume_path"] = volume_path.strip()
-    cfg.setdefault("checkpoint_use_production", False)
-
-    # Plan profiler + checkpoint backend wiring (kept on cfg so every builder /
-    # checkpoint() call in this run reads the same setting).
-    cfg.setdefault("_plan_profile", [])
-    if profile_plan_kw is not None:
-        cfg["profile_plan"] = bool(profile_plan_kw)
-    else:
-        cfg.setdefault("profile_plan", False)
-    if plan_threshold_kw is not None:
-        cfg["plan_checkpoint_threshold"] = int(plan_threshold_kw)
-    else:
-        cfg.setdefault("plan_checkpoint_threshold", 30)
-    cfg["_checkpoint_backend"] = normalize_checkpoint_backend(
-        checkpoint_backend_kw
-        if checkpoint_backend_kw is not None
-        else cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
-    )
-    cfg["_local_delta_denylist"] = sorted(
-        normalize_local_denylist(
-            local_denylist_kw
-            if local_denylist_kw is not None
-            else cfg.get("_local_delta_denylist")
-        )
-    )
 
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
@@ -317,23 +242,9 @@ def run_load_allocation_input(
         default=base_workers,
     )
     cfg.setdefault("write_compression", "uncompressed")
-    cfg.setdefault("checkpoint_compression", cfg.get("write_compression", "uncompressed"))
-    if _use_production_checkpoint(cfg):
-        print("[checkpoint] pipeline breaks: Common_V2.core.checkpoint (sdt_d production, stats on)")
-    else:
-        print(
-            "[checkpoint] pipeline breaks: fast UC temp Delta "
-            "(data-skipping stats disabled, uncompressed)"
-        )
+
     if volume_path:
-        print(f"[checkpoint] flow-up outputs volume: {cfg['volume_path']}")
-    if cfg.get("_checkpoint_backend") == "local":
-        _denylist = cfg.get("_local_delta_denylist") or []
-        print(
-            "[checkpoint] backend=local (localCheckpoint; no metastore commit)"
-            + (f" delta-denylist={_denylist}" if _denylist else "")
-        )
-    log_checkpoint_plan(cfg)
+        print(f"[updated] flow-up outputs volume: {cfg['volume_path']}")
     print(
         f"[updated] parallel_workers={cfg['parallel_workers']} "
         f"(config={cfg['parallel_config_workers']} write={cfg['parallel_write_workers']} "
@@ -357,7 +268,6 @@ def run_load_allocation_input(
         print("[write] parquet compression: uncompressed (Delta + flow-up outputs)")
 
     if cfg.get("run_status") == "FAIL":
-        drop_checkpoints(spark, cfg)
         return _timed_fail(timer, "run_status_fail")
 
     with timer.step("phase_1_config_and_shared_views"):
@@ -378,7 +288,6 @@ def run_load_allocation_input(
         else:
             should_continue = run_validations(spark, cfg, lower_tier_df)
         if not should_continue:
-            drop_checkpoints(spark, cfg)
             return _timed_fail(timer, "validation_failed")
 
     with timer.step("purge_output_tables"):
@@ -394,7 +303,6 @@ def run_load_allocation_input(
     with timer.step("phase_6a_pfic_snapshot"):
         pfic_snapshot_df = build_pfic_snapshot(spark, cfg)
 
-    pfic_snapshot_df = _maybe_checkpoint(spark, timer, pfic_snapshot_df, "pfic_snapshot", cfg)
     pfic_snapshot_df.createOrReplaceTempView(f"_pfic_snapshot_{cfg['run_id']}")
 
     with timer.step("phase_6b_pfic_elections_and_alloc"):
@@ -406,14 +314,10 @@ def run_load_allocation_input(
         custom_fn_df = build_custom_footnote_input(spark, cfg)
         allocation_input_df = allocation_input_df.unionByName(custom_fn_df, allowMissingColumns=True)
 
-    allocation_input_df = _maybe_checkpoint(spark, timer, allocation_input_df, "alloc_input", cfg)
-
     with timer.step("phase_7a_pfic_flowup_build"):
         pfic_flowup_df = build_pfic_flowup_pipeline(
             spark, cfg, pfic_snapshot_df, pfic_elections, lower_tier_df
         )
-
-    pfic_flowup_df = _maybe_checkpoint(spark, timer, pfic_flowup_df, "pfic_raw", cfg)
 
     with timer.step("phase_7b_pfic_election_deletes_and_flags"):
         check_pfic_xml_override_alert(spark, cfg, pfic_flowup_df)
@@ -422,24 +326,13 @@ def run_load_allocation_input(
         )
         pfic_flowup_df = apply_part_v_vii_flags(spark, cfg, pfic_flowup_df)
 
-    pfic_flowup_df = _maybe_checkpoint(spark, timer, pfic_flowup_df, "pfic_flowup", cfg)
-
     with timer.step("post_filters"):
         allocation_input_df = apply_master_feed_override(spark, cfg, allocation_input_df)
         allocation_input_df = apply_blocker_entity_cleanup(spark, cfg, allocation_input_df)
         allocation_input_df = apply_distribution_line_suppression(spark, cfg, allocation_input_df)
 
-    allocation_input_df = _maybe_checkpoint(
-        spark, timer, allocation_input_df, "alloc_filtered", cfg
-    )
-
     with timer.step("phase_8_tag_percentages"):
         allocation_input_df = apply_tag_percentages(spark, cfg, allocation_input_df)
-
-    if cfg.get("investment_tag_workflow_id", 0) != 0:
-        allocation_input_df = _maybe_checkpoint(
-            spark, timer, allocation_input_df, "alloc_tagged", cfg
-        )
 
     with timer.step("phase_9_write_outputs"):
         if cfg.get("parallel_finalize"):
@@ -610,15 +503,6 @@ def run_load_allocation_input(
     timer.print_summary("load_allocation_input (updated)")
     log_timing("load_allocation_input (updated)", t0)
 
-    plan_profile: list = []
-    if cfg.get("profile_plan"):
-        try:
-            plan_profile = plan_profile_report(cfg)
-        except Exception:
-            logger.warning("[PLAN] report failed", exc_info=True)
-
-    drop_checkpoints(spark, cfg)
-
     if save_return_value and isinstance(save_return_value, str) and save_return_value.strip().startswith("{"):
         return save_return_value
 
@@ -632,7 +516,4 @@ def run_load_allocation_input(
         "parallel_write_workers": int(cfg.get("parallel_write_workers", 1) or 1),
         "parallel_config_workers": int(cfg.get("parallel_config_workers", 1) or 1),
         "write_compression": cfg.get("write_compression"),
-        "checkpoint_backend": cfg.get("_checkpoint_backend", "delta"),
-        "local_delta_denylist": list(cfg.get("_local_delta_denylist", [])),
-        "plan_profile": plan_profile,
     }

@@ -14,7 +14,6 @@ from pyspark.sql import SparkSession
 
 from Common_V2.core.helpers import log_section, log_timing, read_table
 
-from .checkpoint import pipeline_checkpoint, should_checkpoint
 from .flowup_run_filter import read_local_run_table
 
 logger = logging.getLogger(__name__)
@@ -68,8 +67,6 @@ def register_reclass_data(spark: SparkSession, cfg: dict) -> None:
             & (F.col("RunID") == run_id)
         )
     )
-    if should_checkpoint(cfg, "reclass_data"):
-        reclass_df = pipeline_checkpoint(spark, reclass_df, "reclass_data", cfg)
     reclass_df.createOrReplaceTempView("_reclass_data")
 
 
@@ -175,7 +172,7 @@ def register_shared_views_parallel_builders(spark: SparkSession, cfg: dict, work
     Mirror ai_shared_views.register_shared_views with parallel independent reads.
 
     Phase 1: 8 broadcast lookups in parallel (max_workers)
-    Phase 2: _reclass_data (optional checkpoint via checkpoint_reclass_data)
+    Phase 2: _reclass_data (registered directly, no checkpoint)
     Phase 3: _lower_tier_funds_{run_id} (needs _entity)
     """
     from .parallel_config import run_parallel_tasks

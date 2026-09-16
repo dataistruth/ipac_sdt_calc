@@ -62,13 +62,8 @@ def _cached_lower_tier_funds(spark: SparkSession, cfg: dict, run_id: int) -> Dat
 def _flowup_checkpoint(
     spark: SparkSession, df: DataFrame, cfg: dict, label: str,
 ) -> DataFrame:
-    """Inner flowup break (post-reclass / post-zero) — UC Delta via Common_V2."""
-    from .checkpoint import inner_base_flowup_checkpoint, should_checkpoint
-
-    if not should_checkpoint(cfg, "base_flowup"):
-        return df
-    _log(f"flowup checkpoint ({label})")
-    return inner_base_flowup_checkpoint(spark, df, cfg, label)
+    """Checkpoints removed — inner flowup breaks are no-ops (full lineage kept)."""
+    return df
 
 
 def _cached_zero_fa_only_ids(
