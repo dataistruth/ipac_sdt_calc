@@ -22,12 +22,11 @@ _LOCAL_DELTA_DENYLIST_DEFAULT: frozenset[str] = frozenset()
 DEFAULT_COLLAPSED_CHECKPOINTS: frozenset[str] = frozenset(
     {
         # Profiler evidence, RunID 16560 (2026-09-16):
-        # reclass_data=2 nodes, pfic_raw=1 node, pfic_flowup=25 nodes.
-        # These materializations cost ~2 seconds each while truncating small
-        # plans. The 490-node base_flowup_post_zero break remains enabled.
+        # reclass_data=2 nodes, pfic_raw=1 node. pfic_flowup (25 nodes,
+        # CHECKPOINT measure) stays enabled — do not collapse it.
+        # The 490-node base_flowup_post_zero break also remains enabled.
         "reclass_data",
         "pfic_raw",
-        "pfic_flowup",
     }
 )
 _STATS_KEY = "spark.databricks.delta.stats.collect"
