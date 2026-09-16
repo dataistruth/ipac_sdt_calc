@@ -69,10 +69,10 @@ Resolve these from the request and source tree; ask only when they cannot be inf
 8. Never report an optimization as successful until output fingerprints match.
 9. Support classic PySpark and Spark Connect by duck-typing DataFrames; do not rely on
    `isinstance(obj, pyspark.sql.DataFrame)`.
-10. `output/updated/checkpoint.py` must export `checkpoint`, `drop_checkpoints`,
-    `normalize_checkpoint_backend`, and `normalize_local_denylist`. Default
-    backend is `delta`. Delta writes disable column statistics
-    (`spark.databricks.delta.stats.collect=false` and
+10. `output/updated/checkpoint.py` must export `checkpoint`, `pipeline_checkpoint`
+    (alias of `checkpoint`), `drop_checkpoints`, `normalize_checkpoint_backend`,
+    and `normalize_local_denylist`. Default backend is `delta`. Delta writes
+    disable column statistics (`spark.databricks.delta.stats.collect=false` and
     `delta.dataSkippingNumIndexedCols=0`) and restore the prior Spark conf after
     the write. When backend is `local`, denylist prefixes stay on Delta (self-join
     safety). Call `track_checkpoint_plan(name, incoming_df)` before materializing.
@@ -142,8 +142,9 @@ Keep profiling opt-in via `profile_plan=False` and
 `plan_checkpoint_threshold=30`.
 
 Never wrap Common_V2 `checkpoint` without re-exporting every name the
-orchestrator imports (`drop_checkpoints`, `normalize_local_denylist`, …).
-See the implementation reference for the Delta/stats-off write contract.
+orchestrator imports (`pipeline_checkpoint`, `drop_checkpoints`,
+`normalize_local_denylist`, …). See the implementation reference for the
+Delta/stats-off write contract.
 
 ### 3. Produce checkpoint recommendations
 
@@ -229,9 +230,10 @@ imports so workspace syncs are not hidden by Python module caching.
 ### 7. Verify
 
 - Syntax-check every new Python file.
-- Confirm `checkpoint.py` exports `checkpoint`, `drop_checkpoints`,
-  `normalize_checkpoint_backend`, and `normalize_local_denylist`; default
-  backend is `delta`; Delta writes disable column stats.
+- Confirm `checkpoint.py` exports `checkpoint`, `pipeline_checkpoint`,
+  `drop_checkpoints`, `normalize_checkpoint_backend`, and
+  `normalize_local_denylist`; default backend is `delta`; Delta writes disable
+  column stats.
 - Confirm no new files under `output/` except `__init__.py` and `updated/`.
 - Search for unresolved imports and accidental production-file modifications.
 - Run the original and updated variants in both orders when practical.

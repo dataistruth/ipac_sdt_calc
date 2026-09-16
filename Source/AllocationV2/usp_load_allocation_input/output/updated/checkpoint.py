@@ -166,6 +166,21 @@ def checkpoint(spark, df, name: str, cfg: dict):
     return spark.table(fqn)
 
 
+def pipeline_checkpoint(spark, df, name: str, cfg: dict):
+    """Public lineage-break entry used by the orchestrator. Same as checkpoint()."""
+    return checkpoint(spark, df, name, cfg)
+
+
+def _use_production_checkpoint(cfg: dict) -> bool:
+    """Updated packages default to stats-off Delta, not Common_V2."""
+    return bool(cfg.get("checkpoint_use_production", False))
+
+
+def checkpoint_production(spark, df, name: str, cfg: dict):
+    """Compatibility alias. Still uses stats-off Delta, not Common_V2."""
+    return checkpoint(spark, df, name, cfg)
+
+
 def drop_checkpoints(spark, cfg: dict) -> None:
     """Drop only temporary tables created by this updated invocation."""
     if cfg.get("_skip_cleanup"):

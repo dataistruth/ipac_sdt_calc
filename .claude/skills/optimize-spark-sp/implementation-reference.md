@@ -225,12 +225,28 @@ DEFAULT_CHECKPOINT_BACKEND = "delta"
 normalize_checkpoint_backend
 normalize_local_denylist
 checkpoint
+pipeline_checkpoint   # required alias of checkpoint
 drop_checkpoints
-log_checkpoint_plan   # optional but recommended
-should_checkpoint     # when the SP supports bypass lists
+log_checkpoint_plan
+should_checkpoint
+_use_production_checkpoint  # False unless caller opts into Common_V2
 ```
 
 Default backend is **delta**, not local. `local` is optional and opt-in only.
+
+The orchestrator and notebook must import only names this module exports. Export
+every public name they use in one shot — do not discover them by Databricks
+`ImportError`. If the SP historically called `pipeline_checkpoint`, keep that
+name as:
+
+```python
+def pipeline_checkpoint(spark, df, name, cfg):
+    return checkpoint(spark, df, name, cfg)
+```
+
+`_use_production_checkpoint(cfg)` must default to **False**. Updated checkpoints
+write stats-off Delta; they do not wrap `Common_V2.core.checkpoint` unless the
+caller explicitly sets `checkpoint_use_production=True`.
 
 Required Delta write contract:
 
@@ -271,6 +287,7 @@ from .checkpoint import (
     drop_checkpoints,
     normalize_checkpoint_backend,
     normalize_local_denylist,
+    pipeline_checkpoint,
 )
 ```
 
