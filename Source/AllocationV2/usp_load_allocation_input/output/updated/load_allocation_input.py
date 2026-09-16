@@ -36,41 +36,31 @@ import time
 # Common_V2: shared framework for all converted SPs
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
-from .checkpoint import checkpoint, drop_checkpoints
-
-try:
-    from .checkpoint import normalize_checkpoint_backend
-except ImportError:
-    def normalize_checkpoint_backend(value: object) -> str:
-        backend = str(value or "delta").strip().lower()
-        if backend not in {"local", "delta"}:
-            raise ValueError("CheckpointBackend must be 'local' or 'delta'")
-        return backend
-
-try:
-    from .checkpoint import normalize_local_delta_denylist
-except ImportError:
-    try:
-        from .checkpoint import normalize_local_denylist as normalize_local_delta_denylist
-    except ImportError:
-        def normalize_local_delta_denylist(value: object, mode: object = "extend"):
-            del mode
-            if not value:
-                return frozenset()
-            import re as _re
-            tokens = (
-                _re.split(r"[,\s]+", value) if isinstance(value, str) else value
-            )
-            return frozenset(
-                str(token).strip() for token in tokens if str(token).strip()
-            )
-from .parallel import (
+from .checkpoint import (
+    cache_for_run,
+    checkpoint,
+    drop_checkpoints,
     isolated_collector_cfg,
     merge_collector_cfg,
+    normalize_checkpoint_backend,
+    normalize_local_delta_denylist,
     run_parallel,
+    unpersist_cached,
 )
-from .plan_profiler import plan_profile_report, profile_dataframe, track_plan
-from .spark_optimizations import cache_for_run, unpersist_cached
+
+try:
+    from .plan_profiler import plan_profile_report, profile_dataframe, track_plan
+except ImportError:
+    def track_plan(fn):
+        return fn
+
+    def profile_dataframe(label, df, cfg, *, kind="builder"):
+        del label, cfg, kind
+        return df
+
+    def plan_profile_report(cfg):
+        del cfg
+        return []
 
 # SP-specific service modules (one per logical section of the original SQL)
 from .ai_shared_views import register_shared_views

@@ -16,8 +16,8 @@ import logging
 import time
 
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
-from .checkpoint import checkpoint
-from .spark_optimizations import (
+from .checkpoint import (
+    checkpoint,
     current_run,
     current_run_scoped,
     prune_to_lower_tier_runs,

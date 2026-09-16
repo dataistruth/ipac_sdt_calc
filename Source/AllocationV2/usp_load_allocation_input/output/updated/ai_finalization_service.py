@@ -17,7 +17,7 @@ import logging
 import time
 
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
-from .spark_optimizations import prune_to_lower_tier_runs
+from .checkpoint import prune_to_lower_tier_runs
 
 logger = logging.getLogger(__name__)
 

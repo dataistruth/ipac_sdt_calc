@@ -18,9 +18,13 @@ import time
 
 from Common_V2.core.helpers import read_table, log_section, log_timing
 
-from .checkpoint import checkpoint
-from .parallel import run_parallel
-from .spark_optimizations import cache_for_run, current_run_scoped, scoped
+from .checkpoint import (
+    cache_for_run,
+    checkpoint,
+    current_run_scoped,
+    run_parallel,
+    scoped,
+)
 
 logger = logging.getLogger(__name__)
 
