@@ -76,6 +76,10 @@ Resolve these from the request and source tree; ask only when they cannot be inf
     `delta.dataSkippingNumIndexedCols=0`) and restore the prior Spark conf after
     the write. When backend is `local`, denylist prefixes stay on Delta (self-join
     safety). Call `track_checkpoint_plan(name, incoming_df)` before materializing.
+11. Do not rename public helper symbols the orchestrator already imports. Allocation
+    Input must keep `register_shared_views_parallel` on `shared_views.py`. After
+    rewriting a helper, grep the copied orchestrator for `from .X import` and export
+    every name in that list.
 
 ## Output package
 
