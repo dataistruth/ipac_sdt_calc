@@ -29,12 +29,10 @@ Usage:1
 """
 
 from pyspark.sql import SparkSession
-from pyspark import StorageLevel
 import contextvars
 import json
 import logging
 import re
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -66,7 +64,6 @@ except ImportError:
         del cfg
         return []
 
-_CACHE_LOCK = threading.Lock()
 MAX_THREADS = 4
 
 
@@ -96,27 +93,25 @@ def normalize_local_delta_denylist(value: object, mode: object = "extend"):
 
 
 def cache_for_run(df, cfg, *, broadcast: bool = False):
-    if not hasattr(df, "persist"):
-        return df
+    # Serverless / Spark Connect does not fully support persist(); rely on a
+    # broadcast hint for small datasets and return the frame unchanged
+    # otherwise.
     fn = getattr(_ckpt, "cache_for_run", None)
     if fn:
         return fn(df, cfg, broadcast=broadcast)
-    cached = df.persist(StorageLevel.MEMORY_AND_DISK)
-    cached.count()
-    with _CACHE_LOCK:
-        cfg.setdefault("_cached_dataframes", []).append(cached)
-    return F.broadcast(cached) if broadcast else cached
+    if not hasattr(df, "columns"):
+        return df
+    if broadcast:
+        print(f"[broadcast] columns={len(df.columns)}")
+        return F.broadcast(df)
+    return df
 
 
 def unpersist_cached(cfg):
     fn = getattr(_ckpt, "unpersist_cached", None)
     if fn:
         return fn(cfg)
-    for frame in cfg.get("_cached_dataframes", ()):
-        try:
-            frame.unpersist(blocking=False)
-        except Exception:
-            pass
+    # No-op: caching is disabled (persist is unsupported on serverless).
     cfg["_cached_dataframes"] = []
 
 
@@ -152,6 +147,10 @@ def run_parallel(tasks, label: str):
     if not tasks:
         return []
     workers = min(MAX_THREADS, len(tasks))
+    started = time.time()
+    print(
+        f"[parallel:start] {label}: tasks={len(tasks)} workers={workers}"
+    )
     values = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {}
@@ -161,6 +160,8 @@ def run_parallel(tasks, label: str):
         for future in as_completed(futures):
             name = futures[future]
             values[name] = future.result()
+            print(f"[parallel:done] {label}/{name}")
+    print(f"[parallel:end] {label}: wall={time.time() - started:.2f}s")
     return [(name, values[name]) for name, _ in tasks]
 
 # SP-specific service modules (one per logical section of the original SQL)
@@ -306,6 +307,17 @@ def run_load_allocation_input(
         cfg["volume_path"] = volume_path
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
+
+    print(
+        "========================================================\n"
+        "[updated] output.updated.load_allocation_input starting\n"
+        f"[updated] RunID={cfg.get('run_id')} EntityID={cfg.get('entity_id')} "
+        f"ClientID={cfg.get('client_id')} TaxPeriodID={cfg.get('tax_period_id')}\n"
+        f"[updated] max_threads=4 checkpoint_backend={cfg['_checkpoint_backend']} "
+        f"local_deny_list={sorted(cfg['_local_delta_denylist']) or 'none'} "
+        f"profile_plan={cfg['profile_plan']}\n"
+        "========================================================"
+    )
 
     # RunStatus=FAIL early-abort (mirrors run_sm_apply_investment_level_rounding):
     # load_common_config sets run_status="FAIL" when no AllocationRun row resolves.

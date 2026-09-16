@@ -5,13 +5,11 @@ from __future__ import annotations
 import contextvars
 import logging
 import re
-import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyspark.sql.functions as F
-from pyspark import StorageLevel
 
 try:
     from .plan_profiler import profile_dataframe
@@ -24,7 +22,6 @@ logger = logging.getLogger(__name__)
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
 _VALID_BACKENDS = frozenset({"local", "delta"})
 MAX_THREADS = 4
-_CACHE_LOCK = threading.Lock()
 
 
 def _safe_name(value: object) -> str:
@@ -143,6 +140,9 @@ def run_parallel(tasks, label: str):
         return []
     workers = min(MAX_THREADS, len(tasks))
     started = time.time()
+    print(
+        f"[parallel:start] {label}: tasks={len(tasks)} workers={workers}"
+    )
     values = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {}
@@ -152,13 +152,16 @@ def run_parallel(tasks, label: str):
         for future in as_completed(futures):
             name = futures[future]
             values[name] = future.result()
+            print(f"[parallel:done] {label}/{name}")
+    wall = time.time() - started
     logger.info(
         "[parallel] %s: tasks=%d workers=%d wall=%.2fs",
         label,
         len(tasks),
         workers,
-        time.time() - started,
+        wall,
     )
+    print(f"[parallel:end] {label}: wall={wall:.2f}s")
     return [(name, values[name]) for name, _ in tasks]
 
 
@@ -215,19 +218,18 @@ def prune_to_lower_tier_runs(df, spark, cfg):
 
 
 def cache_for_run(df, cfg, *, broadcast: bool = False):
-    if not hasattr(df, "persist"):
+    # Serverless / Spark Connect does not fully support RDD-style persist().
+    # Apply a broadcast hint for small datasets and otherwise return the frame
+    # untouched — Spark reuses the exchange for repeated small joins without an
+    # explicit cache.
+    if not hasattr(df, "columns"):
         return df
-    cached = df.persist(StorageLevel.MEMORY_AND_DISK)
-    cached.count()
-    with _CACHE_LOCK:
-        cfg.setdefault("_cached_dataframes", []).append(cached)
-    return F.broadcast(cached) if broadcast else cached
+    if broadcast:
+        print(f"[broadcast] columns={len(df.columns)}")
+        return F.broadcast(df)
+    return df
 
 
 def unpersist_cached(cfg):
-    for df in cfg.get("_cached_dataframes", ()):
-        try:
-            df.unpersist(blocking=False)
-        except Exception:
-            pass
+    # No-op: caching is disabled (persist is unsupported on serverless).
     cfg["_cached_dataframes"] = []

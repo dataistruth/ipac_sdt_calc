@@ -23,10 +23,6 @@ from .checkpoint import checkpoint
 
 import contextvars
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pyspark import StorageLevel
-import threading
-
-_CACHE_LOCK = threading.Lock()
 
 
 def scoped(df, cfg):
@@ -49,28 +45,19 @@ def current_run_scoped(df, cfg):
     return scoped(df, cfg)
 
 
-def cache_for_run(df, cfg, *, broadcast: bool = False):
-    if not hasattr(df, "persist"):
-        return df
-    fn = getattr(_ckpt, "cache_for_run", None)
-    if fn:
-        return fn(df, cfg, broadcast=broadcast)
-    cached = df.persist(StorageLevel.MEMORY_AND_DISK)
-    cached.count()
-    with _CACHE_LOCK:
-        cfg.setdefault("_cached_dataframes", []).append(cached)
-    return F.broadcast(cached) if broadcast else cached
-
-
 def run_parallel(tasks, label: str):
     fn = getattr(_ckpt, "run_parallel", None)
     if fn:
         return fn(tasks, label)
-    del label
     if not tasks:
         return []
+    started = time.time()
+    workers = min(4, len(tasks))
+    print(
+        f"[parallel:start] {label}: tasks={len(tasks)} workers={workers}"
+    )
     values = {}
-    with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {}
         for name, task in tasks:
             context = contextvars.copy_context()
@@ -78,6 +65,8 @@ def run_parallel(tasks, label: str):
         for future in as_completed(futures):
             name = futures[future]
             values[name] = future.result()
+            print(f"[parallel:done] {label}/{name}")
+    print(f"[parallel:end] {label}: wall={time.time() - started:.2f}s")
     return [(name, values[name]) for name, _ in tasks]
 
 logger = logging.getLogger(__name__)
@@ -98,7 +87,9 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
     fx_tid = cfg.get("fx_rate_transaction_id") or 0
 
     def _small(df):
-        return cache_for_run(df, cfg, broadcast=True)
+        # Small lookup/dimension tables: broadcast hint only. No eager
+        # persist/count — that added Spark jobs without a net runtime win.
+        return F.broadcast(df)
 
     tasks = [
         ("_entity", lambda: _small(
@@ -158,6 +149,10 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
             # Delta writes and catalog changes stay on the caller thread.
             frame = checkpoint(spark, frame, "reclass_data", cfg)
         frame.createOrReplaceTempView(view_name)
+        print(
+            f"[view] {view_name}: registered "
+            f"broadcast_hint={str(view_name != '_reclass_data').lower()}"
+        )
 
     # LowerTierFunds — register for use in write_form_flowups
     is_blocker_checked = cfg.get("is_foreign_blocker_footnotes_flowup_checked", False)
@@ -190,8 +185,12 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
             ).otherwise(F.lit(False)).alias("IsPficCfcQfcEntity"),
         )
     )
-    cache_for_run(_ltf_df, cfg, broadcast=True).createOrReplaceTempView(
+    F.broadcast(_ltf_df).createOrReplaceTempView(
         f"_lower_tier_funds_{run_id}"
+    )
+    print(
+        f"[view] _lower_tier_funds_{run_id}: registered "
+        "broadcast_hint=true"
     )
 
     log_timing("register_shared_views", t0)
