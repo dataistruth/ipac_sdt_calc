@@ -66,8 +66,8 @@
       "source": "AllocationV2",
       "tag": "allocation",
       "target_repo": "ipac-sdt-calc",
-      "target_path": "domains/allocation",
-      "status": "regroup_migrate"
+      "target_path": "Source/AllocationV2",
+      "status": "preserve_source_layout"
     },
     {
       "source": "allocation",

@@ -18,8 +18,10 @@ platform/
   framework/              # from Source/Framework
   common/                 # Common_V2 + common merged
   testing/                # UnitTest + test/unittest
+Source/
+  AllocationV2/           # source-compatible SP packages and output/updated candidates
 domains/
-  allocation/             # from AllocationV2 (grouped workflows)
+  allocation/             # transformed workflow-oriented Databricks jobs
   database/
   report/
 docs/migration/         # inventory, deprecation schedule

@@ -1,5 +1,0 @@
-"""Optimized usp_load_allocation_input — sync this folder only to monolith output/updated/."""
-
-from .load_allocation_input import run_load_allocation_input
-
-__all__ = ["run_load_allocation_input"]

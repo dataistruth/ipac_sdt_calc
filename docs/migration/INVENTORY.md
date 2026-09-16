@@ -11,16 +11,19 @@ Maps each top-level `Source/` folder from the monolith to a **target repo** and 
 | `Source/common` | legacy | ipac-sdt-calc | deprecated → `platform/common/` |
 | `Source/UnitTest` | platform | ipac-sdt-calc | `platform/testing/` |
 | `Source/test/unittest` | legacy | ipac-sdt-calc | merge → `platform/testing/` |
-| `Source/AllocationV2` | allocation | ipac-sdt-calc | `domains/allocation/` |
+| `Source/AllocationV2` | allocation | ipac-sdt-calc | `Source/AllocationV2/` (source-compatible SP packages) |
 | `Source/allocation` | legacy | ipac-sdt-calc | **deprecate** after parity |
 | `Source/database` | database | ipac-sdt-calc | `domains/database/` |
 | `Source/report` | report | ipac-sdt-calc | `domains/report/` |
 | `Source/Client/Script` | client | split | ingest overrides → ipac_delta_sync; calc → ipac-sdt-calc `config/clients/` |
 | `Source/_migration_state` | platform | ipac-sdt-calc | `platform/migration_state/` |
 
-## AllocationV2 workflow groups (for regrouping)
+## AllocationV2 workflow groups (for transformed job pipelines)
 
-| Workflow | Example `usp_*` folders | Target under `domains/allocation/` |
+Source-compatible SP packages remain under `Source/AllocationV2/`. Workflow-oriented
+rewrites may live under `domains/allocation/` when deployed as Databricks bundle jobs.
+
+| Workflow | Example `usp_*` folders | Transformed target under `domains/allocation/` |
 |----------|-------------------------|-------------------------------------|
 | lookthrough | `usp_sm_load_lookthrough_*`, `usp_add_lookthrough_*`, `usp_apply_*_lookthrough_*` | `lookthrough/` |
 | k3 | `uspLoadK3*`, `usp_*_k3_*` | `k3/` |
