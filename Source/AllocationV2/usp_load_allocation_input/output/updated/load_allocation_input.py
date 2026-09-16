@@ -36,12 +36,34 @@ import time
 # Common_V2: shared framework for all converted SPs
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
-from .checkpoint import (
-    checkpoint,
-    drop_checkpoints,
-    normalize_checkpoint_backend,
-    normalize_local_delta_denylist,
-)
+from .checkpoint import checkpoint, drop_checkpoints
+
+try:
+    from .checkpoint import normalize_checkpoint_backend
+except ImportError:
+    def normalize_checkpoint_backend(value: object) -> str:
+        backend = str(value or "delta").strip().lower()
+        if backend not in {"local", "delta"}:
+            raise ValueError("CheckpointBackend must be 'local' or 'delta'")
+        return backend
+
+try:
+    from .checkpoint import normalize_local_delta_denylist
+except ImportError:
+    try:
+        from .checkpoint import normalize_local_denylist as normalize_local_delta_denylist
+    except ImportError:
+        def normalize_local_delta_denylist(value: object, mode: object = "extend"):
+            del mode
+            if not value:
+                return frozenset()
+            import re as _re
+            tokens = (
+                _re.split(r"[,\s]+", value) if isinstance(value, str) else value
+            )
+            return frozenset(
+                str(token).strip() for token in tokens if str(token).strip()
+            )
 from .parallel import (
     isolated_collector_cfg,
     merge_collector_cfg,

@@ -7,7 +7,12 @@ import re
 import time
 import uuid
 
-from .plan_profiler import profile_dataframe
+try:
+    from .plan_profiler import profile_dataframe
+except Exception:
+    def profile_dataframe(label, df, cfg, *, kind="checkpoint"):
+        del label, cfg, kind
+        return df
 
 logger = logging.getLogger(__name__)
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
@@ -31,11 +36,16 @@ def normalize_checkpoint_backend(value: object) -> str:
     return backend
 
 
-def normalize_local_delta_denylist(value: object) -> frozenset[str]:
+def normalize_local_denylist(value: object, mode: object = "extend") -> frozenset[str]:
+    """Parse LocalDeltaDenylist. ``mode`` is accepted for older notebook copies."""
+    del mode
     if not value:
         return frozenset()
     tokens = re.split(r"[,\s]+", value) if isinstance(value, str) else value
     return frozenset(str(token).strip() for token in tokens if str(token).strip())
+
+
+normalize_local_delta_denylist = normalize_local_denylist
 
 
 def _local_is_denied(name: str, cfg: dict) -> bool:
@@ -94,6 +104,19 @@ def checkpoint(spark, df, name: str, cfg: dict):
     )
     logger.info("[checkpoint] %s: %.3fs (Delta stats off)", name, elapsed)
     return result
+
+
+def pipeline_checkpoint(spark, df, name: str, cfg: dict):
+    """Alias used by shared-view and PFIC copies of the production helpers."""
+    return checkpoint(spark, df, name, cfg)
+
+
+def log_checkpoint_plan(cfg: dict) -> None:
+    backend = normalize_checkpoint_backend(
+        cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
+    )
+    denylist = ",".join(sorted(cfg.get("_local_delta_denylist", ()))) or "none"
+    print(f"[checkpoint] backend={backend} local_deny_list={denylist}")
 
 
 def drop_checkpoints(spark, cfg: dict) -> None:
