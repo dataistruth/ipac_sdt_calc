@@ -227,10 +227,15 @@ def drop_checkpoints(spark, cfg: dict) -> None:
     cfg["_checkpoint_tables"] = []
 
 
-def log_checkpoint_plan(cfg: dict) -> None:
-    backend = normalize_checkpoint_backend(
+def _resolve_backend(cfg: dict) -> str:
+    """Orchestrator compatibility alias for ``normalize_checkpoint_backend``."""
+    return normalize_checkpoint_backend(
         cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
     )
+
+
+def log_checkpoint_plan(cfg: dict) -> None:
+    backend = _resolve_backend(cfg)
     line = (
         f"[checkpoint] backend={backend}"
         + (", column_stats=off" if backend == "delta" else "")

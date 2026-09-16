@@ -1,0 +1,160 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Runner — `usp_load_allocation_input`
+# MAGIC
+# MAGIC Toggle **module_stem** only. Lives in `output/updated/notebook/`.
+# MAGIC Import-dir Python modules into `output/updated/`, not this folder.
+
+# COMMAND ----------
+
+sp_name = "usp_load_allocation_input"
+
+# COMMAND ----------
+
+dbutils.widgets.removeAll()
+
+dbutils.widgets.dropdown(
+    "module_stem",
+    "updated.load_allocation_input",
+    [
+        "load_allocation_input",
+        "updated.load_allocation_input",
+        "updated.load_allocation_input_updated",
+    ],
+    "1. Module under output/",
+)
+dbutils.widgets.text(
+    "parallel_workers",
+    "4",
+    "2. Parallel workers (shared views + flow-up writes)",
+)
+dbutils.widgets.text(
+    "volume_path",
+    "/Volumes/qa7/datavolume/databrickdata/checkpoint",
+    "3. Checkpoint volume",
+)
+dbutils.widgets.text(
+    "source_path",
+    "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
+    "4. Monolith Source/",
+)
+dbutils.widgets.dropdown(
+    "ProfilePlan",
+    "on",
+    ["off", "on"],
+    "5. Plan profiler",
+)
+dbutils.widgets.text(
+    "PlanCheckpointThreshold",
+    "30",
+    "6. Plan checkpoint threshold",
+)
+dbutils.widgets.dropdown(
+    "CheckpointBackend",
+    "delta",
+    ["delta", "local"],
+    "7. Checkpoint backend",
+)
+
+module_stem = dbutils.widgets.get("module_stem").strip()
+parallel_workers = int(dbutils.widgets.get("parallel_workers").strip() or "4")
+volume_path = dbutils.widgets.get("volume_path").strip()
+source_path = dbutils.widgets.get("source_path").strip()
+profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+plan_checkpoint_threshold = int(
+    dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
+)
+checkpoint_backend = dbutils.widgets.get("CheckpointBackend").strip().lower()
+
+print(f"module_stem       : {module_stem}")
+print(f"parallel_workers  : {parallel_workers}")
+print(f"volume_path       : {volume_path}")
+print(f"ProfilePlan       : {profile_plan}")
+print(f"CheckpointBackend : {checkpoint_backend}")
+
+import os
+import sys
+import importlib
+from datetime import datetime
+
+
+def _source_from_notebook_path() -> str:
+    try:
+        ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+        nb_path = ctx.notebookPath().get()
+        if "/Source/" in nb_path:
+            return nb_path.split("/Source/")[0] + "/Source"
+        marker = "/AllocationV2/"
+        if marker in nb_path:
+            return nb_path.split(marker)[0]
+    except Exception:
+        pass
+    return ""
+
+
+def ensure_source_on_path(path: str) -> str:
+    path = (path or "").strip()
+    if not path:
+        path = _source_from_notebook_path()
+    if not path:
+        raise ValueError(
+            "Set source_path to monolith Source/ (parent of AllocationV2/)."
+        )
+    alloc = os.path.join(path, "AllocationV2")
+    if not os.path.isdir(alloc):
+        raise FileNotFoundError(f"AllocationV2 not found at {alloc}")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    print(f"[path] sys.path ← {path}")
+    return path
+
+
+source_path = ensure_source_on_path(source_path)
+
+prefix = f"AllocationV2.{sp_name}.output"
+shared = "AllocationV2.plan_profiler"
+for name in list(sys.modules):
+    if (
+        name == prefix
+        or name.startswith(prefix + ".")
+        or name == shared
+        or name.startswith(shared + ".")
+    ):
+        del sys.modules[name]
+importlib.invalidate_caches()
+
+module_name = f"{prefix}.{module_stem}"
+print(f"importing: {module_name}")
+lt_runner = importlib.import_module(module_name)
+
+# COMMAND ----------
+
+beginning_time = datetime.now()
+print(f"Beginning time: {beginning_time}")
+
+run_kwargs = {
+    "EntityID": 115,
+    "ClientID": 15348,
+    "TaxPeriodID": 1,
+    "RunID": 16560,
+    "CatalogName": "QA7",
+    "SchemaName": "IPC_2025_QA7_15348",
+    "VolumePath": volume_path,
+    "parallel_config_workers": parallel_workers,
+    "parallel_write_workers": parallel_workers,
+    "CheckpointBackend": checkpoint_backend,
+}
+if module_stem.startswith("updated."):
+    run_kwargs["profile_plan"] = profile_plan
+    run_kwargs["plan_checkpoint_threshold"] = plan_checkpoint_threshold
+
+result = lt_runner.run_load_allocation_input(spark, **run_kwargs)
+
+print(f"Elapsed: {datetime.now() - beginning_time}")
+print(result)
+
+# COMMAND ----------
+
+if isinstance(result, dict) and result.get("timings"):
+    import pandas as pd
+    display(pd.DataFrame(result["timings"]).sort_values("elapsed_seconds", ascending=False))
