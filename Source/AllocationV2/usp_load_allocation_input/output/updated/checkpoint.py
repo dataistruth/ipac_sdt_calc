@@ -215,6 +215,8 @@ def prune_to_lower_tier_runs(df, spark, cfg):
 
 
 def cache_for_run(df, cfg, *, broadcast: bool = False):
+    if not hasattr(df, "persist"):
+        return df
     cached = df.persist(StorageLevel.MEMORY_AND_DISK)
     cached.count()
     with _CACHE_LOCK:

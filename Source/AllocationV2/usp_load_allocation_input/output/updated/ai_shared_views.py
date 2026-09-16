@@ -50,6 +50,8 @@ def current_run_scoped(df, cfg):
 
 
 def cache_for_run(df, cfg, *, broadcast: bool = False):
+    if not hasattr(df, "persist"):
+        return df
     fn = getattr(_ckpt, "cache_for_run", None)
     if fn:
         return fn(df, cfg, broadcast=broadcast)

@@ -96,6 +96,8 @@ def normalize_local_delta_denylist(value: object, mode: object = "extend"):
 
 
 def cache_for_run(df, cfg, *, broadcast: bool = False):
+    if not hasattr(df, "persist"):
+        return df
     fn = getattr(_ckpt, "cache_for_run", None)
     if fn:
         return fn(df, cfg, broadcast=broadcast)
@@ -365,11 +367,8 @@ def run_load_allocation_input(
     pfic_snapshot_df = checkpoint(spark, pfic_snapshot_df, "pfic_snapshot", cfg)
     pfic_snapshot_df = cache_for_run(pfic_snapshot_df, cfg)
     pfic_snapshot_df.createOrReplaceTempView(f"_pfic_snapshot_{cfg['run_id']}")
-    pfic_elections = cache_for_run(
-        build_pfic_elections(spark, cfg, pfic_snapshot_df),
-        cfg,
-        broadcast=True,
-    )
+    # This builder returns a dictionary of election DataFrames, not one frame.
+    pfic_elections = build_pfic_elections(spark, cfg, pfic_snapshot_df)
     pfic_alloc_df = build_pfic_allocation_input(spark, cfg, pfic_snapshot_df, pfic_elections)
     allocation_input_df = allocation_input_df.unionByName(pfic_alloc_df, allowMissingColumns=True)
 
