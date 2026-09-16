@@ -14,7 +14,35 @@ import logging
 import time
 
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
-from .checkpoint import current_run_scoped, prune_to_lower_tier_runs
+from . import checkpoint as _ckpt
+
+
+def current_run_scoped(df, cfg):
+    fn = getattr(_ckpt, "current_run_scoped", None)
+    if fn:
+        return fn(df, cfg)
+    if "ClientID" in df.columns:
+        df = df.filter(F.col("ClientID") == cfg["client_id"])
+    if "TaxPeriodID" in df.columns:
+        df = df.filter(F.col("TaxPeriodID") == cfg["tax_period_id"])
+    if "RunID" in df.columns:
+        df = df.filter(F.col("RunID") == cfg["run_id"])
+    return df
+
+
+def prune_to_lower_tier_runs(df, spark, cfg):
+    fn = getattr(_ckpt, "prune_to_lower_tier_runs", None)
+    if fn:
+        return fn(df, spark, cfg)
+    if "RunID" not in df.columns:
+        return df
+    keys = (
+        spark.table(f"_lower_tier_funds_{cfg['run_id']}")
+        .select(F.col("RunID").cast("long").alias("RunID"))
+        .where(F.col("RunID").isNotNull())
+        .distinct()
+    )
+    return df.join(F.broadcast(keys), "RunID", "left_semi")
 
 logger = logging.getLogger(__name__)
 

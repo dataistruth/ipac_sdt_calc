@@ -29,23 +29,27 @@ Usage:1
 """
 
 from pyspark.sql import SparkSession
+from pyspark import StorageLevel
+import contextvars
 import json
 import logging
+import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import pyspark.sql.functions as F
 
 # Common_V2: shared framework for all converted SPs
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
-from .checkpoint import (
-    cache_for_run,
-    checkpoint,
-    drop_checkpoints,
-    isolated_collector_cfg,
-    merge_collector_cfg,
-    normalize_checkpoint_backend,
-    normalize_local_delta_denylist,
-    run_parallel,
-    unpersist_cached,
+from . import checkpoint as _ckpt
+
+checkpoint = getattr(_ckpt, "checkpoint")
+drop_checkpoints = getattr(
+    _ckpt,
+    "drop_checkpoints",
+    lambda spark, cfg: None,
 )
 
 try:
@@ -61,6 +65,101 @@ except ImportError:
     def plan_profile_report(cfg):
         del cfg
         return []
+
+_CACHE_LOCK = threading.Lock()
+MAX_THREADS = 4
+
+
+def normalize_checkpoint_backend(value: object) -> str:
+    fn = getattr(_ckpt, "normalize_checkpoint_backend", None)
+    if fn:
+        return fn(value)
+    backend = str(value or "delta").strip().lower()
+    if backend not in {"local", "delta"}:
+        raise ValueError("CheckpointBackend must be 'local' or 'delta'")
+    return backend
+
+
+def normalize_local_delta_denylist(value: object, mode: object = "extend"):
+    fn = getattr(_ckpt, "normalize_local_delta_denylist", None) or getattr(
+        _ckpt, "normalize_local_denylist", None
+    )
+    if fn:
+        try:
+            return fn(value, mode)
+        except TypeError:
+            return fn(value)
+    if not value:
+        return frozenset()
+    tokens = re.split(r"[,\s]+", value) if isinstance(value, str) else value
+    return frozenset(str(token).strip() for token in tokens if str(token).strip())
+
+
+def cache_for_run(df, cfg, *, broadcast: bool = False):
+    fn = getattr(_ckpt, "cache_for_run", None)
+    if fn:
+        return fn(df, cfg, broadcast=broadcast)
+    cached = df.persist(StorageLevel.MEMORY_AND_DISK)
+    cached.count()
+    with _CACHE_LOCK:
+        cfg.setdefault("_cached_dataframes", []).append(cached)
+    return F.broadcast(cached) if broadcast else cached
+
+
+def unpersist_cached(cfg):
+    fn = getattr(_ckpt, "unpersist_cached", None)
+    if fn:
+        return fn(cfg)
+    for frame in cfg.get("_cached_dataframes", ()):
+        try:
+            frame.unpersist(blocking=False)
+        except Exception:
+            pass
+    cfg["_cached_dataframes"] = []
+
+
+def isolated_collector_cfg(cfg: dict) -> dict:
+    fn = getattr(_ckpt, "isolated_collector_cfg", None)
+    if fn:
+        return fn(cfg)
+    local = dict(cfg)
+    local["_parquet_results"] = {}
+    local["_schema_cache"] = {}
+    return local
+
+
+def merge_collector_cfg(target: dict, local: dict) -> None:
+    fn = getattr(_ckpt, "merge_collector_cfg", None)
+    if fn:
+        return fn(target, local)
+    target_results = target.setdefault("_parquet_results", {})
+    for table_name, df in local.get("_parquet_results", {}).items():
+        if table_name in target_results:
+            target_results[table_name] = target_results[table_name].unionByName(
+                df, allowMissingColumns=True
+            )
+        else:
+            target_results[table_name] = df
+    target.setdefault("_schema_cache", {}).update(local.get("_schema_cache", {}))
+
+
+def run_parallel(tasks, label: str):
+    fn = getattr(_ckpt, "run_parallel", None)
+    if fn:
+        return fn(tasks, label)
+    if not tasks:
+        return []
+    workers = min(MAX_THREADS, len(tasks))
+    values = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {}
+        for name, task in tasks:
+            context = contextvars.copy_context()
+            futures[pool.submit(context.run, task)] = name
+        for future in as_completed(futures):
+            name = futures[future]
+            values[name] = future.result()
+    return [(name, values[name]) for name, _ in tasks]
 
 # SP-specific service modules (one per logical section of the original SQL)
 from .ai_shared_views import register_shared_views

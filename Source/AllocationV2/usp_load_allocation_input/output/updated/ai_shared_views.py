@@ -18,13 +18,65 @@ import time
 
 from Common_V2.core.helpers import read_table, log_section, log_timing
 
-from .checkpoint import (
-    cache_for_run,
-    checkpoint,
-    current_run_scoped,
-    run_parallel,
-    scoped,
-)
+from . import checkpoint as _ckpt
+from .checkpoint import checkpoint
+
+import contextvars
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pyspark import StorageLevel
+import threading
+
+_CACHE_LOCK = threading.Lock()
+
+
+def scoped(df, cfg):
+    fn = getattr(_ckpt, "scoped", None)
+    if fn:
+        return fn(df, cfg)
+    if "ClientID" in df.columns:
+        df = df.filter(F.col("ClientID") == cfg["client_id"])
+    if "TaxPeriodID" in df.columns:
+        df = df.filter(F.col("TaxPeriodID") == cfg["tax_period_id"])
+    return df
+
+
+def current_run_scoped(df, cfg):
+    fn = getattr(_ckpt, "current_run_scoped", None)
+    if fn:
+        return fn(df, cfg)
+    if "RunID" in df.columns:
+        df = df.filter(F.col("RunID") == cfg["run_id"])
+    return scoped(df, cfg)
+
+
+def cache_for_run(df, cfg, *, broadcast: bool = False):
+    fn = getattr(_ckpt, "cache_for_run", None)
+    if fn:
+        return fn(df, cfg, broadcast=broadcast)
+    cached = df.persist(StorageLevel.MEMORY_AND_DISK)
+    cached.count()
+    with _CACHE_LOCK:
+        cfg.setdefault("_cached_dataframes", []).append(cached)
+    return F.broadcast(cached) if broadcast else cached
+
+
+def run_parallel(tasks, label: str):
+    fn = getattr(_ckpt, "run_parallel", None)
+    if fn:
+        return fn(tasks, label)
+    del label
+    if not tasks:
+        return []
+    values = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as pool:
+        futures = {}
+        for name, task in tasks:
+            context = contextvars.copy_context()
+            futures[pool.submit(context.run, task)] = name
+        for future in as_completed(futures):
+            name = futures[future]
+            values[name] = future.result()
+    return [(name, values[name]) for name, _ in tasks]
 
 logger = logging.getLogger(__name__)
 
