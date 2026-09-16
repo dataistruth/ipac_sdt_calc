@@ -13,7 +13,7 @@ import time
 
 dbutils.widgets.text(
     "source_path",
-    "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks_msingh/Source",
+    "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
     "1. Monolith Source/",
 )
 dbutils.widgets.text("number_of_runs", "1", "2. A/B passes")
@@ -72,6 +72,14 @@ dbutils.widgets.dropdown(
 # COMMAND ----------
 
 source_path = dbutils.widgets.get("source_path").rstrip("/")
+allocation_path = os.path.join(source_path, "AllocationV2")
+if not os.path.isdir(allocation_path):
+    raise FileNotFoundError(
+        "source_path must be the monolith Source directory containing "
+        f"AllocationV2. Current value: {source_path!r}. "
+        "Expected: '/Workspace/Users/usa-mukessingh@deloitte.com/"
+        "iPACSCore_SDT_Databricks/Source'."
+    )
 if source_path not in sys.path:
     sys.path.insert(0, source_path)
 
