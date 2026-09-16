@@ -29,8 +29,7 @@ Usage:1
 """
 
 from pyspark.sql import SparkSession
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import importlib
+import json
 import logging
 import time
 
@@ -38,53 +37,56 @@ import time
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import table_prefix, log_section, log_timing
 from .checkpoint import (
+    checkpoint,
     drop_checkpoints,
-    log_checkpoint_plan,
     normalize_checkpoint_backend,
-    normalize_local_denylist,
-    pipeline_checkpoint,
+    normalize_local_delta_denylist,
 )
+from .parallel import (
+    isolated_collector_cfg,
+    merge_collector_cfg,
+    run_parallel,
+)
+from .plan_profiler import plan_profile_report, profile_dataframe, track_plan
+from .spark_optimizations import cache_for_run, unpersist_cached
+
+# SP-specific service modules (one per logical section of the original SQL)
 from .ai_shared_views import register_shared_views
-from .parent import output_module
-from .plan_profiler import plan_profile_report, profile_action, track_plan
-
-# Unchanged services come from the production parent package.
-_config = output_module("ai_config_service")
-_validation = output_module("ai_validation_service")
-_hierarchy = output_module("ai_hierarchy_service")
-_k1 = output_module("ai_k1_service")
-_form = output_module("ai_form_service")
-_pfic = output_module("ai_pfic_service")
-_final = output_module("ai_finalization_service")
-_flowup = importlib.import_module(f"{__package__}.ai_pfic_flowup_service")
-
-load_config = _config.load_config
-run_validations = _validation.run_validations
-build_entity_hierarchy = track_plan(_hierarchy.build_entity_hierarchy)
-build_lower_tier_funds = track_plan(_hierarchy.build_lower_tier_funds)
-build_workflows = track_plan(_hierarchy.build_workflows)
-build_k1_and_related_inputs = track_plan(_k1.build_k1_and_related_inputs)
-build_all_form_inputs = track_plan(_form.build_all_form_inputs)
-build_pfic_snapshot = track_plan(_pfic.build_pfic_snapshot)
-build_pfic_elections = track_plan(_pfic.build_pfic_elections)
-build_pfic_allocation_input = track_plan(_pfic.build_pfic_allocation_input)
-apply_pfic_election_deletes = track_plan(_pfic.apply_pfic_election_deletes)
-apply_part_v_vii_flags = track_plan(_pfic.apply_part_v_vii_flags)
-build_pfic_flowup_pipeline = track_plan(_flowup.build_pfic_flowup_pipeline)
-build_custom_footnote_input = track_plan(_flowup.build_custom_footnote_input)
-check_pfic_xml_override_alert = _flowup.check_pfic_xml_override_alert
-apply_tag_percentages = track_plan(_final.apply_tag_percentages)
-apply_master_feed_override = track_plan(_final.apply_master_feed_override)
-apply_blocker_entity_cleanup = track_plan(_final.apply_blocker_entity_cleanup)
-apply_distribution_line_suppression = track_plan(
-    _final.apply_distribution_line_suppression
+from .ai_config_service import load_config
+from .ai_validation_service import run_validations
+from .ai_hierarchy_service import build_entity_hierarchy, build_lower_tier_funds, build_workflows
+from .ai_k1_service import build_k1_and_related_inputs
+from .ai_form_service import build_all_form_inputs
+from .ai_pfic_service import build_pfic_snapshot, build_pfic_elections, build_pfic_allocation_input, apply_pfic_election_deletes, apply_part_v_vii_flags
+from .ai_pfic_flowup_service import build_pfic_flowup_pipeline, build_custom_footnote_input, check_pfic_xml_override_alert
+from .ai_finalization_service import (
+    apply_tag_percentages, write_allocation_input, write_pfic_flowup,
+    apply_master_feed_override, apply_blocker_entity_cleanup,
+    apply_distribution_line_suppression, write_form_flowups,
+    purge_output_tables,
 )
-purge_output_tables = _final.purge_output_tables
-write_allocation_input = _final.write_allocation_input
-write_pfic_flowup = _final.write_pfic_flowup
-write_form_flowups = _final.write_form_flowups
 
 logger = logging.getLogger(__name__)
+
+# Builder profiling is inert unless ProfilePlan/profile_plan is enabled.
+build_entity_hierarchy = track_plan(build_entity_hierarchy)
+build_lower_tier_funds = track_plan(build_lower_tier_funds)
+build_workflows = track_plan(build_workflows)
+build_k1_and_related_inputs = track_plan(build_k1_and_related_inputs)
+build_all_form_inputs = track_plan(build_all_form_inputs)
+build_pfic_snapshot = track_plan(build_pfic_snapshot)
+build_pfic_elections = track_plan(build_pfic_elections)
+build_pfic_allocation_input = track_plan(build_pfic_allocation_input)
+apply_pfic_election_deletes = track_plan(apply_pfic_election_deletes)
+apply_part_v_vii_flags = track_plan(apply_part_v_vii_flags)
+build_pfic_flowup_pipeline = track_plan(build_pfic_flowup_pipeline)
+build_custom_footnote_input = track_plan(build_custom_footnote_input)
+apply_master_feed_override = track_plan(apply_master_feed_override)
+apply_blocker_entity_cleanup = track_plan(apply_blocker_entity_cleanup)
+apply_distribution_line_suppression = track_plan(
+    apply_distribution_line_suppression
+)
+apply_tag_percentages = track_plan(apply_tag_percentages)
 
 
 def run_load_allocation_input(
@@ -110,16 +112,14 @@ def run_load_allocation_input(
     execution_id: str = None,
     call_from: str = None,
     CallFrom: str = None,
-    max_threads: int = 4,
-    MaxThreads: int = None,
+    checkpoint_backend: str = "delta",
+    CheckpointBackend: str = None,
+    local_delta_denylist: object = "",
+    LocalDeltaDenylist: object = None,
     profile_plan: bool = False,
     ProfilePlan: object = None,
     plan_checkpoint_threshold: int = 30,
     PlanCheckpointThreshold: int = None,
-    checkpoint_backend: str = "delta",
-    CheckpointBackend: str = None,
-    LocalDeltaDenylist: object = "",
-    LocalDeltaDenylistMode: str = "extend",
     **kwargs,
 ) -> dict:
     """Main entry point — orchestrates the full allocation input pipeline.
@@ -162,11 +162,19 @@ def run_load_allocation_input(
         cfg["call_from"] = call_from
     cfg.setdefault("_checkpoint_tables", [])   # tracks temp tables for cleanup
     cfg.setdefault("_parquet_results", {})     # accumulates DFs to persist at end
-    try:
-        workers = int(MaxThreads if MaxThreads is not None else max_threads)
-    except (TypeError, ValueError):
-        workers = 4
-    workers = max(1, min(workers, 8))
+    cfg.setdefault("_cached_dataframes", [])
+    cfg["max_threads"] = 4
+    cfg["_checkpoint_backend"] = normalize_checkpoint_backend(
+        CheckpointBackend or checkpoint_backend
+    )
+    denylist_value = (
+        LocalDeltaDenylist
+        if LocalDeltaDenylist is not None
+        else local_delta_denylist
+    )
+    cfg["_local_delta_denylist"] = normalize_local_delta_denylist(
+        denylist_value
+    )
     profile_value = ProfilePlan if ProfilePlan is not None else profile_plan
     if isinstance(profile_value, str):
         profile_value = profile_value.strip().lower() in {
@@ -178,24 +186,13 @@ def run_load_allocation_input(
         if PlanCheckpointThreshold is not None
         else plan_checkpoint_threshold
     )
-    cfg["max_threads"] = workers
-    cfg["_checkpoint_backend"] = normalize_checkpoint_backend(
-        CheckpointBackend or checkpoint_backend
-    )
-    cfg["_local_delta_denylist"] = normalize_local_denylist(
-        LocalDeltaDenylist, LocalDeltaDenylistMode
-    )
     cfg.setdefault("_plan_profile", [])
-    cfg.setdefault("_checkpoint_plan_profile", [])
-    cfg.setdefault("_action_plan_profile", [])
     # Persist output-routing settings so the final flush works in every mode
     # (Mode 1/2 pass cfg directly; Mode 3 built it above).
     if volume_path:
         cfg["volume_path"] = volume_path
     cfg.setdefault("result_type", result_type)
     cfg.setdefault("execution_id", execution_id)
-    log_checkpoint_plan(cfg)
-    print(f"[updated] max_threads={workers} profile_plan={cfg['profile_plan']}")
 
     # RunStatus=FAIL early-abort (mirrors run_sm_apply_investment_level_rounding):
     # load_common_config sets run_status="FAIL" when no AllocationRun row resolves.
@@ -210,15 +207,15 @@ def run_load_allocation_input(
     # Phase 1: Load SP-specific scalars + register reusable temp views
     t_phase = time.time()
     cfg = load_config(spark, cfg)
-    # Temp-view registration mutates the shared session catalog; retain the
-    # production order instead of creating views concurrently.
     register_shared_views(spark, cfg)
     print(f"[phase 1] Config + shared views: {time.time() - t_phase:.1f}s")
 
     # Phase 2: Build entity hierarchy tree + lower-tier fund lookups + workflow IDs
     t_phase = time.time()
     hierarchy_df = build_entity_hierarchy(spark, cfg)
-    lower_tier_df = build_lower_tier_funds(spark, cfg)
+    lower_tier_df = cache_for_run(
+        build_lower_tier_funds(spark, cfg), cfg, broadcast=True
+    )
     workflows = build_workflows(spark, cfg)
     print(f"[phase 2] Hierarchy + workflows: {time.time() - t_phase:.1f}s")
 
@@ -227,6 +224,7 @@ def run_load_allocation_input(
     should_continue = run_validations(spark, cfg, lower_tier_df)
     print(f"[phase 3] Validations: {time.time() - t_phase:.1f}s")
     if not should_continue:
+        unpersist_cached(cfg)
         drop_checkpoints(spark, cfg)
         return {"status": "FAIL", "reason": "validation_failed"}
 
@@ -253,11 +251,14 @@ def run_load_allocation_input(
     # blocked-filter anti-join chain) consumed lazily by 3 stages — build_pfic_elections,
     # build_pfic_allocation_input, and build_pfic_flowup_pipeline — so it recomputes ~3×.
     # Checkpoint once to break the re-evaluation. Logic-neutral (same rows).
-    pfic_snapshot_df = pipeline_checkpoint(
-        spark, pfic_snapshot_df, "pfic_snapshot", cfg
-    )
+    pfic_snapshot_df = checkpoint(spark, pfic_snapshot_df, "pfic_snapshot", cfg)
+    pfic_snapshot_df = cache_for_run(pfic_snapshot_df, cfg)
     pfic_snapshot_df.createOrReplaceTempView(f"_pfic_snapshot_{cfg['run_id']}")
-    pfic_elections = build_pfic_elections(spark, cfg, pfic_snapshot_df)
+    pfic_elections = cache_for_run(
+        build_pfic_elections(spark, cfg, pfic_snapshot_df),
+        cfg,
+        broadcast=True,
+    )
     pfic_alloc_df = build_pfic_allocation_input(spark, cfg, pfic_snapshot_df, pfic_elections)
     allocation_input_df = allocation_input_df.unionByName(pfic_alloc_df, allowMissingColumns=True)
 
@@ -268,9 +269,7 @@ def run_load_allocation_input(
 
     # Checkpoint: materialize accumulated allocation DF to break lineage
     t_phase = time.time()
-    allocation_input_df = pipeline_checkpoint(
-        spark, allocation_input_df, "alloc_input", cfg
-    )
+    allocation_input_df = checkpoint(spark, allocation_input_df, "alloc_input", cfg)
     print(f"[checkpoint] alloc_input: {time.time() - t_phase:.1f}s")
 
     # Phase 7a: PFIC flowup — tier-up foreign corp footnotes through entity hierarchy
@@ -278,9 +277,7 @@ def run_load_allocation_input(
     pfic_flowup_df = build_pfic_flowup_pipeline(
         spark, cfg, pfic_snapshot_df, pfic_elections, lower_tier_df
     )
-    pfic_flowup_df = pipeline_checkpoint(
-        spark, pfic_flowup_df, "pfic_raw", cfg
-    )
+    pfic_flowup_df = checkpoint(spark, pfic_flowup_df, "pfic_raw", cfg)
     print(f"[phase 7a] PFIC flowup build + checkpoint: {time.time() - t_phase:.1f}s")
 
     # Phase 7b: Apply election-based deletes + set Part V/VII indicator flags
@@ -296,9 +293,7 @@ def run_load_allocation_input(
     print(f"[phase 7b] Election deletes + Part V/VII: {time.time() - t_phase:.1f}s")
 
     t_phase = time.time()
-    pfic_flowup_df = pipeline_checkpoint(
-        spark, pfic_flowup_df, "pfic_flowup", cfg
-    )
+    pfic_flowup_df = checkpoint(spark, pfic_flowup_df, "pfic_flowup", cfg)
     print(f"[checkpoint] pfic_flowup: {time.time() - t_phase:.1f}s")
 
     # Post-processing filters: master feed override, blocker-entity cleanup, suppression
@@ -307,9 +302,7 @@ def run_load_allocation_input(
     allocation_input_df = apply_distribution_line_suppression(spark, cfg, allocation_input_df)
 
     t_phase = time.time()
-    allocation_input_df = pipeline_checkpoint(
-        spark, allocation_input_df, "alloc_filtered", cfg
-    )
+    allocation_input_df = checkpoint(spark, allocation_input_df, "alloc_filtered", cfg)
     print(f"[checkpoint] alloc_filtered: {time.time() - t_phase:.1f}s")
 
     # Phase 8: Apply investment-level tag percentages (PE Book Allocation only)
@@ -319,18 +312,34 @@ def run_load_allocation_input(
 
     if cfg.get("investment_tag_workflow_id", 0) != 0:
         t_phase = time.time()
-        allocation_input_df = pipeline_checkpoint(
-            spark, allocation_input_df, "alloc_tagged", cfg
-        )
+        allocation_input_df = checkpoint(spark, allocation_input_df, "alloc_tagged", cfg)
         print(f"[checkpoint] alloc_tagged: {time.time() - t_phase:.1f}s")
 
     # Phase 9: Final aggregation + Delta writes (AllocationInput, PFICFlowup, FormFlowups)
     t_phase = time.time()
-    # These builders register temp views and mutate the collector map. Preserve
-    # production order; only the final writes to distinct tables are parallel.
-    write_allocation_input(spark, cfg, allocation_input_df)
-    write_pfic_flowup(spark, cfg, pfic_flowup_df)
-    write_form_flowups(spark, cfg)
+    # Form flow-up planning performs scalar Spark actions. Keep those on the
+    # caller thread; the independent allocation/PFIC collectors can run together.
+    form_cfg = isolated_collector_cfg(cfg)
+    write_form_flowups(spark, form_cfg)
+    merge_collector_cfg(cfg, form_cfg)
+
+    collector_tasks = []
+    for task_name, writer, args in (
+        ("allocation-input", write_allocation_input, (allocation_input_df,)),
+        ("pfic-flowup", write_pfic_flowup, (pfic_flowup_df,)),
+    ):
+        local_cfg = isolated_collector_cfg(cfg)
+        collector_tasks.append(
+            (
+                task_name,
+                lambda writer=writer, args=args, local_cfg=local_cfg: (
+                    writer(spark, local_cfg, *args),
+                    local_cfg,
+                )[1],
+            )
+        )
+    for _, local_cfg in run_parallel(collector_tasks, "result-builders"):
+        merge_collector_cfg(cfg, local_cfg)
     print(f"[phase 9] Collect results (groupBy/agg): {time.time() - t_phase:.1f}s")
 
     # Flush accumulated DataFrames as TWO separate writes:
@@ -382,17 +391,12 @@ def run_load_allocation_input(
         # ── Write 1: AllocationInput → Delta ──────────────────────────────
         alloc_df = parquet_results.get("AllocationInput")
         if alloc_df is not None:
-            profile_action(
-                "AllocationInput.saveAsTable",
-                alloc_df,
-                lambda: (
-                    alloc_df.write.format("delta")
-                    .mode("overwrite")
-                    .option("replaceWhere", f"RunID = {run_id}")
-                    .saveAsTable(f"{prefix}.AllocationInput")
-                ),
-                cfg,
+            profile_dataframe(
+                "AllocationInput.write", alloc_df, cfg, kind="action"
             )
+            alloc_df.write.format("delta").mode("overwrite") \
+                .option("replaceWhere", f"RunID = {run_id}") \
+                .saveAsTable(f"{prefix}.AllocationInput")
             print("   [ok] AllocationInput (delta)")
 
         # ── Write 2: all other tables → Parquet (via GenericResultStorer) ──
@@ -403,6 +407,9 @@ def run_load_allocation_input(
             write_df = _align(df, tbl_name)
             if tbl_name in small_tables:
                 write_df = write_df.coalesce(1)
+            profile_dataframe(
+                f"{tbl_name}.write", write_df, cfg, kind="action"
+            )
             #if write_df.isEmpty():
             #    print(f"   [skip] {tbl_name} (empty, skipped)")
             #    continue
@@ -425,55 +432,33 @@ def run_load_allocation_input(
                     sql_password=cfg.get("sql_password", ""),
                 )
                 print(
-                    f"[store] Writing {len(parquet_tables)} tables "
-                    f"(workers={workers}): {datetime.now()}"
+                    f"[store] Writing {len(parquet_tables)} flow-up tables "
+                    f"with 4 threads: {datetime.now()}"
                 )
 
                 def _store_one(table_name, table_df):
                     storer = GenericResultStorer(spark, None)
-                    return profile_action(
-                        f"{table_name}.save_results",
-                        table_df,
-                        lambda: storer.save_results(
-                            result={table_name: table_df},
-                            **storer_kwargs,
-                        ),
-                        cfg,
+                    return storer.save_results(
+                        result={table_name: table_df},
+                        **storer_kwargs,
                     )
 
-                if workers > 1 and len(parquet_tables) > 1:
-                    errors = []
-                    with ThreadPoolExecutor(
-                        max_workers=min(workers, len(parquet_tables))
-                    ) as pool:
-                        futures = {
-                            pool.submit(_store_one, name, df): name
-                            for name, df in parquet_tables.items()
-                        }
-                        for future in as_completed(futures):
-                            table_name = futures[future]
-                            try:
-                                value = future.result()
-                                if value and not save_return_value:
-                                    save_return_value = value
-                                print(f"   [ok] {table_name}")
-                            except Exception as exc:
-                                errors.append(f"{table_name}: {exc}")
-                    if errors:
-                        raise RuntimeError(
-                            "Parallel flow-up writes failed: "
-                            + "; ".join(errors)
-                        )
-                else:
-                    for table_name, table_df in parquet_tables.items():
-                        value = _store_one(table_name, table_df)
-                        if value and not save_return_value:
-                            save_return_value = value
-                        print(f"   [ok] {table_name}")
-                print(
-                    f"[done] Stored {len(parquet_tables)} flow-up tables: "
-                    f"{datetime.now()}"
-                )
+                write_tasks = [
+                    (
+                        table_name,
+                        lambda table_name=table_name, table_df=table_df: _store_one(
+                            table_name, table_df
+                        ),
+                    )
+                    for table_name, table_df in parquet_tables.items()
+                ]
+                for table_name, value in run_parallel(
+                    write_tasks, "flow-up-writes"
+                ):
+                    if value and not save_return_value:
+                        save_return_value = value
+                    print(f"   [ok] {table_name}")
+                print(f"[done] Stored {len(parquet_tables)} Parquet tables: {datetime.now()}")
             except Exception as e:
                 logger.error(
                     f"Parquet flow-up write failed (AllocationInput already committed): "
@@ -483,24 +468,40 @@ def run_load_allocation_input(
 
     elapsed = time.time() - t0
     log_timing("run_load_allocation_input", t0)
-    plan_profile = None
-    if cfg.get("profile_plan"):
-        plan_profile = plan_profile_report(cfg)
+    plan_profile = (
+        plan_profile_report(cfg) if cfg.get("profile_plan") else None
+    )
+    unpersist_cached(cfg)
     drop_checkpoints(spark, cfg)  # clean up temp checkpoint tables
 
-    if save_return_value and isinstance(save_return_value, str) and save_return_value.strip().startswith("{"):
-        return save_return_value
+    if (
+        save_return_value
+        and isinstance(save_return_value, str)
+        and save_return_value.strip().startswith("{")
+    ):
+        try:
+            stored_result = json.loads(save_return_value)
+            if isinstance(stored_result, dict):
+                stored_result.update(
+                    {
+                        "elapsed_seconds": round(elapsed, 1),
+                        "max_threads": 4,
+                        "checkpoint_backend": cfg.get("_checkpoint_backend"),
+                        "checkpoint_timings": cfg.get(
+                            "_checkpoint_elapsed", []
+                        ),
+                        "plan_profile": plan_profile,
+                    }
+                )
+                return stored_result
+        except ValueError:
+            return save_return_value
 
     return {
         "status": "SUCCESS",
         "elapsed_seconds": round(elapsed, 1),
-        "implementation": "output.updated.load_allocation_input",
-        "max_threads": workers,
+        "max_threads": 4,
         "checkpoint_backend": cfg.get("_checkpoint_backend"),
         "checkpoint_timings": cfg.get("_checkpoint_elapsed", []),
         "plan_profile": plan_profile,
-        "checkpoint_plan_profile": cfg.get(
-            "_checkpoint_plan_profile_report", []
-        ),
-        "action_plan_profile": cfg.get("_action_plan_profile_report", []),
     }

@@ -16,8 +16,11 @@ import pyspark.sql.functions as F
 import logging
 import time
 
-from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
-from .checkpoint import pipeline_checkpoint as checkpoint
+from Common_V2.core.helpers import read_table, log_section, log_timing
+
+from .checkpoint import checkpoint
+from .parallel import run_parallel
+from .spark_optimizations import cache_for_run, current_run_scoped, scoped
 
 logger = logging.getLogger(__name__)
 
@@ -34,87 +37,79 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
     client_id = cfg["client_id"]
     tax_period_id = cfg["tax_period_id"]
     run_id = cfg["run_id"]
-    entity_id = cfg["entity_id"]
     fx_tid = cfg.get("fx_rate_transaction_id") or 0
 
-    # Entity — entity dimension (small, ~hundreds of rows per client)
-    F.broadcast(
-        read_table(spark, "Entity", cfg)
-        .select("EntityID", "ClientID", "TaxPeriodID", "EntityIdentification", "EIN",
-                "CurrencyCode", "IsForeign", "IsPFIC", "IsCFC",
-                "IsQualifiedForeignCorporation", "IsDomesticBlocker", "TaxClassID",
-                "AllocationTypeID", "DisplayName")
-    ).createOrReplaceTempView("_entity")
+    def _small(df):
+        return cache_for_run(df, cfg, broadcast=True)
 
-    # ForeignCurrencyAverageRate — pre-filtered to this run's FX transaction
-    F.broadcast(
-        read_table(spark, "ForeignCurrencyAverageRate", cfg)
-        .filter((F.col("ClientID") == client_id) & (F.col("TransactionID") == fx_tid))
-        .select("CurrencyCode", "AverageRate")
-    ).createOrReplaceTempView("_fx_avg_rate")
-
-    # AllocationInputWorkflow — pre-filtered to this RunID (small: one row per entity)
-    F.broadcast(
-        read_table(spark, "AllocationInputWorkflow", cfg)
-        .filter(F.col("RunID") == run_id)
-    ).createOrReplaceTempView("_aiw")
-
-    # ReclassFootnoteAllocationData — pre-filtered to RunID + ClientID + TaxPeriodID
-    _reclass_df = (
-        read_table(spark, "ReclassFootnoteAllocationData", cfg)
-        .filter(
-            (F.col("ClientID") == client_id) &
-            (F.col("TaxPeriodID") == tax_period_id) &
-            (F.col("RunID") == run_id)
-        )
-    )
-    _reclass_df = checkpoint(spark, _reclass_df, "reclass_data", cfg)
-    _reclass_df.createOrReplaceTempView("_reclass_data")
-
-    # K1LineItem — small lookup, used in almost every K1/form query
-    F.broadcast(
-        read_table(spark, "K1LineItem", cfg)
-        .filter((F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id))
-        .select("LineID", "LineDataType", "IsActive", "PFICClassType", "TransactionDate")
-    ).createOrReplaceTempView("_k1_line_item")
-
-    # MAP_K1LineItemLineType — small mapping table
-    F.broadcast(
-        read_table(spark, "MAP_K1LineItemLineType", cfg)
-        .select("K1LineItemID", "LineTypeID")
-    ).createOrReplaceTempView("_map_k1_line_type")
-
-    # K1Package — pre-filtered, maps K1PackageID to LowerTierEntityID
-    F.broadcast(
-        read_table(spark, "K1Package", cfg)
-        .filter((F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id))
-        .select("K1PackageID", "LowerTierEntityID", "UpperTierEntityID")
-    ).createOrReplaceTempView("_k1_package")
-
-    # ForeignCurrencyRate — pre-filtered to this FX transaction
-    F.broadcast(
-        read_table(spark, "ForeignCurrencyRate", cfg)
-        .filter((F.col("ClientID") == client_id) & (F.col("TransactionID") == fx_tid))
-        .select("CurrencyCode", "Rate", "Range")
-    ).createOrReplaceTempView("_fx_rate")
-
-    # PFICFootnoteLineItem — small lookup, used 19× across PFIC/flowup/finalization
-    F.broadcast(
-        read_table(spark, "PFICFootnoteLineItem", cfg)
-        .filter((F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id))
-        .select("LineID", "ShortName", "LineDataType", "IsActive", "IsAllocated")
-    ).createOrReplaceTempView("_pfic_line_item")
+    tasks = [
+        ("_entity", lambda: _small(
+            scoped(read_table(spark, "Entity", cfg), cfg)
+            .select(
+                "EntityID", "ClientID", "TaxPeriodID", "EntityIdentification",
+                "EIN", "CurrencyCode", "IsForeign", "IsPFIC", "IsCFC",
+                "IsQualifiedForeignCorporation", "IsDomesticBlocker",
+                "TaxClassID", "AllocationTypeID", "DisplayName",
+            )
+        )),
+        ("_fx_avg_rate", lambda: _small(
+            scoped(read_table(spark, "ForeignCurrencyAverageRate", cfg), cfg)
+            .filter(F.col("TransactionID") == fx_tid)
+            .select("CurrencyCode", "AverageRate")
+        )),
+        ("_aiw", lambda: _small(
+            current_run_scoped(
+                read_table(spark, "AllocationInputWorkflow", cfg), cfg
+            )
+        )),
+        ("_reclass_data", lambda: current_run_scoped(
+            read_table(spark, "ReclassFootnoteAllocationData", cfg), cfg
+        )),
+        ("_k1_line_item", lambda: _small(
+            scoped(read_table(spark, "K1LineItem", cfg), cfg)
+            .select(
+                "LineID", "LineDataType", "IsActive", "PFICClassType",
+                "TransactionDate",
+            )
+        )),
+        ("_map_k1_line_type", lambda: _small(
+            read_table(spark, "MAP_K1LineItemLineType", cfg)
+            .select("K1LineItemID", "LineTypeID")
+        )),
+        ("_k1_package", lambda: _small(
+            scoped(read_table(spark, "K1Package", cfg), cfg)
+            .select("K1PackageID", "LowerTierEntityID", "UpperTierEntityID")
+        )),
+        ("_fx_rate", lambda: _small(
+            scoped(read_table(spark, "ForeignCurrencyRate", cfg), cfg)
+            .filter(F.col("TransactionID") == fx_tid)
+            .select("CurrencyCode", "Rate", "Range")
+        )),
+        ("_pfic_line_item", lambda: _small(
+            scoped(read_table(spark, "PFICFootnoteLineItem", cfg), cfg)
+            .select(
+                "LineID", "ShortName", "LineDataType", "IsActive",
+                "IsAllocated",
+            )
+        )),
+    ]
+    # Spark actions perform the actual loads in a fixed four-thread pool.
+    # Temp-view catalog mutation remains deterministic on the caller thread.
+    for view_name, frame in run_parallel(tasks, "shared-view-load"):
+        if view_name == "_reclass_data":
+            # Delta writes and catalog changes stay on the caller thread.
+            frame = checkpoint(spark, frame, "reclass_data", cfg)
+        frame.createOrReplaceTempView(view_name)
 
     # LowerTierFunds — register for use in write_form_flowups
     is_blocker_checked = cfg.get("is_foreign_blocker_footnotes_flowup_checked", False)
-    ltf_df = read_table(spark, "LowerTierFunds", cfg)
+    ltf_df = current_run_scoped(read_table(spark, "LowerTierFunds", cfg), cfg)
     entity_view = spark.table("_entity")
-    tax_class_df = read_table(spark, "ENU_TaxClass", cfg)
+    tax_class_df = F.broadcast(read_table(spark, "ENU_TaxClass", cfg))
     _ltf_df = (
         ltf_df.alias("LF")
         .join(entity_view.alias("E"), F.col("LF.EntityID") == F.col("E.EntityID"), "left")
         .join(tax_class_df.alias("T"), F.col("E.TaxClassID") == F.col("T.TaxClassID"), "left")
-        .filter(F.col("LF.RunID") == run_id)
         .select(
             F.col("LF.EntityID"),
             F.col("LF.PartnerNumber"),
@@ -137,6 +132,8 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
             ).otherwise(F.lit(False)).alias("IsPficCfcQfcEntity"),
         )
     )
-    F.broadcast(_ltf_df).createOrReplaceTempView(f"_lower_tier_funds_{run_id}")
+    cache_for_run(_ltf_df, cfg, broadcast=True).createOrReplaceTempView(
+        f"_lower_tier_funds_{run_id}"
+    )
 
     log_timing("register_shared_views", t0)

@@ -16,18 +16,21 @@ import logging
 import time
 
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
-from .checkpoint import inner_base_flowup_checkpoint
-from .plan_profiler import profile_action
+from .checkpoint import checkpoint
+from .spark_optimizations import (
+    current_run,
+    current_run_scoped,
+    prune_to_lower_tier_runs,
+    scoped,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _profile_first(name: str, df: DataFrame, cfg: dict):
-    return profile_action(name, df, df.first, cfg)
-
-
-def _profile_collect(name: str, df: DataFrame, cfg: dict):
-    return profile_action(name, df, df.collect, cfg)
+def _pfic_classification_for_run(spark, cfg):
+    return current_run_scoped(
+        read_table(spark, "PficForeignCorpClassificationInput", cfg), cfg
+    )
 
 
 def _collect_result(cfg: dict, df: DataFrame, table_name: str) -> None:
@@ -73,7 +76,7 @@ def _build_zero_fa_only_ids(spark, cfg, reclass_unblocked_df, pfic_line_item_df)
     pfic_investment_line_id = cfg.get("pfic_investment_line_id")
     run_id = cfg["run_id"]
     fa_class = (
-        read_table(spark, "PficForeignCorpClassificationInput", cfg)
+        _pfic_classification_for_run(spark, cfg)
         .filter(F.lower(F.col("FootnoteClassification")) == "footnote-amounts only")
         .select(
             F.col("EntityID").alias("PC_EntityID"),
@@ -83,8 +86,7 @@ def _build_zero_fa_only_ids(spark, cfg, reclass_unblocked_df, pfic_line_item_df)
         ).distinct()
     )
     lower_tier = (
-        read_table(spark, "LowerTierFunds", cfg)
-        .filter(F.col("RunID") == run_id)
+        current_run(read_table(spark, "LowerTierFunds", cfg), cfg)
         .select(F.col("EntityID").alias("LT_EntityID"))
         .distinct()
     )
@@ -136,7 +138,7 @@ def register_reclass_unblocked(spark: SparkSession, cfg: dict) -> DataFrame:
     pfic_line_type = cfg.get("pfic_footnote_line_type_id")
 
     reclass_data = spark.table("_reclass_data")
-    pfic_foreign_corp = read_table(spark, "PficForeignCorpClassificationInput", cfg)
+    pfic_foreign_corp = _pfic_classification_for_run(spark, cfg)
     blocked = pfic_foreign_corp.filter(
         (F.lower(F.col("FootnoteClassification")) == "blocked")
         & (F.col("SourceEntityID") == entity_id)
@@ -322,7 +324,7 @@ def build_pfic_flowup_pipeline(
     reclass_wf_id = cfg.get("lookthrough_reclass_workflow_id", 0)
     if True:
         reclass_data = spark.table("_reclass_data")
-        pfic_foreign_corp = read_table(spark, "PficForeignCorpClassificationInput", cfg)
+        pfic_foreign_corp = _pfic_classification_for_run(spark, cfg)
 
         # Build unblocked footnotes from ReclassFootnoteAllocationData
         blocked = pfic_foreign_corp.filter(
@@ -464,9 +466,7 @@ def build_pfic_flowup_pipeline(
             )
         )
         base_flowup = base_flowup.unionByName(reclass_flowup_non_alloc)
-        base_flowup = inner_base_flowup_checkpoint(
-            spark, base_flowup, cfg, "post-reclass"
-        )
+        base_flowup = checkpoint(spark, base_flowup, "base_flowup", cfg)
 
     # ─── Step 3: Zero-Amount PFICs ────────────────────────────────────────
     # PFICs from PFICFootnoteFlowupWithTrackingKey that have no amounts in current flowup
@@ -488,7 +488,11 @@ def build_pfic_flowup_pipeline(
         .select("PFICFootnoteID", "FlowupEntityID", "TrackingKey").distinct()
 
     # Zero amount PFICs from prior flowup table (not already in current flowup)
-    pfic_flowup_tracking = read_table(spark, "PFICFootnoteFlowupWithTrackingKey", cfg)
+    pfic_flowup_tracking = prune_to_lower_tier_runs(
+        read_table(spark, "PFICFootnoteFlowupWithTrackingKey", cfg),
+        spark,
+        cfg,
+    )
     lower_tier_funds = spark.table(f"_lower_tier_funds_{run_id}")
     enu_tax_class = F.broadcast(read_table(spark, "ENU_TaxClass", cfg))
 
@@ -567,15 +571,7 @@ def build_pfic_flowup_pipeline(
             .select(F.col("E.EntityID").alias("DB_EntityID"))
             .distinct()
         )
-        domestic_blocker_probe = domestic_blocker_ids.limit(1)
-        has_domestic_blockers = (
-            _profile_first(
-                "pfic_flowup.domestic_blocker.first",
-                domestic_blocker_probe,
-                cfg,
-            )
-            is not None
-        )
+        has_domestic_blockers = domestic_blocker_ids.limit(1).first() is not None
 
         if has_domestic_blockers:
             # PFICs flowing through domestic blocker (to be deleted)
@@ -681,7 +677,7 @@ def build_pfic_flowup_pipeline(
                 F.col("Z.IsForeign"), F.col("Z.TrackingKey"),
             )
 
-        pfic_foreign_corp_za = read_table(spark, "PficForeignCorpClassificationInput", cfg)
+        pfic_foreign_corp_za = _pfic_classification_for_run(spark, cfg)
 
         pfic_investment_line_id = cfg.get("pfic_investment_line_id")
         pfic_blocked_for_zero = (
@@ -754,15 +750,13 @@ def build_pfic_flowup_pipeline(
             F.col("TrackingKey"),
         )
         base_flowup = base_flowup.unionByName(zero_flowup)
-        base_flowup = inner_base_flowup_checkpoint(
-            spark, base_flowup, cfg, "post-zero"
-        )
+        base_flowup = checkpoint(spark, base_flowup, "base_flowup", cfg)
 
         # SQL lines 2529-2551: @FlowZeroPFICs block
         flow_zero_pfics = cfg.get("flow_zero_pfics")
         if flow_zero_pfics == "C":  # J2: SQL @FlowZeroPFICs block (SP L2538) has no reclass-workflow guard
             reclass_unblocked_v = spark.table(f"_reclass_unblocked_{run_id}")
-            pfic_foreign_corp_2 = read_table(spark, "PficForeignCorpClassificationInput", cfg)
+            pfic_foreign_corp_2 = _pfic_classification_for_run(spark, cfg)
 
             flow_zero_extra = base_flowup.alias("PFIC") \
                 .join(
@@ -942,7 +936,13 @@ def build_custom_footnote_input(
     workflow_status = read_table(spark, "WorkflowStatus", cfg)
     custom_footnote_line_item = read_table(spark, "CustomFootnoteLineItem", cfg)
     custom_footnote_input = read_table(spark, "CustomFootnoteInput", cfg)
-    custom_footnote_alloc_summary = read_table(spark, "CustomFootnoteAllocationSummary", cfg)
+    custom_footnote_alloc_summary = prune_to_lower_tier_runs(
+        scoped(
+            read_table(spark, "CustomFootnoteAllocationSummary", cfg), cfg
+        ),
+        spark,
+        cfg,
+    )
     custom_footnote_package = read_table(spark, "CustomFootnotePackage", cfg)
     lower_tier_funds = spark.table(f"_lower_tier_funds_{run_id}")
     entity_tv = spark.table("_entity")
@@ -951,14 +951,9 @@ def build_custom_footnote_input(
 
     # Step 1: Get latest custom footnote transaction IDs
     # Sub-step: get entity list (self + underlying investments)
-    investment_type_frame = enu_entity_type.filter(
+    investment_type_id = enu_entity_type.filter(
         (F.lower(F.col("EntityTypeName")) == "investment") & (F.col("ClientID") == client_id)
-    ).select("EntityTypeID")
-    investment_type_id = _profile_first(
-        "custom_footnote.investment_type.first",
-        investment_type_frame,
-        cfg,
-    )
+    ).select("EntityTypeID").first()
     investment_type_id_val = investment_type_id["EntityTypeID"] if investment_type_id else -1
 
     investments = entity_relationship.alias("ER") \
@@ -991,14 +986,7 @@ def build_custom_footnote_input(
     excluded_statuses = workflow_status.filter(
         F.lower(F.col("EnumerationName")).isin("rejected", "err_critical", "err_noncritical")
     ).select("StatusID")
-    excluded_status_ids = [
-        row["StatusID"]
-        for row in _profile_collect(
-            "custom_footnote.excluded_statuses.collect",
-            excluded_statuses,
-            cfg,
-        )
-    ]
+    excluded_status_ids = [row["StatusID"] for row in excluded_statuses.collect()]
 
     # Sub-step: Get global event names (those that apply across all entities)
     global_event_names = [
@@ -1012,14 +1000,7 @@ def build_custom_footnote_input(
     ]
     global_event_ids_df = enu_event.filter(F.lower(F.col("EventName")).isin([e.lower() for e in global_event_names])) \
         .select("EventTypeID")
-    global_event_ids = [
-        row["EventTypeID"]
-        for row in _profile_collect(
-            "custom_footnote.global_events.collect",
-            global_event_ids_df,
-            cfg,
-        )
-    ]
+    global_event_ids = [row["EventTypeID"] for row in global_event_ids_df.collect()]
 
     # Sub-step: Build cross join of entity list x event types + k1_package
     entity_event_cross = cf_entity_list.alias("EL") \
@@ -1246,7 +1227,7 @@ def check_pfic_xml_override_alert(
     pfic_line_item = spark.table("_pfic_line_item")
 
     # Check if "Override 8621 XML Import" is enabled
-    xml_enabled_frame = global_menu.alias("GM") \
+    xml_enabled = global_menu.alias("GM") \
         .join(enu_global_menu_group.alias("GMG"),
               F.col("GM.GlobalMenuGroupID") == F.col("GMG.GlobalMenuGroupID"), "inner") \
         .filter(
@@ -1255,17 +1236,14 @@ def check_pfic_xml_override_alert(
             & (F.upper(F.col("GM.State")) == "C")
             & (F.col("GM.ClientID") == client_id)
             & (F.col("GM.TaxPeriodID") == tax_period_id)
-        ).limit(1)
-    xml_enabled = _profile_first(
-        "pfic_xml.enabled.first", xml_enabled_frame, cfg
-    )
+        ).limit(1).first()
 
     if xml_enabled is None:
         log_timing("check_pfic_xml_override_alert", t0)
         return
 
     # Batch 3 small lookups into one collect to save 2 roundtrips
-    _lookup_frame = (
+    _lookup_rows = (
         enu_event.filter(F.lower(F.col("EventName")) == "import_override8621xml_entitydata")
         .select(F.col("EventTypeID").cast("string").alias("val"), F.lit("xml_event").alias("key"))
         .unionByName(
@@ -1277,9 +1255,7 @@ def check_pfic_xml_override_alert(
             pfic_line_item.filter(F.lower(F.col("ShortName")) == "investment")
             .select(F.col("LineID").cast("string").alias("val"), F.lit("pfic_inv_line").alias("key"))
         )
-    )
-    _lookup_rows = _profile_collect(
-        "pfic_xml.lookups.collect", _lookup_frame, cfg
+        .collect()
     )
     _lookup_map = {r["key"]: r["val"] for r in _lookup_rows}
     xml_event_type_id = int(_lookup_map["xml_event"]) if _lookup_map.get("xml_event") else None
@@ -1293,19 +1269,13 @@ def check_pfic_xml_override_alert(
     # Get latest transaction ID for this event (udfGetLatestTransactionID, IncludeFailed=0).
     transaction_log = read_table(spark, "TransactionLog", cfg)
     _ws_xml = read_table(spark, "WorkflowStatus", cfg)
-    _xml_excl_frame = _ws_xml.filter(
-            F.lower(F.col("EnumerationName")).isin("rejected", "err_critical", "err_noncritical")
-        ).select("StatusID")
     _xml_excl_ids = [
-        r["StatusID"]
-        for r in _profile_collect(
-            "pfic_xml.excluded_statuses.collect",
-            _xml_excl_frame,
-            cfg,
-        )
+        r["StatusID"] for r in _ws_xml.filter(
+            F.lower(F.col("EnumerationName")).isin("rejected", "err_critical", "err_noncritical")
+        ).select("StatusID").collect()
     ]
 
-    xml_trans_frame = transaction_log.alias("TL") \
+    xml_trans_row = transaction_log.alias("TL") \
         .filter(
             (F.col("TL.ClientID") == client_id)
             & (F.col("TL.TaxPeriodID") == tax_period_id)
@@ -1313,10 +1283,7 @@ def check_pfic_xml_override_alert(
             & (F.col("TL.EntityID") == entity_id)
             & (F.col("TL.PhaseID") == phase_id)
             & (~F.col("TL.StatusID").isin(_xml_excl_ids))
-        ).agg(F.max("TL.TransactionID").alias("TransactionID"))
-    xml_trans_row = _profile_first(
-        "pfic_xml.transaction.first", xml_trans_frame, cfg
-    )
+        ).agg(F.max("TL.TransactionID").alias("TransactionID")).first()
 
     xml_trans_id = xml_trans_row["TransactionID"] if xml_trans_row else None
     if not xml_trans_id or xml_trans_id == 0:
@@ -1350,17 +1317,14 @@ def check_pfic_xml_override_alert(
 
     # Find previous successful run
     allocation_run = read_table(spark, "AllocationRun", cfg)
-    prv_run_frame = allocation_run.filter(
+    prv_run_row = allocation_run.filter(
         (F.col("RunID") < run_id)
         & (F.col("ClientID") == client_id)
         & (F.col("TaxPeriodID") == tax_period_id)
         & (F.col("PhaseID") == phase_id)
         & (F.col("EntityID") == entity_id)
         & (F.upper(F.col("RunStatus")) == "SUCCESS")
-    ).agg(F.max("RunID").alias("PrvRunID"))
-    prv_run_row = _profile_first(
-        "pfic_xml.previous_run.first", prv_run_frame, cfg
-    )
+    ).agg(F.max("RunID").alias("PrvRunID")).first()
 
     prv_run_id = prv_run_row["PrvRunID"] if prv_run_row else None
     if not prv_run_id or prv_run_id == 0:
@@ -1450,20 +1414,13 @@ def check_pfic_xml_override_alert(
         ) \
         .filter(F.col("P.CheckSumNumber") != F.col("PD.CheckSumNumber"))
 
-    changed_probe = changed_rows.limit(1)
-    has_changes = (
-        _profile_first("pfic_xml.changed_rows.first", changed_probe, cfg)
-        is not None
-    )
+    has_changes = changed_rows.limit(1).first() is not None
 
     if has_changes:
         try:
-            max_alert_frame = read_table(spark, "PFICUpdateAlert", cfg).agg(
+            mx = read_table(spark, "PFICUpdateAlert", cfg).agg(
                 F.coalesce(F.max("AlertID"), F.lit(0)).alias("m")
-            )
-            mx = _profile_first(
-                "pfic_xml.max_alert.first", max_alert_frame, cfg
-            )
+            ).first()
             alert_id = int(mx["m"] or 0) + 1
         except Exception:
             alert_id = 1

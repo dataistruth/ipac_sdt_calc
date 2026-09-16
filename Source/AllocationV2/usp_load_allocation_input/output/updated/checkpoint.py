@@ -1,9 +1,4 @@
-"""Profiled Allocation Input checkpoints.
-
-Delta is the default backend. Delta data-skipping column statistics are
-disabled while writing temporary checkpoint tables and the prior Spark
-configuration is restored afterward.
-"""
+"""Allocation-input checkpoints optimized for temporary Delta materialization."""
 
 from __future__ import annotations
 
@@ -12,68 +7,11 @@ import re
 import time
 import uuid
 
-from .plan_profiler import track_checkpoint_plan
+from .plan_profiler import profile_dataframe
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_CHECKPOINT_BACKEND = "delta"
-_VALID_BACKENDS = frozenset({"delta", "local"})
-_LOCAL_DELTA_DENYLIST_DEFAULT: frozenset[str] = frozenset()
-# Clean production baseline: preserve every production checkpoint until
-# action-time and A/B evidence justify changing an individual seam.
-DEFAULT_COLLAPSED_CHECKPOINTS: frozenset[str] = frozenset()
-_STATS_KEY = "spark.databricks.delta.stats.collect"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
-
-
-def normalize_checkpoint_backend(value: object) -> str:
-    backend = str(value or DEFAULT_CHECKPOINT_BACKEND).strip().lower()
-    if backend not in _VALID_BACKENDS:
-        choices = ", ".join(sorted(_VALID_BACKENDS))
-        raise ValueError(
-            f"Unknown checkpoint backend {value!r}; expected one of: {choices}"
-        )
-    return backend
-
-
-def should_checkpoint(cfg: dict, name: str) -> bool:
-    """Apply the lean defaults plus per-run force/bypass overrides."""
-    forced = set(cfg.get("_checkpoint_force", ()) or ())
-    if name in forced:
-        return True
-    bypass = set(DEFAULT_COLLAPSED_CHECKPOINTS)
-    bypass.update(cfg.get("_checkpoint_bypass", ()) or ())
-    return name not in bypass
-
-
-def normalize_local_denylist(extra: object, mode: object = "extend") -> frozenset[str]:
-    """Resolve prefixes that must stay on Delta even when backend is local.
-
-    `localCheckpoint` cannot re-resolve self-joins (UNRESOLVED_COLUMN). Names
-    matching these prefixes are forced back to a Delta round-trip.
-
-    `extra` is a comma/space-separated string or any iterable of strings.
-    `mode`:
-      * "extend" (default) -> built-in defaults UNION `extra`
-      * "replace" -> use only `extra`; empty extra falls back to defaults so a
-        blank widget never drops every self-join guard
-    """
-    normalized_mode = str(mode or "extend").strip().lower()
-    supplied: set[str] = set()
-    if extra:
-        tokens = re.split(r"[,\s]+", extra) if isinstance(extra, str) else list(extra)
-        supplied = {str(token).strip() for token in tokens if str(token).strip()}
-    if normalized_mode == "replace":
-        return frozenset(supplied) if supplied else _LOCAL_DELTA_DENYLIST_DEFAULT
-    return frozenset(set(_LOCAL_DELTA_DENYLIST_DEFAULT) | supplied)
-
-
-def _forces_delta_backend(name: object, cfg: dict) -> bool:
-    denylist = cfg.get("_local_delta_denylist")
-    if denylist is None:
-        denylist = _LOCAL_DELTA_DENYLIST_DEFAULT
-    safe = str(name)
-    return any(safe.startswith(prefix) for prefix in denylist)
+_VALID_BACKENDS = frozenset({"local", "delta"})
 
 
 def _safe_name(value: object) -> str:
@@ -86,50 +24,46 @@ def _quoted_fqn(catalog: str, schema: str, table: str) -> str:
     )
 
 
-def _get_conf(spark, key: str) -> tuple[bool, str | None]:
-    try:
-        return True, spark.conf.get(key)
-    except Exception:
-        return False, None
+def normalize_checkpoint_backend(value: object) -> str:
+    backend = str(value or "delta").strip().lower()
+    if backend not in _VALID_BACKENDS:
+        raise ValueError("CheckpointBackend must be 'local' or 'delta'")
+    return backend
 
 
-def _restore_conf(
-    spark, key: str, existed: bool, previous: str | None
-) -> None:
-    try:
-        if existed and previous is not None:
-            spark.conf.set(key, previous)
-        else:
-            spark.conf.unset(key)
-    except Exception:
-        logger.debug("Could not restore Spark config %s", key, exc_info=True)
+def normalize_local_delta_denylist(value: object) -> frozenset[str]:
+    if not value:
+        return frozenset()
+    tokens = re.split(r"[,\s]+", value) if isinstance(value, str) else value
+    return frozenset(str(token).strip() for token in tokens if str(token).strip())
+
+
+def _local_is_denied(name: str, cfg: dict) -> bool:
+    denylist = cfg.get("_local_delta_denylist", ())
+    return any(name == token or name.startswith(token) for token in denylist)
 
 
 def checkpoint(spark, df, name: str, cfg: dict):
-    """Materialize and profile a lineage break."""
-    if not should_checkpoint(cfg, name):
-        return df
+    """Write and immediately reread a temporary Delta table with stats disabled.
 
-    track_checkpoint_plan(name, df, cfg)
-    backend = normalize_checkpoint_backend(
-        cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
-    )
-    if cfg.get("_local_delta_denylist") is None:
-        cfg["_local_delta_denylist"] = normalize_local_denylist(
-            cfg.get("local_denylist")
-        )
-    forced_to_delta = backend == "local" and _forces_delta_backend(name, cfg)
+    The table option is scoped to this write, avoiding mutation of Spark-wide
+    configuration while other jobs are running in the four-thread pool.
+    """
+    profile_dataframe(name, df, cfg, kind="checkpoint")
+    backend = normalize_checkpoint_backend(cfg.get("_checkpoint_backend", "delta"))
     started = time.time()
 
-    if backend == "local" and not forced_to_delta:
+    if backend == "local" and not _local_is_denied(name, cfg):
         result = df.localCheckpoint(eager=True).toDF(*df.columns)
         elapsed = round(time.time() - started, 3)
         cfg.setdefault("_checkpoint_elapsed", []).append(
-            {"name": name, "elapsed_seconds": elapsed, "backend": "local"}
+            {
+                "name": name,
+                "elapsed_seconds": elapsed,
+                "backend": "local",
+            }
         )
-        logger.info(
-            "[updated checkpoint] %s: %.3fs (backend=local)", name, elapsed
-        )
+        logger.info("[checkpoint] %s: %.3fs (local)", name, elapsed)
         return result
 
     run_id = _safe_name(cfg.get("run_id", "0"))
@@ -140,20 +74,14 @@ def checkpoint(spark, df, name: str, cfg: dict):
     fqn = _quoted_fqn(cfg["catalog"], cfg["schema"], table_name)
     cfg.setdefault("_checkpoint_tables", []).append(fqn)
 
-    existed, previous = _get_conf(spark, _STATS_KEY)
-    try:
-        spark.conf.set(_STATS_KEY, "false")
-        spark.sql(f"DROP TABLE IF EXISTS {fqn}")
-        (
-            df.write.format("delta")
-            .mode("overwrite")
-            .option("overwriteSchema", "true")
-            .option("delta.dataSkippingNumIndexedCols", "0")
-            .saveAsTable(fqn)
-        )
-    finally:
-        _restore_conf(spark, _STATS_KEY, existed, previous)
-
+    (
+        df.write.format("delta")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+        .option("delta.dataSkippingNumIndexedCols", "0")
+        .saveAsTable(fqn)
+    )
+    result = spark.read.table(fqn)
     elapsed = round(time.time() - started, 3)
     cfg.setdefault("_checkpoint_elapsed", []).append(
         {
@@ -161,88 +89,18 @@ def checkpoint(spark, df, name: str, cfg: dict):
             "elapsed_seconds": elapsed,
             "backend": "delta",
             "column_stats": "off",
+            "local_denylist_fallback": backend == "local",
         }
     )
-    logger.info(
-        "[updated checkpoint] %s: %.3fs "
-        "(backend=delta%s, column_stats=off)",
-        name,
-        elapsed,
-        " forced-from-local" if forced_to_delta else "",
-    )
-    return spark.table(fqn)
-
-
-def pipeline_checkpoint(spark, df, name: str, cfg: dict):
-    """Public lineage-break entry used by the orchestrator. Same as checkpoint()."""
-    return checkpoint(spark, df, name, cfg)
-
-
-def use_inner_base_flowup_local_checkpoint(cfg: dict) -> bool:
-    """True when inner 7a breaks should follow the run's local backend."""
-    flag = cfg.get("checkpoint_inner_base_flowup_local")
-    if flag is not None:
-        return bool(flag)
-    backend = normalize_checkpoint_backend(
-        cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
-    )
-    return backend == "local"
-
-
-def inner_base_flowup_checkpoint(spark, df, cfg: dict, label: str):
-    """Inner PFIC 7a lineage break (post-reclass / post-zero).
-
-    Signature used by ``ai_pfic_flowup_service._flowup_checkpoint``.
-    """
-    name = f"base_flowup_{_safe_name(label)}"
-    return checkpoint(spark, df, name, cfg)
-
-
-def _use_production_checkpoint(cfg: dict) -> bool:
-    """Updated packages default to stats-off Delta, not Common_V2."""
-    return bool(cfg.get("checkpoint_use_production", False))
-
-
-def checkpoint_production(spark, df, name: str, cfg: dict):
-    """Compatibility alias. Still uses stats-off Delta, not Common_V2."""
-    return checkpoint(spark, df, name, cfg)
+    logger.info("[checkpoint] %s: %.3fs (Delta stats off)", name, elapsed)
+    return result
 
 
 def drop_checkpoints(spark, cfg: dict) -> None:
-    """Drop only temporary tables created by this updated invocation."""
-    if cfg.get("_skip_cleanup"):
-        return
-    for fqn in dict.fromkeys(cfg.get("_checkpoint_tables", [])):
+    """Drop checkpoint tables created by this invocation."""
+    for fqn in dict.fromkeys(cfg.get("_checkpoint_tables", ())):
         try:
             spark.sql(f"DROP TABLE IF EXISTS {fqn}")
         except Exception:
             logger.warning("Failed to drop checkpoint %s", fqn, exc_info=True)
     cfg["_checkpoint_tables"] = []
-
-
-def _resolve_backend(cfg: dict) -> str:
-    """Orchestrator compatibility alias for ``normalize_checkpoint_backend``."""
-    return normalize_checkpoint_backend(
-        cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
-    )
-
-
-def log_checkpoint_plan(cfg: dict) -> None:
-    backend = _resolve_backend(cfg)
-    line = (
-        f"[checkpoint] backend={backend}"
-        + (", column_stats=off" if backend == "delta" else "")
-    )
-    print(line)
-    logger.info(line)
-    collapsed = sorted(
-        name
-        for name in DEFAULT_COLLAPSED_CHECKPOINTS
-        if not should_checkpoint(cfg, name)
-    )
-    collapse_line = (
-        "[checkpoint] collapsed="
-        + (",".join(collapsed) if collapsed else "none")
-    )
-    print(collapse_line)
-    logger.info(collapse_line)

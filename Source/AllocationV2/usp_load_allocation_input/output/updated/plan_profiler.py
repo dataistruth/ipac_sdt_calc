@@ -1,62 +1,72 @@
-"""SP-local shim for the shared AllocationV2 plan profiler."""
+"""Opt-in logical-plan profiling for the updated allocation orchestrator."""
 
-try:
-    from AllocationV2.plan_profiler import (
-        finish_action_profile,
-        finish_checkpoint_plan_profile,
-        finish_plan_profile,
-        measure_plan,
-        plan_profile_report,
-        profile_action,
-        start_action_profile,
-        start_checkpoint_plan_profile,
-        start_plan_profile,
-        track_action_plan,
-        track_checkpoint_plan,
-        track_plan,
+from __future__ import annotations
+
+import functools
+import time
+
+
+def _plan_text(df) -> str:
+    try:
+        return df._jdf.queryExecution().optimizedPlan().treeString()
+    except Exception:
+        return ""
+
+
+def profile_dataframe(label: str, df, cfg: dict, *, kind: str = "builder"):
+    """Record optimized-plan size without triggering a Spark action."""
+    if not cfg.get("profile_plan") or not hasattr(df, "columns"):
+        return df
+    started = time.time()
+    text = _plan_text(df)
+    lines = [line for line in text.splitlines() if line.strip()]
+    cfg.setdefault("_plan_profile", []).append(
+        {
+            "kind": kind,
+            "name": label,
+            "nodes": len(lines),
+            "characters": len(text),
+            "inspect_seconds": round(time.time() - started, 4),
+        }
     )
-except Exception:
-    def measure_plan(df):
-        return None
-
-    def track_plan(fn):
-        return fn
-
-    def plan_profile_report(source, threshold=None, label=""):
-        return []
-
-    def start_plan_profile():
-        return None, []
-
-    def finish_plan_profile(token):
-        return None
-
-    def start_checkpoint_plan_profile():
-        return None, []
-
-    def finish_checkpoint_plan_profile(token):
-        return None
-
-    def track_checkpoint_plan(name, df, cfg=None):
-        return None
-
-    def track_action_plan(name, df, cfg=None, elapsed_seconds=None):
-        return None
-
-    def profile_action(name, df, action, cfg=None):
-        return action()
-
-    def start_action_profile():
-        return None, []
-
-    def finish_action_profile(token):
-        return None
+    return df
 
 
-__all__ = [
-    "finish_action_profile", "finish_checkpoint_plan_profile",
-    "finish_plan_profile", "measure_plan", "plan_profile_report",
-    "profile_action", "start_action_profile", "start_checkpoint_plan_profile",
-    "start_plan_profile", "track_action_plan", "track_checkpoint_plan",
-    "track_plan",
-]
+def track_plan(fn):
+    """Decorate a DataFrame builder and profile its returned plan when enabled."""
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        cfg = kwargs.get("cfg")
+        if cfg is None:
+            cfg = next(
+                (arg for arg in args[1:3] if isinstance(arg, dict)),
+                {},
+            )
+        if isinstance(result, tuple):
+            for index, value in enumerate(result):
+                profile_dataframe(
+                    f"{fn.__name__}[{index}]", value, cfg, kind="builder"
+                )
+        else:
+            profile_dataframe(fn.__name__, result, cfg, kind="builder")
+        return result
+
+    return wrapped
+
+
+def plan_profile_report(cfg: dict):
+    """Return large plans first and print plans above the configured threshold."""
+    rows = sorted(
+        cfg.get("_plan_profile", ()),
+        key=lambda row: (row["nodes"], row["characters"]),
+        reverse=True,
+    )
+    threshold = int(cfg.get("plan_checkpoint_threshold", 30))
+    for row in rows:
+        if row["nodes"] >= threshold:
+            print(
+                f"[plan] {row['kind']}/{row['name']}: "
+                f"nodes={row['nodes']} chars={row['characters']}"
+            )
+    return rows
