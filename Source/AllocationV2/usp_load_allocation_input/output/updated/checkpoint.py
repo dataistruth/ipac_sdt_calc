@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_CHECKPOINT_BACKEND = "delta"
 _VALID_BACKENDS = frozenset({"delta", "local"})
 _LOCAL_DELTA_DENYLIST_DEFAULT: frozenset[str] = frozenset()
+DEFAULT_COLLAPSED_CHECKPOINTS: frozenset[str] = frozenset(
+    {
+        # Profiler evidence, RunID 16560 (2026-09-16):
+        # reclass_data=2 nodes, pfic_raw=1 node, pfic_flowup=25 nodes.
+        # These materializations cost ~2 seconds each while truncating small
+        # plans. The 490-node base_flowup_post_zero break remains enabled.
+        "reclass_data",
+        "pfic_raw",
+        "pfic_flowup",
+    }
+)
 _STATS_KEY = "spark.databricks.delta.stats.collect"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
 
@@ -34,9 +45,13 @@ def normalize_checkpoint_backend(value: object) -> str:
 
 
 def should_checkpoint(cfg: dict, name: str) -> bool:
-    """Production checkpoints remain enabled unless explicitly bypassed."""
-    bypass = cfg.get("_checkpoint_bypass", ())
-    return name not in set(bypass or ())
+    """Apply the lean defaults plus per-run force/bypass overrides."""
+    forced = set(cfg.get("_checkpoint_force", ()) or ())
+    if name in forced:
+        return True
+    bypass = set(DEFAULT_COLLAPSED_CHECKPOINTS)
+    bypass.update(cfg.get("_checkpoint_bypass", ()) or ())
+    return name not in bypass
 
 
 def normalize_local_denylist(extra: object, mode: object = "extend") -> frozenset[str]:
@@ -223,3 +238,14 @@ def log_checkpoint_plan(cfg: dict) -> None:
     )
     print(line)
     logger.info(line)
+    collapsed = sorted(
+        name
+        for name in DEFAULT_COLLAPSED_CHECKPOINTS
+        if not should_checkpoint(cfg, name)
+    )
+    collapse_line = (
+        "[checkpoint] collapsed="
+        + (",".join(collapsed) if collapsed else "none")
+    )
+    print(collapse_line)
+    logger.info(collapse_line)

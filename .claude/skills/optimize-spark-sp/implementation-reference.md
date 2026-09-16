@@ -249,6 +249,24 @@ threshold or the same named action repeats; otherwise it prints `measure`.
 These are candidates only. A terminal write or one-off action may not benefit from a
 checkpoint even when expensive.
 
+When profiler evidence justifies collapsing an existing break, preserve a per-run
+escape hatch:
+
+```python
+DEFAULT_COLLAPSED_CHECKPOINTS = frozenset({"low_value_seam"})
+
+def should_checkpoint(cfg, name):
+    if name in set(cfg.get("_checkpoint_force", ()) or ()):
+        return True
+    bypass = set(DEFAULT_COLLAPSED_CHECKPOINTS)
+    bypass.update(cfg.get("_checkpoint_bypass", ()) or ())
+    return name not in bypass
+```
+
+Log the effective collapsed names at startup. Remove only materialization, never the
+DataFrame transformation, temp-view registration, or downstream consumers. Re-run
+parity in both execution orders and compare wall time before keeping the collapse.
+
 ## Checkpoint module (required API)
 
 `output/updated/checkpoint.py` is required whenever the SP materializes lineage
