@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CHECKPOINT_BACKEND = "delta"
 _VALID_BACKENDS = frozenset({"delta", "local"})
+_LOCAL_DELTA_DENYLIST_DEFAULT: frozenset[str] = frozenset()
 _STATS_KEY = "spark.databricks.delta.stats.collect"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_]")
 
@@ -36,6 +37,36 @@ def should_checkpoint(cfg: dict, name: str) -> bool:
     """Production checkpoints remain enabled unless explicitly bypassed."""
     bypass = cfg.get("_checkpoint_bypass", ())
     return name not in set(bypass or ())
+
+
+def normalize_local_denylist(extra: object, mode: object = "extend") -> frozenset[str]:
+    """Resolve prefixes that must stay on Delta even when backend is local.
+
+    `localCheckpoint` cannot re-resolve self-joins (UNRESOLVED_COLUMN). Names
+    matching these prefixes are forced back to a Delta round-trip.
+
+    `extra` is a comma/space-separated string or any iterable of strings.
+    `mode`:
+      * "extend" (default) -> built-in defaults UNION `extra`
+      * "replace" -> use only `extra`; empty extra falls back to defaults so a
+        blank widget never drops every self-join guard
+    """
+    normalized_mode = str(mode or "extend").strip().lower()
+    supplied: set[str] = set()
+    if extra:
+        tokens = re.split(r"[,\s]+", extra) if isinstance(extra, str) else list(extra)
+        supplied = {str(token).strip() for token in tokens if str(token).strip()}
+    if normalized_mode == "replace":
+        return frozenset(supplied) if supplied else _LOCAL_DELTA_DENYLIST_DEFAULT
+    return frozenset(set(_LOCAL_DELTA_DENYLIST_DEFAULT) | supplied)
+
+
+def _forces_delta_backend(name: object, cfg: dict) -> bool:
+    denylist = cfg.get("_local_delta_denylist")
+    if denylist is None:
+        denylist = _LOCAL_DELTA_DENYLIST_DEFAULT
+    safe = str(name)
+    return any(safe.startswith(prefix) for prefix in denylist)
 
 
 def _safe_name(value: object) -> str:
@@ -76,9 +107,14 @@ def checkpoint(spark, df, name: str, cfg: dict):
     backend = normalize_checkpoint_backend(
         cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
     )
+    if cfg.get("_local_delta_denylist") is None:
+        cfg["_local_delta_denylist"] = normalize_local_denylist(
+            cfg.get("local_denylist")
+        )
+    forced_to_delta = backend == "local" and _forces_delta_backend(name, cfg)
     started = time.time()
 
-    if backend == "local":
+    if backend == "local" and not forced_to_delta:
         result = df.localCheckpoint(eager=True).toDF(*df.columns)
         elapsed = round(time.time() - started, 3)
         cfg.setdefault("_checkpoint_elapsed", []).append(
@@ -122,9 +158,10 @@ def checkpoint(spark, df, name: str, cfg: dict):
     )
     logger.info(
         "[updated checkpoint] %s: %.3fs "
-        "(backend=delta, column_stats=off)",
+        "(backend=delta%s, column_stats=off)",
         name,
         elapsed,
+        " forced-from-local" if forced_to_delta else "",
     )
     return spark.table(fqn)
 

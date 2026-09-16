@@ -215,6 +215,71 @@ plan_profile_report(
 Checkpoint wrappers must call `track_checkpoint_plan(name, incoming_df)` before the
 materialization. The profiler is analyze-only; it must not trigger a Spark action.
 
+## Checkpoint module (required API)
+
+`output/updated/checkpoint.py` is required whenever the SP materializes lineage
+breaks. Export at least:
+
+```python
+DEFAULT_CHECKPOINT_BACKEND = "delta"
+normalize_checkpoint_backend
+normalize_local_denylist
+checkpoint
+drop_checkpoints
+log_checkpoint_plan   # optional but recommended
+should_checkpoint     # when the SP supports bypass lists
+```
+
+Default backend is **delta**, not local. `local` is optional and opt-in only.
+
+Required Delta write contract:
+
+```python
+STATS_KEY = "spark.databricks.delta.stats.collect"
+
+existed, previous = True, spark.conf.get(STATS_KEY)  # guard missing conf
+try:
+    spark.conf.set(STATS_KEY, "false")
+    (
+        df.write.format("delta")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+        .option("delta.dataSkippingNumIndexedCols", "0")
+        .saveAsTable(fqn)
+    )
+finally:
+    # restore previous conf or unset if it did not exist
+    ...
+```
+
+`drop_checkpoints(spark, cfg)` must drop only tables listed in
+`cfg["_checkpoint_tables"]` for this invocation.
+
+Always export `normalize_local_denylist`. `localCheckpoint` cannot re-resolve
+self-joins (`UNRESOLVED_COLUMN`). Names matching the denylist stay on Delta
+even when the run backend is `local`. Accept a comma/space string or iterable,
+with `mode="extend"` (union defaults) or `mode="replace"` (use only extras;
+empty extras fall back to defaults). Store the result on
+`cfg["_local_delta_denylist"]`.
+
+Do not wrap `Common_V2.core.checkpoint.checkpoint` without also exporting the
+public names the orchestrator and notebook import:
+
+```python
+from .checkpoint import (
+    checkpoint,
+    drop_checkpoints,
+    normalize_checkpoint_backend,
+    normalize_local_denylist,
+)
+```
+
+Log the setting once per run:
+
+```text
+[checkpoint] backend=delta, column_stats=off
+```
+
 ## Recommendation evidence
 
 Create a recommendation record containing:

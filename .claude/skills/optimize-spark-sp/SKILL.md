@@ -69,6 +69,13 @@ Resolve these from the request and source tree; ask only when they cannot be inf
 8. Never report an optimization as successful until output fingerprints match.
 9. Support classic PySpark and Spark Connect by duck-typing DataFrames; do not rely on
    `isinstance(obj, pyspark.sql.DataFrame)`.
+10. `output/updated/checkpoint.py` must export `checkpoint`, `drop_checkpoints`,
+    `normalize_checkpoint_backend`, and `normalize_local_denylist`. Default
+    backend is `delta`. Delta writes disable column statistics
+    (`spark.databricks.delta.stats.collect=false` and
+    `delta.dataSkippingNumIndexedCols=0`) and restore the prior Spark conf after
+    the write. When backend is `local`, denylist prefixes stay on Delta (self-join
+    safety). Call `track_checkpoint_plan(name, incoming_df)` before materializing.
 
 ## Output package
 
@@ -81,6 +88,7 @@ Source/AllocationV2/<sp_name>/output/updated/
 ├── orchestrator.py              # or the SP's real entry module name
 ├── parent.py                    # import unchanged prod services from output/
 ├── plan_profiler.py             # shim → AllocationV2.plan_profiler
+├── checkpoint.py                # Delta default; drop_checkpoints; stats off
 ├── parallel_helpers.py          # only when parallel work exists
 ├── run_id_pruning.py            # only when run-scoped reads exist
 ├── output_reconcile.py
@@ -132,6 +140,10 @@ Join=... Project=... Scan=... Union=... Window=...
 Measure checkpoint input plans before materialization with `track_checkpoint_plan`.
 Keep profiling opt-in via `profile_plan=False` and
 `plan_checkpoint_threshold=30`.
+
+Never wrap Common_V2 `checkpoint` without re-exporting every name the
+orchestrator imports (`drop_checkpoints`, `normalize_local_denylist`, …).
+See the implementation reference for the Delta/stats-off write contract.
 
 ### 3. Produce checkpoint recommendations
 
@@ -208,8 +220,8 @@ fingerprints.
 
 Include widgets for source path, run count, execution order, SP parameters, catalog,
 schema, result type, volume path when needed, `MaxThreads` (default `4`),
-`ProfilePlan` (default `on`), `PlanCheckpointThreshold` (default `30`), and
-`SqlShufflePartitions`.
+`ProfilePlan` (default `on`), `PlanCheckpointThreshold` (default `30`),
+`CheckpointBackend` (default `delta`), and `SqlShufflePartitions`.
 
 Evict the SP package and `AllocationV2.plan_profiler` from `sys.modules` before fresh
 imports so workspace syncs are not hidden by Python module caching.
@@ -217,6 +229,9 @@ imports so workspace syncs are not hidden by Python module caching.
 ### 7. Verify
 
 - Syntax-check every new Python file.
+- Confirm `checkpoint.py` exports `checkpoint`, `drop_checkpoints`,
+  `normalize_checkpoint_backend`, and `normalize_local_denylist`; default
+  backend is `delta`; Delta writes disable column stats.
 - Confirm no new files under `output/` except `__init__.py` and `updated/`.
 - Search for unresolved imports and accidental production-file modifications.
 - Run the original and updated variants in both orders when practical.
