@@ -12,6 +12,8 @@ identically::
 
 from __future__ import annotations
 
+from .profiler import classify_plan_recommendation
+
 _DEFAULT_THRESHOLD = 30
 
 
@@ -26,12 +28,14 @@ def build_plan_profile_display(
     spark,
     records,
     threshold: int = _DEFAULT_THRESHOLD,
+    kind: str = "builder",
 ):
     """Build a Spark DataFrame from plan-profile records, ranked by delta desc.
 
     Columns: ``func``, ``nodes``, ``depth``, ``delta``, ``checkpoint_candidate``,
-    ``ops``. ``depth`` is included as a first-class runtime column. Returns an
-    empty-schema DataFrame when there are no records.
+    ``recommendation``, ``ops``. ``kind`` is ``builder`` (add/measure/collapse),
+    ``checkpoint`` (keep/measure/remove), or ``action`` (add/measure).
+    Returns an empty-schema DataFrame when there are no records.
     """
     from pyspark.sql.types import (
         LongType,
@@ -47,6 +51,7 @@ def build_plan_profile_display(
             StructField("depth", LongType(), True),
             StructField("delta", LongType(), True),
             StructField("checkpoint_candidate", StringType(), True),
+            StructField("recommendation", StringType(), True),
             StructField("ops", StringType(), True),
         ]
     )
@@ -56,20 +61,33 @@ def build_plan_profile_display(
     except (TypeError, ValueError):
         limit = _DEFAULT_THRESHOLD
 
+    normalized_kind = str(kind).strip().lower()
+    report_kind = (
+        normalized_kind
+        if normalized_kind in {"builder", "checkpoint", "action"}
+        else "builder"
+    )
     ranked = sorted(
         list(records or []),
         key=lambda r: int(r.get("delta", 0) or 0),
         reverse=True,
     )
-    rows = [
-        (
-            str(r.get("func")),
-            int(r.get("nodes", 0) or 0),
-            int(r.get("depth", 0) or 0),
-            int(r.get("delta", 0) or 0),
-            "yes" if int(r.get("delta", 0) or 0) >= limit else "",
-            _format_ops(r.get("ops")),
+    rows = []
+    for raw in ranked:
+        rec = dict(raw)
+        recommendation = rec.get("recommendation") or classify_plan_recommendation(
+            rec, limit, report_kind
         )
-        for r in ranked
-    ]
+        candidate = "yes" if recommendation in {"add", "keep"} else ""
+        rows.append(
+            (
+                str(rec.get("func")),
+                int(rec.get("nodes", 0) or 0),
+                int(rec.get("depth", 0) or 0),
+                int(rec.get("delta", 0) or 0),
+                candidate,
+                recommendation,
+                _format_ops(rec.get("ops")),
+            )
+        )
     return spark.createDataFrame(rows, schema=schema)

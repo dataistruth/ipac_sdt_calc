@@ -23,6 +23,8 @@ import functools
 import io
 import logging
 import threading
+import time
+from collections import Counter
 from contextvars import ContextVar
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,13 @@ _PLAN_SINK: ContextVar[list | None] = ContextVar(
 # truncates?").
 _CHECKPOINT_SINK: ContextVar[list | None] = ContextVar(
     "alloc_checkpoint_profile_sink", default=None
+)
+
+# Active per-run ACTION record sink. Actions must be instrumented explicitly;
+# Spark has no safe DataFrame-level hook that identifies the input plan for all
+# count/isEmpty/collect/write calls, especially under Spark Connect.
+_ACTION_SINK: ContextVar[list | None] = ContextVar(
+    "alloc_action_profile_sink", default=None
 )
 
 # Operators worth counting individually in the per-function histogram.
@@ -232,18 +241,123 @@ def finish_checkpoint_plan_profile(token) -> None:
         )
 
 
-def track_checkpoint_plan(name: str, df) -> None:
+def start_action_profile() -> tuple:
+    """Activate a fresh ACTION record sink for one invocation."""
+    records: list = []
+    token = _ACTION_SINK.set(records)
+    return token, records
+
+
+def finish_action_profile(token) -> None:
+    if token is None:
+        return
+    try:
+        _ACTION_SINK.reset(token)
+    except Exception:
+        logger.debug("[PLAN] finish_action_profile reset failed", exc_info=True)
+
+
+def _record_action(
+    name: str,
+    df,
+    cfg: dict | None,
+    elapsed_seconds: float | None,
+) -> None:
+    sink = _ACTION_SINK.get()
+    enabled = sink is not None or (
+        isinstance(cfg, dict) and cfg.get("profile_plan")
+    )
+    if not enabled:
+        return
+    try:
+        metrics = measure_plan(df)
+        if not metrics:
+            return
+        record = {
+            "func": name,
+            "nodes": metrics["nodes"],
+            "depth": metrics["depth"],
+            "delta": metrics["nodes"],
+            "ops": metrics["ops"],
+            "elapsed_seconds": (
+                round(float(elapsed_seconds), 3)
+                if elapsed_seconds is not None
+                else None
+            ),
+        }
+        target = (
+            sink
+            if sink is not None
+            else cfg.setdefault("_action_plan_profile", [])
+        )
+        with _LOCK:
+            target.append(record)
+    except Exception:
+        logger.debug("[PLAN-ACTION] record failed", exc_info=True)
+
+
+def track_action_plan(
+    name: str,
+    df,
+    cfg: dict | None = None,
+    elapsed_seconds: float | None = None,
+) -> None:
+    """Record a known action's input plan without executing the action."""
+    _record_action(name, df, cfg, elapsed_seconds)
+
+
+def profile_action(name: str, df, action, cfg: dict | None = None):
+    """Execute a zero-argument Spark action and profile its input plan + time.
+
+    Example: ``profile_action("warnings.isEmpty", df, df.isEmpty, cfg)``.
+    Profiling is a transparent pass-through when disabled. Exceptions from the
+    action are propagated unchanged.
+    """
+    sink = _ACTION_SINK.get()
+    enabled = sink is not None or (
+        isinstance(cfg, dict) and cfg.get("profile_plan")
+    )
+    if not enabled:
+        return action()
+    metrics = measure_plan(df)
+    started = time.perf_counter()
+    try:
+        return action()
+    finally:
+        elapsed = time.perf_counter() - started
+        if metrics:
+            record = {
+                "func": name,
+                "nodes": metrics["nodes"],
+                "depth": metrics["depth"],
+                "delta": metrics["nodes"],
+                "ops": metrics["ops"],
+                "elapsed_seconds": round(elapsed, 3),
+            }
+            target = (
+                sink
+                if sink is not None
+                else cfg.setdefault("_action_plan_profile", [])
+            )
+            with _LOCK:
+                target.append(record)
+
+
+def track_checkpoint_plan(name: str, df, cfg=None) -> None:
     """Record the plan a checkpoint truncates — measured BEFORE the lineage break.
 
     Call this inside ``checkpoint()`` on the *incoming* DataFrame (pre
     materialization), so the record reflects the full plan that the break
-    collapses. ``delta`` is set to ``nodes`` (the whole plan is truncated), so
-    the shared report/display rank checkpoints by how much each one truncates.
-    No-op unless a checkpoint sink is active (see
-    :func:`start_checkpoint_plan_profile`). Never raises.
+    collapses. ``delta`` is set to ``nodes`` (the whole plan is truncated).
+
+    Enabled when ``start_checkpoint_plan_profile()`` is active **or**
+    ``cfg['profile_plan']`` is truthy (Allocation Input style). Never raises.
     """
     sink = _CHECKPOINT_SINK.get()
-    if sink is None:
+    enabled = sink is not None or (
+        isinstance(cfg, dict) and cfg.get("profile_plan")
+    )
+    if not enabled:
         return
     try:
         metrics = measure_plan(df)
@@ -256,8 +370,13 @@ def track_checkpoint_plan(name: str, df) -> None:
             "delta": metrics["nodes"],
             "ops": metrics["ops"],
         }
+        target = (
+            sink
+            if sink is not None
+            else cfg.setdefault("_checkpoint_plan_profile", [])
+        )
         with _LOCK:
-            sink.append(record)
+            target.append(record)
         ops = " ".join(f"{k}={v}" for k, v in sorted(record["ops"].items()))
         logger.info(
             "[PLAN-CKPT] %s: nodes=%d depth=%d%s",
@@ -331,6 +450,59 @@ def track_plan(fn):
 
 
 # --------------------------------------------------------------------------- #
+# Recommendation (printed; does not insert or drop checkpoints)
+# --------------------------------------------------------------------------- #
+def _report_kind(label: str) -> str:
+    normalized = str(label or "").upper()
+    if "ACTION" in normalized:
+        return "action"
+    if "CHECKPOINT" in normalized:
+        return "checkpoint"
+    return "builder"
+
+
+def classify_plan_recommendation(
+    record: dict, threshold: int, kind: str = "builder"
+) -> str:
+    """Label one profile row: add / keep / measure / collapse / remove.
+
+    BUILDER (where the plan grows):
+      * add      — ``delta >= threshold``; consider a new lineage break
+      * measure  — plan already large/deep but this step added little
+      * collapse — small growth; do not add a checkpoint here
+
+    CHECKPOINT (what an existing break truncates; ``delta`` is incoming nodes):
+      * keep     — truncates a large plan
+      * measure  — mid-size; need wall time / fan-out
+      * remove   — low-value seam; consider dropping the break
+
+    ACTION (where Spark materializes a plan):
+      * add      — oversized plan or repeated action name
+      * measure  — action exists, but plan/reuse evidence is insufficient
+    """
+    nodes = int(record.get("nodes", 0) or 0)
+    delta = int(record.get("delta", 0) or 0)
+    depth = int(record.get("depth", 0) or 0)
+    limit = max(1, int(threshold))
+    if kind == "action":
+        if nodes >= limit or int(record.get("action_count", 1) or 1) > 1:
+            return "add"
+        return "measure"
+    if kind == "checkpoint":
+        size = max(nodes, delta)
+        if size >= limit:
+            return "keep"
+        if size >= max(8, limit // 2):
+            return "measure"
+        return "remove"
+    if delta >= limit:
+        return "add"
+    if nodes >= limit or depth >= 20:
+        return "measure"
+    return "collapse"
+
+
+# --------------------------------------------------------------------------- #
 # Report
 # --------------------------------------------------------------------------- #
 def plan_profile_report(
@@ -346,7 +518,36 @@ def plan_profile_report(
     node/depth/ops land in the run log too — not just the notebook display.
     """
     if isinstance(source, dict):
-        records = list(source.get("_plan_profile", []))
+        if not str(label or "").strip():
+            if threshold is None:
+                threshold = source.get(
+                    "plan_checkpoint_threshold", _DEFAULT_CHECKPOINT_THRESHOLD
+                )
+            builders = plan_profile_report(
+                source.get("_plan_profile"), threshold, label="BUILDER"
+            )
+            checkpoints = plan_profile_report(
+                source.get("_checkpoint_plan_profile"),
+                threshold,
+                label="CHECKPOINT",
+            )
+            actions = plan_profile_report(
+                source.get("_action_plan_profile"),
+                threshold,
+                label="ACTION",
+            )
+            source["_checkpoint_plan_profile_report"] = checkpoints
+            source["_action_plan_profile_report"] = actions
+            return builders
+        records = list(
+            source.get(
+                {
+                    "checkpoint": "_checkpoint_plan_profile",
+                    "action": "_action_plan_profile",
+                }.get(_report_kind(label), "_plan_profile"),
+                [],
+            )
+        )
         if threshold is None:
             threshold = source.get(
                 "plan_checkpoint_threshold", _DEFAULT_CHECKPOINT_THRESHOLD
@@ -364,20 +565,65 @@ def plan_profile_report(
         logger.info(empty)
         return []
 
+    kind = _report_kind(label)
     ranked = sorted(records, key=lambda r: r["delta"], reverse=True)
-    header = (
-        f"[PLAN REPORT{tag}] ranked by plan-node growth "
-        "(delta vs largest input); cols: nodes depth (+delta) ops"
-    )
+    action_counts = Counter(str(r.get("func")) for r in records)
+    if kind == "action":
+        header = (
+            f"[PLAN REPORT{tag}] Spark actions ranked by input plan size; "
+            "add / measure (candidate only)"
+        )
+        legend = (
+            f"[PLAN REPORT{tag}] add=nodes>={threshold} or repeated action name; "
+            "measure=insufficient checkpoint evidence"
+        )
+    elif kind == "checkpoint":
+        header = (
+            f"[PLAN REPORT{tag}] ranked by truncated plan size "
+            "(delta=incoming nodes); keep / measure / remove"
+        )
+        legend = (
+            f"[PLAN REPORT{tag}] keep=nodes>={threshold}  "
+            f"measure=mid  remove=low-value existing break"
+        )
+    else:
+        header = (
+            f"[PLAN REPORT{tag}] ranked by plan-node growth "
+            "(delta vs largest input); add / measure / collapse"
+        )
+        legend = (
+            f"[PLAN REPORT{tag}] add=delta>={threshold}  "
+            f"measure=fat/low-growth  collapse=do not add"
+        )
     print(header)
+    print(legend)
     logger.info(header)
+    logger.info(legend)
+    annotated = []
     for r in ranked:
-        ops = " ".join(f"{k}={v}" for k, v in sorted(r["ops"].items()))
-        flag = "  <-- checkpoint candidate" if r["delta"] >= threshold else ""
+        rec = dict(r)
+        if kind == "action":
+            rec["action_count"] = action_counts[str(rec.get("func"))]
+        rec["recommendation"] = classify_plan_recommendation(rec, threshold, kind)
+        ops = " ".join(
+            f"{k}={v}" for k, v in sorted((rec.get("ops") or {}).items())
+        )
+        action_detail = ""
+        if kind == "action":
+            elapsed = rec.get("elapsed_seconds")
+            elapsed_text = (
+                f"{float(elapsed):.3f}s" if elapsed is not None else "unknown"
+            )
+            action_detail = (
+                f"  action={elapsed_text} calls={rec['action_count']}"
+            )
+        flag = f"  <-- {rec['recommendation']}"
         line = (
-            f"  {r['func']:<34} nodes={r['nodes']:>4} depth={r['depth']:>3} "
-            f"(+{r['delta']}){('  ' + ops) if ops else ''}{flag}"
+            f"  {rec['func']:<34} nodes={rec['nodes']:>4} depth={rec['depth']:>3} "
+            f"(+{rec['delta']}){action_detail}"
+            f"{('  ' + ops) if ops else ''}{flag}"
         )
         print(line)
         logger.info(line)
-    return ranked
+        annotated.append(rec)
+    return annotated

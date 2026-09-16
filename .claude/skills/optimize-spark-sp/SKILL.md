@@ -137,14 +137,32 @@ builder and checkpoint sinks for one invocation and emit both reports:
 ```python
 plan_profile_report(builder_records, threshold, label="BUILDER")
 plan_profile_report(checkpoint_records, threshold, label="CHECKPOINT")
+plan_profile_report(action_records, threshold, label="ACTION")
 ```
 
-The report must print and log:
+The report prints every row with a recommendation:
 
 ```text
-function/checkpoint  nodes=N  depth=D  (+delta)  Aggregate=... Filter=...
-Join=... Project=... Scan=... Union=... Window=...
+function  nodes=N  depth=D  (+delta)  ...  <-- add|measure|collapse
+checkpoint  nodes=N  depth=D  (+delta)  ...  <-- keep|measure|remove
 ```
+
+- BUILDER ``add``: ``delta >= threshold`` (consider a new break).
+- BUILDER ``measure``: plan already large/deep, this step added little.
+- BUILDER ``collapse``: low growth — do not add a checkpoint here.
+- CHECKPOINT ``keep`` / ``measure`` / ``remove``: size of the plan the existing
+  break truncates. ``remove`` is a collapse candidate for that seam.
+- ACTION ``add``: an explicit Spark action consumes a plan at/above the threshold
+  or the same named action repeats. ACTION ``measure``: an action exists but plan
+  size/reuse evidence is insufficient.
+
+This is a recommendation only. Do not insert or drop checkpoints from the
+flag alone. Put the evidence-based decision in ``OPTIMIZATION_REPORT.md``.
+
+Wrap explicit `.count()`, `.isEmpty()`, `.collect()`, `.first()`, `.take()`,
+`.toPandas()`, writes, and result-storer calls with `profile_action`. It records
+the input plan before execution and action wall time. Do not globally monkeypatch
+Spark/DataFrame to discover actions.
 
 Measure checkpoint input plans before materialization with `track_checkpoint_plan`.
 Keep profiling opt-in via `profile_plan=False` and

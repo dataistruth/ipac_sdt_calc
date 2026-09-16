@@ -8,6 +8,7 @@ Public API::
 
     from AllocationV2.plan_profiler import (
         measure_plan, track_plan, plan_profile_report,
+        classify_plan_recommendation,
         start_plan_profile, finish_plan_profile,
         build_plan_profile_display,
     )
@@ -28,17 +29,25 @@ from __future__ import annotations
 
 from .display import build_plan_profile_display
 from .profiler import (
+    classify_plan_recommendation,
+    finish_action_profile,
     finish_checkpoint_plan_profile,
     finish_plan_profile,
     measure_plan,
     plan_profile_report,
+    profile_action,
+    start_action_profile,
     start_checkpoint_plan_profile,
     start_plan_profile,
+    track_action_plan,
     track_checkpoint_plan,
     track_plan,
 )
 
 __all__ = [
+    "classify_plan_recommendation",
+    "profile_action",
+    "track_action_plan",
     "measure_plan",
     "track_plan",
     "plan_profile_report",
@@ -46,6 +55,8 @@ __all__ = [
     "finish_plan_profile",
     "start_checkpoint_plan_profile",
     "finish_checkpoint_plan_profile",
+    "start_action_profile",
+    "finish_action_profile",
     "track_checkpoint_plan",
     "build_plan_profile_display",
 ]

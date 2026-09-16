@@ -174,11 +174,15 @@ The shared package is `AllocationV2.plan_profiler`, implemented at
 
 ```python
 finish_checkpoint_plan_profile
+finish_action_profile
 finish_plan_profile
 measure_plan
 plan_profile_report
+profile_action
+start_action_profile
 start_checkpoint_plan_profile
 start_plan_profile
+track_action_plan
 track_checkpoint_plan
 track_plan
 ```
@@ -198,9 +202,11 @@ For a ContextVar-style orchestrator:
 ```python
 plan_token, builder_records = start_plan_profile()
 cp_token, checkpoint_records = start_checkpoint_plan_profile()
+action_token, action_records = start_action_profile()
 try:
     result = run_pipeline(...)
 finally:
+    finish_action_profile(action_token)
     finish_checkpoint_plan_profile(cp_token)
     finish_plan_profile(plan_token)
 
@@ -210,10 +216,38 @@ plan_profile_report(
 plan_profile_report(
     checkpoint_records, plan_checkpoint_threshold, label="CHECKPOINT"
 )
+plan_profile_report(
+    action_records, plan_checkpoint_threshold, label="ACTION"
+)
 ```
 
 Checkpoint wrappers must call `track_checkpoint_plan(name, incoming_df)` before the
 materialization. The profiler is analyze-only; it must not trigger a Spark action.
+
+Instrument every explicit Spark action whose input DataFrame is available:
+
+```python
+is_empty = profile_action("warnings.isEmpty", warnings, warnings.isEmpty, cfg)
+row_count = profile_action("output.count", output, output.count, cfg)
+result = profile_action(
+    "AllocationInput.saveAsTable",
+    output,
+    lambda: writer.saveAsTable(fqn),
+    cfg,
+)
+```
+
+This includes `.count()`, `.isEmpty()`, `.collect()`, `.first()`, `.take()`,
+`.toPandas()`, writes, and result-storer calls. Do not monkeypatch DataFrame or
+Spark globally to discover actions. Calls hidden inside unchanged production services
+cannot be attributed safely; wrap the service's explicit action site only when an
+updated local copy already exists.
+
+The ACTION report prints every instrumented action's incoming plan size, elapsed
+seconds, and repeated call count. It flags `add` only when nodes meet the plan
+threshold or the same named action repeats; otherwise it prints `measure`.
+These are candidates only. A terminal write or one-off action may not benefit from a
+checkpoint even when expensive.
 
 ## Checkpoint module (required API)
 

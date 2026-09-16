@@ -12,6 +12,7 @@ from Common_V2.core.helpers import log_section, log_timing, table_prefix
 
 from .parallel_helpers import run_parallel
 from .parent import output_module
+from .plan_profiler import profile_action
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +49,20 @@ def _append_messages(spark, cfg, messages):
     df = spark.createDataFrame(
         rows, ["RunID", "EntityID", "ErrorMessage", "LogID", "ErrororWarning"]
     )
-    (
+    output = (
         df.withColumn("RunID", F.col("RunID").cast("long"))
         .withColumn("EntityID", F.col("EntityID").cast("int"))
         .withColumn("LogID", F.col("LogID").cast("int"))
-        .write.format("delta").mode("append")
-        .saveAsTable(f"{table_prefix(cfg)}.AllocationRunErrors")
+    )
+    profile_action(
+        "validation_errors.saveAsTable",
+        output,
+        lambda: (
+            output.write.format("delta")
+            .mode("append")
+            .saveAsTable(f"{table_prefix(cfg)}.AllocationRunErrors")
+        ),
+        cfg,
     )
 
 
@@ -83,10 +92,14 @@ def run_validations(
     rounding_logic = cfg.get("rounding_logic")
     if rounding_logic and rounding_logic.lower() == "plugged to gp":
         service = _private_service()
-        gp_exists = not (
-            service._entity_partner_rows(spark, cfg)
-            .filter(F.upper(F.coalesce(F.col("GPorLP"), F.lit(""))) == "G")
-            .isEmpty()
+        gp_rows = service._entity_partner_rows(spark, cfg).filter(
+            F.upper(F.coalesce(F.col("GPorLP"), F.lit(""))) == "G"
+        )
+        gp_exists = not profile_action(
+            "validation.gp_partner.isEmpty",
+            gp_rows,
+            gp_rows.isEmpty,
+            cfg,
         )
         if not gp_exists:
             messages.append((

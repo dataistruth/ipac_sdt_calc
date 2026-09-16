@@ -640,5 +640,6 @@ for row in records:
                 spark,
                 row["checkpoint_plan_profile"],
                 threshold=plan_checkpoint_threshold,
+                kind="checkpoint",
             )
         )

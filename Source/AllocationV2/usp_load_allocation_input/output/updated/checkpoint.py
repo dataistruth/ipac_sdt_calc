@@ -103,7 +103,7 @@ def checkpoint(spark, df, name: str, cfg: dict):
     if not should_checkpoint(cfg, name):
         return df
 
-    track_checkpoint_plan(name, df)
+    track_checkpoint_plan(name, df, cfg)
     backend = normalize_checkpoint_backend(
         cfg.get("_checkpoint_backend", cfg.get("checkpoint_backend"))
     )

@@ -2,12 +2,16 @@
 
 try:
     from AllocationV2.plan_profiler import (
+        finish_action_profile,
         finish_checkpoint_plan_profile,
         finish_plan_profile,
         measure_plan,
         plan_profile_report,
+        profile_action,
+        start_action_profile,
         start_checkpoint_plan_profile,
         start_plan_profile,
+        track_action_plan,
         track_checkpoint_plan,
         track_plan,
     )
@@ -33,12 +37,26 @@ except Exception:
     def finish_checkpoint_plan_profile(token):
         return None
 
-    def track_checkpoint_plan(name, df):
+    def track_checkpoint_plan(name, df, cfg=None):
+        return None
+
+    def track_action_plan(name, df, cfg=None, elapsed_seconds=None):
+        return None
+
+    def profile_action(name, df, action, cfg=None):
+        return action()
+
+    def start_action_profile():
+        return None, []
+
+    def finish_action_profile(token):
         return None
 
 
 __all__ = [
-    "finish_checkpoint_plan_profile", "finish_plan_profile", "measure_plan",
-    "plan_profile_report", "start_checkpoint_plan_profile", "start_plan_profile",
-    "track_checkpoint_plan", "track_plan",
+    "finish_action_profile", "finish_checkpoint_plan_profile",
+    "finish_plan_profile", "measure_plan", "plan_profile_report",
+    "profile_action", "start_action_profile", "start_checkpoint_plan_profile",
+    "start_plan_profile", "track_action_plan", "track_checkpoint_plan",
+    "track_plan",
 ]
