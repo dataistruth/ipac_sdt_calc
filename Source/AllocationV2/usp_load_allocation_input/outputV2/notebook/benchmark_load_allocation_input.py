@@ -69,6 +69,9 @@ dbutils.widgets.dropdown(
 
 source_path = dbutils.widgets.get("source_path").rstrip("/")
 allocation_path = os.path.join(source_path, "AllocationV2")
+checkpoint_v2_path = os.path.join(
+    source_path, "Common_V2", "core", "checkpoint_V2.py"
+)
 if not os.path.isdir(allocation_path):
     raise FileNotFoundError(
         "source_path must be the monolith Source directory containing "
@@ -76,8 +79,16 @@ if not os.path.isdir(allocation_path):
         "Expected: '/Workspace/Users/usa-mukessingh@deloitte.com/"
         "iPACSCore_SDT_Databricks/Source'."
     )
-if source_path not in sys.path:
-    sys.path.insert(0, source_path)
+if not os.path.isfile(checkpoint_v2_path):
+    raise FileNotFoundError(
+        "The updated package requires Common_V2/core/checkpoint_V2.py under "
+        f"source_path. Missing: {checkpoint_v2_path}"
+    )
+# Always make the widget path authoritative. A stale bundle/repo path earlier
+# in sys.path can otherwise resolve an older Common_V2 package without V2.
+while source_path in sys.path:
+    sys.path.remove(source_path)
+sys.path.insert(0, source_path)
 
 shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
 if shuffle_partitions:
@@ -118,6 +129,7 @@ MODULE_ROOTS = (
     "AllocationV2.usp_load_allocation_input.output",
     "AllocationV2.usp_load_allocation_input.outputV2",
     "AllocationV2.plan_profiler",
+    "Common_V2",
 )
 OUTPUT_TABLES = (
     "AllocationInput",

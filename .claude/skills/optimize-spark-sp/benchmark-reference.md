@@ -54,16 +54,24 @@ import sys
 
 def clear_modules(package):
     shared = "AllocationV2.plan_profiler"
+    common = "Common_V2"
     for name in list(sys.modules):
         if (
             name == package
             or name.startswith(package + ".")
             or name == shared
             or name.startswith(shared + ".")
+            or name == common
+            or name.startswith(common + ".")
         ):
             del sys.modules[name]
     importlib.invalidate_caches()
 ```
+
+Always move the selected `source_path` to the front of `sys.path`, even when it
+is already present, and fail early unless
+`Common_V2/core/checkpoint_V2.py` exists there. Otherwise an older bundle or
+workspace checkout can resolve a stale `Common_V2` package that lacks V2.
 
 Validate that the updated package contains at least:
 
