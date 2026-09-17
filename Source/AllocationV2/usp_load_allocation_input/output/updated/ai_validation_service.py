@@ -12,11 +12,22 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.window import Window
 import pyspark.sql.functions as F
 import logging
+import threading
 import time
 
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
 
+try:
+    from .checkpoint import run_parallel as _run_parallel
+except Exception:  # pragma: no cover - fallback when helper import fails
+    def _run_parallel(tasks, label):
+        return [(name, task()) for name, task in tasks]
+
 logger = logging.getLogger(__name__)
+
+# Serializes the (rare) AllocationRunErrors Delta appends so the warning checks
+# can run concurrently without racing on the same table's commit log.
+_ERROR_LOCK = threading.Lock()
 
 
 def run_validations(spark: SparkSession, cfg: dict, lower_tier_df: DataFrame) -> bool:
@@ -50,13 +61,9 @@ def run_validations(spark: SparkSession, cfg: dict, lower_tier_df: DataFrame) ->
         log_timing("run_validations", t0)
         return False
 
-    # Check 2: Tax capital data timestamp warning
-    _check_tax_capital_warning(spark, cfg)
-
-    # Check 3: Extra partners in yearly vs entity
-    _check_extra_partners_warning(spark, cfg)
-
-    # Check 4: GP partner validation (SQL lines 1204-1230)
+    # Check 4: GP partner validation (SQL lines 1204-1230). This is the only
+    # GATING validation (it can abort the run), so it runs first on the caller
+    # thread before the independent warning checks fan out.
     rounding_logic = cfg.get("rounding_logic")
     if rounding_logic and rounding_logic.lower() == "plugged to gp":
         gp_exists = not (
@@ -70,23 +77,26 @@ def run_validations(spark: SparkSession, cfg: dict, lower_tier_df: DataFrame) ->
             log_timing("run_validations", t0)
             return False
 
-    # Check 5: Lower tier fund partner link warnings
-    _check_lower_tier_partner_warnings(spark, cfg, lower_tier_df)
-
-    # Check 6: Multiple partner flow-up warnings
-    _check_multiple_partner_flowup(spark, cfg, lower_tier_df)
-
-    # Check 7: PCAP vs Financial/Cost partner mismatch
-    _check_pcap_financial_mismatch(spark, cfg)
-
-    # Check 8: Financial feed partner not in entity
-    _check_financial_partner_not_in_entity(spark, cfg)
-
-    # Check 9: Multiple upper-tier flow-up warnings
-    _check_multiple_upper_tier_flowup(spark, cfg)
-
-    # Check 10: Entity relationship unlinked partners
-    _check_entity_relationship_unlinked(spark, cfg)
+    # Checks 2,3,5-10 are independent, read-only warning checks that each fire
+    # Spark actions (isEmpty/collect/count). Run them in the shared four-thread
+    # pool; any AllocationRunErrors append is serialized via _ERROR_LOCK.
+    warning_tasks = [
+        ("tax_capital", lambda: _check_tax_capital_warning(spark, cfg)),
+        ("extra_partners", lambda: _check_extra_partners_warning(spark, cfg)),
+        ("lower_tier_partner",
+         lambda: _check_lower_tier_partner_warnings(spark, cfg, lower_tier_df)),
+        ("multiple_partner_flowup",
+         lambda: _check_multiple_partner_flowup(spark, cfg, lower_tier_df)),
+        ("pcap_financial_mismatch",
+         lambda: _check_pcap_financial_mismatch(spark, cfg)),
+        ("financial_partner_not_in_entity",
+         lambda: _check_financial_partner_not_in_entity(spark, cfg)),
+        ("multiple_upper_tier_flowup",
+         lambda: _check_multiple_upper_tier_flowup(spark, cfg)),
+        ("entity_relationship_unlinked",
+         lambda: _check_entity_relationship_unlinked(spark, cfg)),
+    ]
+    _run_parallel(warning_tasks, "validations")
 
     log_timing("run_validations", t0)
     return True
@@ -740,4 +750,9 @@ def _insert_run_error(spark: SparkSession, cfg: dict, message: str, error_type: 
         .withColumn("EntityID", F.col("EntityID").cast("int"))
         .withColumn("LogID", F.col("LogID").cast("int"))
     )
-    error_df.write.format("delta").mode("append").saveAsTable(f"{prefix}.AllocationRunErrors")
+    # Serialize the Delta append: warning checks run on multiple threads and
+    # concurrent commits to the same table would otherwise race.
+    with _ERROR_LOCK:
+        error_df.write.format("delta").mode("append").saveAsTable(
+            f"{prefix}.AllocationRunErrors"
+        )

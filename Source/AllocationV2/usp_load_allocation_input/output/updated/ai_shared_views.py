@@ -84,8 +84,16 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
                 read_table(spark, "AllocationInputWorkflow", cfg), cfg
             )
         )),
-        ("_reclass_data", lambda: current_run_scoped(
-            read_table(spark, "ReclassFootnoteAllocationData", cfg), cfg
+        # reclass_data is the only real ACTION in view loading (Delta
+        # write+read checkpoint). Fold the checkpoint into the task so it runs
+        # on a worker thread concurrently with the other view builds.
+        ("_reclass_data", lambda: checkpoint(
+            spark,
+            current_run_scoped(
+                read_table(spark, "ReclassFootnoteAllocationData", cfg), cfg
+            ),
+            "reclass_data",
+            cfg,
         )),
         ("_k1_line_item", lambda: _small(
             scoped(read_table(spark, "K1LineItem", cfg), cfg)
@@ -115,19 +123,11 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
             )
         )),
     ]
-    # Spark Connect table reads stay lazy until an action. Building these plans
-    # concurrently does not load data and adds Connect RPC contention, so keep
-    # plan construction and catalog registration on the caller thread.
-    print(
-        "[views] registering broadcast-hinted lazy plans sequentially; "
-        "no eager cache/count",
-        flush=True,
-    )
-    for view_name, build_frame in tasks:
-        frame = build_frame()
-        if view_name == "_reclass_data":
-            # Delta writes and catalog changes stay on the caller thread.
-            frame = checkpoint(spark, frame, "reclass_data", cfg)
+    # Build the view frames in the shared four-thread pool. The broadcast-hinted
+    # lookups stay lazy (near-zero cost); the reclass_data task performs its real
+    # Delta checkpoint on a worker thread. Temp-view catalog registration stays
+    # deterministic on the caller thread.
+    for view_name, frame in _ckpt.run_parallel(tasks, "shared-view-load"):
         frame.createOrReplaceTempView(view_name)
         print(
             f"[view] {view_name}: registered "
