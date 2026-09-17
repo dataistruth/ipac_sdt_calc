@@ -155,6 +155,12 @@ def run_parallel(tasks, label: str):
         return []
     workers = min(MAX_THREADS, len(tasks))
     started = time.time()
+    if workers > 1:
+        print(
+            f"[PARALLEL] ▶ '{label}' RUNNING IN PARALLEL: {len(tasks)} tasks "
+            f"across {workers} threads → {names}",
+            flush=True,
+        )
     print(
         f"[parallel:start] {label}: workers={workers} tasks={len(tasks)} "
         f"names={names}",
@@ -194,8 +200,15 @@ def run_parallel(tasks, label: str):
                 f"ident={ident} elapsed={elapsed:.2f}s",
                 flush=True,
             )
+    wall = time.time() - started
+    if workers > 1:
+        print(
+            f"[PARALLEL] ✔ '{label}' finished concurrently: wall={wall:.2f}s "
+            f"(threads={workers}, tasks={len(tasks)})",
+            flush=True,
+        )
     print(
-        f"[parallel:end] {label}: wall={time.time() - started:.2f}s "
+        f"[parallel:end] {label}: wall={wall:.2f}s "
         f"workers={workers} tasks={len(tasks)}",
         flush=True,
     )

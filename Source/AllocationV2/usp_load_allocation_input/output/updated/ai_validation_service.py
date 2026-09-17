@@ -18,10 +18,21 @@ import time
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
 
 try:
-    from .checkpoint import run_parallel as _run_parallel
+    from .checkpoint import run_parallel as _shared_run_parallel
 except Exception:  # pragma: no cover - fallback when helper import fails
-    def _run_parallel(tasks, label):
-        return [(name, task()) for name, task in tasks]
+    _shared_run_parallel = None
+
+
+def _run_parallel(tasks, label):
+    """Run tasks via the shared 4-thread helper; announce if degraded to serial."""
+    if _shared_run_parallel is not None:
+        return _shared_run_parallel(tasks, label)
+    print(
+        f"[PARALLEL] ⚠ '{label}' running SEQUENTIALLY — shared run_parallel "
+        "helper unavailable (sync checkpoint.py to enable parallelism)",
+        flush=True,
+    )
+    return [(name, task()) for name, task in tasks]
 
 logger = logging.getLogger(__name__)
 

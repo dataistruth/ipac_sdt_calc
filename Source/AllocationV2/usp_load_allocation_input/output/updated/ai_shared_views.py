@@ -127,7 +127,17 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
     # lookups stay lazy (near-zero cost); the reclass_data task performs its real
     # Delta checkpoint on a worker thread. Temp-view catalog registration stays
     # deterministic on the caller thread.
-    for view_name, frame in _ckpt.run_parallel(tasks, "shared-view-load"):
+    _parallel = getattr(_ckpt, "run_parallel", None)
+    if _parallel is None:
+        print(
+            "[PARALLEL] ⚠ 'shared-view-load' running SEQUENTIALLY — shared "
+            "run_parallel helper unavailable (sync checkpoint.py)",
+            flush=True,
+        )
+        built = [(name, task()) for name, task in tasks]
+    else:
+        built = _parallel(tasks, "shared-view-load")
+    for view_name, frame in built:
         frame.createOrReplaceTempView(view_name)
         print(
             f"[view] {view_name}: registered "
