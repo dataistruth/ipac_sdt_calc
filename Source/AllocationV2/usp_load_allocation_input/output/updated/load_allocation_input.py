@@ -413,6 +413,12 @@ def run_load_allocation_input(
     allocation_input_df = build_all_form_inputs(spark, cfg)
     print(f"[phase 4] Form inputs: {time.time() - t_phase:.1f}s")
 
+    # Break the 312-node form DAG before K1/PFIC/custom unions fold it into
+    # alloc_input. Logic-neutral; same rows, smaller downstream plans.
+    t_phase = time.time()
+    allocation_input_df = checkpoint(spark, allocation_input_df, "form_inputs", cfg)
+    print(f"[checkpoint] form_inputs: {time.time() - t_phase:.1f}s")
+
     # Phase 5: Build K1 line items + adjustments; union into main allocation DF
     t_phase = time.time()
     k1_df = build_k1_and_related_inputs(spark, cfg, workflows)
