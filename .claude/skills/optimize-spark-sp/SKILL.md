@@ -69,22 +69,30 @@ Resolve these from the request and source tree; ask only when they cannot be inf
 8. Never report an optimization as successful until output fingerprints match.
 9. Support classic PySpark and Spark Connect by duck-typing DataFrames; do not rely on
    `isinstance(obj, pyspark.sql.DataFrame)`.
-10. `output/updated/checkpoint.py` must export `checkpoint`, `pipeline_checkpoint`
-    (alias of `checkpoint`), `drop_checkpoints`, `normalize_checkpoint_backend`,
-    `normalize_local_denylist`, and `inner_base_flowup_checkpoint` (Allocation
-    Input inner 7a). Default backend is `delta`. Delta writes
-    disable column statistics (`spark.databricks.delta.stats.collect=false` and
-    `delta.dataSkippingNumIndexedCols=0`) and restore the prior Spark conf after
-    the write. When backend is `local`, denylist prefixes stay on Delta (self-join
-    safety). Call `track_checkpoint_plan(name, incoming_df)` before materializing.
+10. Updated orchestrators import checkpointing from
+    `Common_V2.core.checkpoint_V2` only (`checkpoint_V2` / alias `checkpoint`,
+    `initialize_checkpoint_V2`, `normalize_checkpoint_mode`). Do **not** create
+    `output/updated/checkpoint.py` and do **not** import
+    `Common_V2.core.checkpoint` (production stats-on writer) from updated code.
+    Call `initialize_checkpoint_V2(cfg, CheckpointMode)` once at start; default
+    mode is **2**. Modes: 1=all stats-off Delta; 2=odd localCheckpoint / even
+    stats-off Delta; 3=odd localCheckpoint / even uncompressed Volume Parquet;
+    4=all localCheckpoint. Pass `CheckpointMode` from the notebook/orchestrator.
+    LocalCheckpoint failures fall back to stats-off Delta. Call
+    `track_checkpoint_plan` via V2 (already hooked when `profile_plan` is on).
 11. Do not rename public helper symbols the orchestrator already imports. After
     rewriting a helper, grep the copied orchestrator for `from .X import` and export
     every name in that list. Allocation Input required names:
     - `shared_views.register_shared_views_parallel`
     - `validation_parallel.run_validations_parallel` (accept `workers=`)
     - `finalize_parallel.collect_results_parallel` (accept `workers=`)
-    - `checkpoint.pipeline_checkpoint`, `drop_checkpoints`, `normalize_local_denylist`,
-      `inner_base_flowup_checkpoint(spark, df, cfg, label)`
+12. Do not drop checkpoint Delta tables or Volume paths on the SP hot path.
+    Unique UUID (or sequence) names make the next run collision-free.
+    `drop_checkpoints` / `drop_checkpoints_V2` stay exported for optional
+    debug cleanup; default is skip. Catalog/volume leftovers are removed by a
+    shared end-of-day sweeper (`_tmp_%`, `_tmp_v2_%`, `volume/_checkpoints/`
+    older than a safety window). `localCheckpoint` needs no drop. Never drop
+    mid-run. Prefer `finally` only when an explicit opt-in flag is set.
 
 ## Output package
 
@@ -97,7 +105,6 @@ Source/AllocationV2/<sp_name>/output/updated/
 ├── orchestrator.py              # or the SP's real entry module name
 ├── parent.py                    # import unchanged prod services from output/
 ├── plan_profiler.py             # shim → AllocationV2.plan_profiler
-├── checkpoint.py                # Delta default; drop_checkpoints; stats off
 ├── parallel_helpers.py          # only when parallel work exists
 ├── run_id_pruning.py            # only when run-scoped reads exist
 ├── output_reconcile.py
@@ -168,10 +175,8 @@ Measure checkpoint input plans before materialization with `track_checkpoint_pla
 Keep profiling opt-in via `profile_plan=False` and
 `plan_checkpoint_threshold=30`.
 
-Never wrap Common_V2 `checkpoint` without re-exporting every name the
-orchestrator imports (`pipeline_checkpoint`, `drop_checkpoints`,
-`normalize_local_denylist`, …). See the implementation reference for the
-Delta/stats-off write contract.
+Never wrap Common_V2 production `checkpoint`. Import V2 in the updated
+orchestrator (`from Common_V2.core.checkpoint_V2 import checkpoint_V2 as checkpoint`).
 
 ### 3. Produce checkpoint recommendations
 
@@ -248,8 +253,8 @@ fingerprints.
 
 Include widgets for source path, run count, execution order, SP parameters, catalog,
 schema, result type, volume path when needed, `MaxThreads` (default `4`),
-`ProfilePlan` (default `on`), `PlanCheckpointThreshold` (default `30`),
-`CheckpointBackend` (default `delta`), and `SqlShufflePartitions`.
+`ProfilePlan` (default `off`), `PlanCheckpointThreshold` (default `30`),
+`CheckpointMode` (default `2`; values `1|2|3|4`), and `SqlShufflePartitions`.
 
 Evict the SP package and `AllocationV2.plan_profiler` from `sys.modules` before fresh
 imports so workspace syncs are not hidden by Python module caching.
@@ -257,10 +262,10 @@ imports so workspace syncs are not hidden by Python module caching.
 ### 7. Verify
 
 - Syntax-check every new Python file.
-- Confirm `checkpoint.py` exports `checkpoint`, `pipeline_checkpoint`,
-  `drop_checkpoints`, `normalize_checkpoint_backend`, and
-  `normalize_local_denylist`; default backend is `delta`; Delta writes disable
-  column stats.
+- Confirm the updated orchestrator imports
+  `Common_V2.core.checkpoint_V2` (not `Common_V2.core.checkpoint` and not
+  `output/updated/checkpoint.py`). Confirm `initialize_checkpoint_V2` runs once
+  with default mode 2. Confirm `drop_checkpoints_V2` is not on the hot path.
 - Confirm no new files under `output/` except `__init__.py` and `updated/`.
 - Search for unresolved imports and accidental production-file modifications.
 - Run the original and updated variants in both orders when practical.

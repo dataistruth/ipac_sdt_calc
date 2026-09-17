@@ -1,5 +1,5 @@
 # Databricks notebook source
-"""A/B benchmark for production and output.updated allocation orchestrators."""
+"""A/B benchmark for production and outputV2 allocation orchestrators."""
 
 # COMMAND ----------
 
@@ -20,8 +20,8 @@ dbutils.widgets.text(
 dbutils.widgets.text("number_of_runs", "1", "2. A/B passes")
 dbutils.widgets.dropdown(
     "ExecutionOrder",
-    "original_first",
-    ["original_first", "updated_first"],
+    "alternate",
+    ["alternate", "original_first", "updated_first"],
     "3. Execution order",
 )
 dbutils.widgets.text("EntityID", "115", "4. EntityID")
@@ -105,34 +105,110 @@ updated_args = {
 
 # COMMAND ----------
 
-def _fresh_import(module_name):
+PRODUCTION_MODULE = (
+    "AllocationV2.usp_load_allocation_input.output.load_allocation_input"
+)
+OUTPUT_V2_MODULE = (
+    "AllocationV2.usp_load_allocation_input.outputV2.load_allocation_input"
+)
+RECONCILE_MODULE = (
+    "AllocationV2.usp_load_allocation_input.outputV2.output_reconcile"
+)
+MODULE_ROOTS = (
+    "AllocationV2.usp_load_allocation_input.output",
+    "AllocationV2.usp_load_allocation_input.outputV2",
+    "AllocationV2.plan_profiler",
+)
+OUTPUT_TABLES = (
+    "AllocationInput",
+    "PFICFootnoteFlowup",
+    "PFICFootnoteFlowupWithTrackingKey",
+    "Form926Flowup",
+    "Form199AFlowup",
+    "Form8865Flowup",
+    "Form8886Flowup",
+    "AtRiskFlowup",
+    "CustomFootnoteFlowup",
+    "Form200616Flowup",
+)
+
+
+def _clear_modules():
     for loaded in list(sys.modules):
-        if loaded == module_name or loaded.startswith(module_name + "."):
+        if any(
+            loaded == root or loaded.startswith(root + ".")
+            for root in MODULE_ROOTS
+        ):
             del sys.modules[loaded]
     importlib.invalidate_caches()
+
+
+def _fresh_import(module_name):
+    _clear_modules()
     return importlib.import_module(module_name)
+
+
+def _quoted_fqn(table_name):
+    return ".".join(
+        f"`{part.replace('`', '``')}`"
+        for part in (
+            common_args["CatalogName"],
+            common_args["SchemaName"],
+            table_name,
+        )
+    )
+
+
+def _purge_run_outputs(variant):
+    """Delete only the benchmark RunID where the table format supports it."""
+    run_id = int(common_args["RunID"])
+    for table_name in OUTPUT_TABLES:
+        fqn = _quoted_fqn(table_name)
+        try:
+            columns = spark.table(fqn).columns
+            if "RunID" not in columns:
+                print(f"[purge] {variant}: skip {table_name} (no RunID)")
+                continue
+            spark.sql(f"DELETE FROM {fqn} WHERE RunID = {run_id}")
+            print(f"[purge] {variant}: {table_name} RunID={run_id}")
+        except Exception as exc:
+            print(
+                f"[purge] {variant}: skip {table_name}; "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+
+def _reported_seconds(result):
+    parsed = result
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(parsed, dict):
+        return None
+    for key in ("elapsed_seconds", "ElapsedSeconds", "total_time_seconds"):
+        if parsed.get(key) is not None:
+            try:
+                return float(parsed[key])
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _run_variant(name):
     if name == "production":
-        module_name = (
-            "AllocationV2.usp_load_allocation_input.output.load_allocation_input"
-        )
+        module_name = PRODUCTION_MODULE
         args = common_args
     else:
-        module_name = (
-            "AllocationV2.usp_load_allocation_input.output.updated."
-            "load_allocation_input"
-        )
+        module_name = OUTPUT_V2_MODULE
         args = updated_args
     module = _fresh_import(module_name)
+    _purge_run_outputs(name)
     started = time.perf_counter()
     result = module.run_load_allocation_input(spark, **args)
     elapsed = time.perf_counter() - started
-    reconcile = importlib.import_module(
-        "AllocationV2.usp_load_allocation_input.output.updated."
-        "output_reconcile"
-    )
+    reconcile = importlib.import_module(RECONCILE_MODULE)
     fingerprints = reconcile.capture_outputs(
         spark,
         common_args["CatalogName"],
@@ -142,6 +218,7 @@ def _run_variant(name):
     return {
         "variant": name,
         "elapsed_seconds": round(elapsed, 3),
+        "reported_seconds": _reported_seconds(result),
         "checkpoint_mode": (
             str(updated_args["CheckpointMode"]) if name == "updated" else "production"
         ),
@@ -156,30 +233,38 @@ def _run_variant(name):
 
 
 number_of_runs = max(1, int(dbutils.widgets.get("number_of_runs")))
-order = (
-    ["production", "updated"]
-    if dbutils.widgets.get("ExecutionOrder") == "original_first"
-    else ["updated", "production"]
-)
+execution_order = dbutils.widgets.get("ExecutionOrder")
 
 rows = []
 for iteration in range(1, number_of_runs + 1):
+    if execution_order == "alternate":
+        order = (
+            ["production", "updated"]
+            if iteration % 2
+            else ["updated", "production"]
+        )
+    elif execution_order == "original_first":
+        order = ["production", "updated"]
+    else:
+        order = ["updated", "production"]
+    print(
+        f"[benchmark] pass {iteration} execution order: "
+        f"{' -> '.join(order)}"
+    )
     pass_rows = {}
     for variant in order:
         row = _run_variant(variant)
         row["iteration"] = iteration
+        row["order"] = " -> ".join(order)
         rows.append(row)
         pass_rows[variant] = row
         print(
-            f"[benchmark] run={iteration} variant={variant} "
-            f"elapsed={row['elapsed_seconds']:.3f}s"
+            f"[benchmark] {variant}: wall={row['elapsed_seconds']:.3f}s "
+            f"reported={row['reported_seconds']}"
         )
     production = json.loads(pass_rows["production"]["fingerprints"])
     updated = json.loads(pass_rows["updated"]["fingerprints"])
-    reconcile = importlib.import_module(
-        "AllocationV2.usp_load_allocation_input.output.updated."
-        "output_reconcile"
-    )
+    reconcile = importlib.import_module(RECONCILE_MODULE)
     mismatches = reconcile.compare_outputs(production, updated)
     if mismatches:
         print(
@@ -189,7 +274,7 @@ for iteration in range(1, number_of_runs + 1):
         raise AssertionError(
             f"Output parity failed: {json.dumps(mismatches, default=str)}"
         )
-    print(f"[reconcile] PASS run={iteration}: all output fingerprints match")
+    print(f"[reconcile] PASS {iteration}: all output fingerprints match")
 
 display(spark.createDataFrame(rows).orderBy("iteration", "variant"))
 

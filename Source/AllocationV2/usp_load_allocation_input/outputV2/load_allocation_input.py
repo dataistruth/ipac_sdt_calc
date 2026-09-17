@@ -208,10 +208,10 @@ def run_load_allocation_input(
 
     print(
         "========================================================\n"
-        "[updated] output.updated.load_allocation_input starting\n"
-        f"[updated] RunID={cfg.get('run_id')} EntityID={cfg.get('entity_id')} "
+        "[outputV2] outputV2.load_allocation_input starting\n"
+        f"[outputV2] RunID={cfg.get('run_id')} EntityID={cfg.get('entity_id')} "
         f"ClientID={cfg.get('client_id')} TaxPeriodID={cfg.get('tax_period_id')}\n"
-        f"[updated] max_threads={cfg['max_threads']} "
+        f"[outputV2] max_threads={cfg['max_threads']} "
         f"checkpoint_mode={cfg['checkpoint_mode']} "
         f"profile_plan={cfg['profile_plan']}\n"
         "========================================================"

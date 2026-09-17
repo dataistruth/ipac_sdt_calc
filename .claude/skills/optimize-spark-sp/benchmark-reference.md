@@ -36,9 +36,9 @@ SchemaName
 ResultType
 VolumePath                 # only when the SP supports it
 MaxThreads                 # default 4
-ProfilePlan                # off | on; default on
+ProfilePlan                # off | on; default off
 PlanCheckpointThreshold    # default 30
-CheckpointBackend          # delta | local; default delta
+CheckpointMode             # 1 | 2 | 3 | 4; default 2
 SqlShufflePartitions       # blank means unchanged
 ```
 
@@ -71,7 +71,6 @@ Validate that the updated package contains at least:
 Source/AllocationV2/<sp>/output/updated/__init__.py
 Source/AllocationV2/<sp>/output/updated/<entry_module>.py
 Source/AllocationV2/<sp>/output/updated/plan_profiler.py
-Source/AllocationV2/<sp>/output/updated/checkpoint.py
 Source/AllocationV2/<sp>/output/updated/output_reconcile.py
 Source/AllocationV2/<sp>/output/updated/notebook/benchmark_<sp>.py
 ```
@@ -94,7 +93,7 @@ For each pass:
 Do not run another process for the same RunID during the benchmark.
 
 Apply `SqlShufflePartitions` to both variants. Pass `MaxThreads`, `ProfilePlan`,
-`PlanCheckpointThreshold`, and `CheckpointBackend` (default `delta`) only to the
+`PlanCheckpointThreshold`, and `CheckpointMode` (default `2`) only to the
 updated variant.
 
 ## Output reconciliation

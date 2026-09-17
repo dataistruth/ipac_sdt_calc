@@ -267,87 +267,53 @@ Log the effective collapsed names at startup. Remove only materialization, never
 DataFrame transformation, temp-view registration, or downstream consumers. Re-run
 parity in both execution orders and compare wall time before keeping the collapse.
 
-## Checkpoint module (required API)
+## Shared checkpoint V2 (required import)
 
-`output/updated/checkpoint.py` is required whenever the SP materializes lineage
-breaks. Export at least:
-
-```python
-DEFAULT_CHECKPOINT_BACKEND = "delta"
-normalize_checkpoint_backend
-normalize_local_denylist
-checkpoint
-pipeline_checkpoint   # required alias of checkpoint
-inner_base_flowup_checkpoint  # Allocation Input 7a: (spark, df, cfg, label)
-drop_checkpoints
-log_checkpoint_plan
-should_checkpoint
-_use_production_checkpoint  # False unless caller opts into Common_V2
-```
-
-Default backend is **delta**, not local. `local` is optional and opt-in only.
-
-The orchestrator and notebook must import only names this module exports. Export
-every public name they use in one shot — do not discover them by Databricks
-`ImportError`. If the SP historically called `pipeline_checkpoint`, keep that
-name as:
+Do **not** add `output/updated/checkpoint.py`. Every updated orchestrator and
+any copied service that materializes a lineage break imports:
 
 ```python
-def pipeline_checkpoint(spark, df, name, cfg):
-    return checkpoint(spark, df, name, cfg)
-```
-
-`_use_production_checkpoint(cfg)` must default to **False**. Updated checkpoints
-write stats-off Delta; they do not wrap `Common_V2.core.checkpoint` unless the
-caller explicitly sets `checkpoint_use_production=True`.
-
-Required Delta write contract:
-
-```python
-STATS_KEY = "spark.databricks.delta.stats.collect"
-
-existed, previous = True, spark.conf.get(STATS_KEY)  # guard missing conf
-try:
-    spark.conf.set(STATS_KEY, "false")
-    (
-        df.write.format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .option("delta.dataSkippingNumIndexedCols", "0")
-        .saveAsTable(fqn)
-    )
-finally:
-    # restore previous conf or unset if it did not exist
-    ...
-```
-
-`drop_checkpoints(spark, cfg)` must drop only tables listed in
-`cfg["_checkpoint_tables"]` for this invocation.
-
-Always export `normalize_local_denylist`. `localCheckpoint` cannot re-resolve
-self-joins (`UNRESOLVED_COLUMN`). Names matching the denylist stay on Delta
-even when the run backend is `local`. Accept a comma/space string or iterable,
-with `mode="extend"` (union defaults) or `mode="replace"` (use only extras;
-empty extras fall back to defaults). Store the result on
-`cfg["_local_delta_denylist"]`.
-
-Do not wrap `Common_V2.core.checkpoint.checkpoint` without also exporting the
-public names the orchestrator and notebook import:
-
-```python
-from .checkpoint import (
-    checkpoint,
-    drop_checkpoints,
-    normalize_checkpoint_backend,
-    normalize_local_denylist,
-    pipeline_checkpoint,
+from Common_V2.core.checkpoint_V2 import (
+    checkpoint_V2 as checkpoint,
+    drop_checkpoints_V2,
+    initialize_checkpoint_V2,
+    normalize_checkpoint_mode,
 )
 ```
 
-Log the setting once per run:
+Production `Common_V2.core.checkpoint` stays untouched and is unused by updated
+code.
+
+At orchestrator start, before worker threads copy `cfg`:
+
+```python
+initialize_checkpoint_V2(cfg, CheckpointMode)  # default mode 2
+```
+
+Then call `checkpoint(spark, df, name, cfg)` at existing seams (and any new
+break the user asked for). Sequence/backend selection lives entirely in V2.
+
+Modes: 1=all stats-off Delta; 2=odd local / even Delta (default); 3=odd local /
+even uncompressed Volume Parquet (`volume_path` required); 4=all local.
+`localCheckpoint` failure falls back to stats-off Delta.
+
+If a copied service still has `from Common_V2.core.checkpoint import checkpoint`,
+rewrite that import to `checkpoint_V2`. Alias `pipeline_checkpoint = checkpoint`
+in the orchestrator only if production used that name — do not invent a local
+module for it.
+
+Keep `drop_checkpoints_V2` in the import list for optional debug, but **do not
+call it on the main run path**. Unique UUID/sequence names make the next run
+collision-free. `localCheckpoint` leaves no catalog object. Delta `_tmp_v2_*`
+tables and Volume `_checkpoints/` paths are hygiene only — a common end-of-day
+job drops objects older than a safety window. If the user opts in
+(`cfg["drop_checkpoints"] = True`), call drop in `finally` after writes, never
+mid-pipeline.
+
+Log once per run:
 
 ```text
-[checkpoint] backend=delta, column_stats=off
+[CHECKPOINT_V2] mode=2 (odd=local, even=delta)
 ```
 
 ## Recommendation evidence
