@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -137,31 +138,72 @@ def drop_checkpoints(spark, cfg: dict) -> None:
 def run_parallel(tasks, label: str):
     """Execute named callables with an invariant maximum of four threads."""
     if not tasks:
+        print(f"[parallel:skip] {label}: no tasks", flush=True)
         return []
     workers = min(MAX_THREADS, len(tasks))
+    names = [name for name, _ in tasks]
     started = time.time()
     print(
-        f"[parallel:start] {label}: tasks={len(tasks)} workers={workers}"
+        f"[parallel:start] {label}: workers={workers} tasks={len(tasks)} "
+        f"names={names}",
+        flush=True,
     )
+
+    def _wrap(name, task):
+        def _run():
+            thread = threading.current_thread().name
+            ident = threading.get_ident()
+            t0 = time.time()
+            print(
+                f"[parallel:run] {label}/{name} thread={thread} ident={ident}",
+                flush=True,
+            )
+            try:
+                result = task()
+            except Exception as exc:
+                elapsed = time.time() - t0
+                print(
+                    f"[parallel:fail] {label}/{name} thread={thread} "
+                    f"elapsed={elapsed:.2f}s error={type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                raise
+            elapsed = time.time() - t0
+            return result, thread, ident, elapsed
+
+        return _run
+
     values = {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    prefix = f"par-{_SAFE_NAME.sub('_', label)[:24]}"
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix) as pool:
         futures = {}
         for name, task in tasks:
+            print(f"[parallel:submit] {label}/{name}", flush=True)
             context = contextvars.copy_context()
-            futures[pool.submit(context.run, task)] = name
+            futures[pool.submit(context.run, _wrap(name, task))] = name
         for future in as_completed(futures):
             name = futures[future]
-            values[name] = future.result()
-            print(f"[parallel:done] {label}/{name}")
+            result, thread, ident, elapsed = future.result()
+            values[name] = result
+            print(
+                f"[parallel:done] {label}/{name} thread={thread} "
+                f"ident={ident} elapsed={elapsed:.2f}s",
+                flush=True,
+            )
     wall = time.time() - started
     logger.info(
-        "[parallel] %s: tasks=%d workers=%d wall=%.2fs",
+        "[parallel] %s: tasks=%d workers=%d wall=%.2fs names=%s",
         label,
         len(tasks),
         workers,
         wall,
+        names,
     )
-    print(f"[parallel:end] {label}: wall={wall:.2f}s")
+    print(
+        f"[parallel:end] {label}: wall={wall:.2f}s workers={workers} "
+        f"tasks={len(tasks)}",
+        flush=True,
+    )
     return [(name, values[name]) for name, _ in tasks]
 
 
