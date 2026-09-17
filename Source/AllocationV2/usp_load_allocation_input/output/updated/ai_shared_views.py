@@ -21,10 +21,6 @@ from Common_V2.core.helpers import read_table, log_section, log_timing
 from . import checkpoint as _ckpt
 from .checkpoint import checkpoint
 
-import contextvars
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 
 def scoped(df, cfg):
     fn = getattr(_ckpt, "scoped", None)
@@ -45,66 +41,6 @@ def current_run_scoped(df, cfg):
         df = df.filter(F.col("RunID") == cfg["run_id"])
     return scoped(df, cfg)
 
-
-def run_parallel(tasks, label: str):
-    names = [name for name, _ in (tasks or [])]
-    print(
-        f"[parallel:call] {label}: tasks={len(names)} names={names}",
-        flush=True,
-    )
-    fn = getattr(_ckpt, "run_parallel", None)
-    if fn:
-        return fn(tasks, label)
-    if not tasks:
-        print(f"[parallel:skip] {label}: no tasks", flush=True)
-        return []
-    started = time.time()
-    workers = min(4, len(tasks))
-    print(
-        f"[parallel:start] {label}: workers={workers} tasks={len(tasks)} "
-        f"names={names}",
-        flush=True,
-    )
-
-    def _wrap(name, task):
-        def _run():
-            thread = threading.current_thread().name
-            ident = threading.get_ident()
-            t0 = time.time()
-            print(
-                f"[parallel:run] {label}/{name} thread={thread} ident={ident}",
-                flush=True,
-            )
-            result = task()
-            elapsed = time.time() - t0
-            return result, thread, ident, elapsed
-
-        return _run
-
-    values = {}
-    with ThreadPoolExecutor(
-        max_workers=workers, thread_name_prefix=f"par-{label[:24]}"
-    ) as pool:
-        futures = {}
-        for name, task in tasks:
-            print(f"[parallel:submit] {label}/{name}", flush=True)
-            context = contextvars.copy_context()
-            futures[pool.submit(context.run, _wrap(name, task))] = name
-        for future in as_completed(futures):
-            name = futures[future]
-            result, thread, ident, elapsed = future.result()
-            values[name] = result
-            print(
-                f"[parallel:done] {label}/{name} thread={thread} "
-                f"ident={ident} elapsed={elapsed:.2f}s",
-                flush=True,
-            )
-    print(
-        f"[parallel:end] {label}: wall={time.time() - started:.2f}s "
-        f"workers={workers} tasks={len(tasks)}",
-        flush=True,
-    )
-    return [(name, values[name]) for name, _ in tasks]
 
 logger = logging.getLogger(__name__)
 
@@ -179,15 +115,16 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
             )
         )),
     ]
-    # Spark Connect table reads stay lazy until an action. The four-thread
-    # pool builds the broadcast-hinted DataFrame plans concurrently; catalog
-    # registration stays on the caller thread.
+    # Spark Connect table reads stay lazy until an action. Building these plans
+    # concurrently does not load data and adds Connect RPC contention, so keep
+    # plan construction and catalog registration on the caller thread.
     print(
-        "[parallel:note] shared-view-load: 4-thread DataFrame plan build "
-        f"for {len(tasks)} views (Spark reads happen on first action)",
+        "[views] registering broadcast-hinted lazy plans sequentially; "
+        "no eager cache/count",
         flush=True,
     )
-    for view_name, frame in run_parallel(tasks, "shared-view-load"):
+    for view_name, build_frame in tasks:
+        frame = build_frame()
         if view_name == "_reclass_data":
             # Delta writes and catalog changes stay on the caller thread.
             frame = checkpoint(spark, frame, "reclass_data", cfg)

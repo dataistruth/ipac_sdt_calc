@@ -476,33 +476,16 @@ def run_load_allocation_input(
 
     # Phase 9: Final aggregation + Delta writes (AllocationInput, PFICFlowup, FormFlowups)
     t_phase = time.time()
-    # Form flow-up planning performs scalar Spark actions. Keep those on the
-    # caller thread; the independent allocation/PFIC collectors can run together.
-    form_cfg = isolated_collector_cfg(cfg)
-    write_form_flowups(spark, form_cfg)
-    merge_collector_cfg(cfg, form_cfg)
-
-    collector_tasks = []
-    for task_name, writer, args in (
-        ("allocation-input", write_allocation_input, (allocation_input_df,)),
-        ("pfic-flowup", write_pfic_flowup, (pfic_flowup_df,)),
+    # Result builders mostly construct plans and can perform scalar Connect
+    # actions. Run them sequentially to avoid RPC contention; only the final,
+    # independent physical table writes use the four-thread pool.
+    for writer, args in (
+        (write_allocation_input, (allocation_input_df,)),
+        (write_pfic_flowup, (pfic_flowup_df,)),
+        (write_form_flowups, ()),
     ):
         local_cfg = isolated_collector_cfg(cfg)
-        collector_tasks.append(
-            (
-                task_name,
-                lambda writer=writer, args=args, local_cfg=local_cfg: (
-                    writer(spark, local_cfg, *args),
-                    local_cfg,
-                )[1],
-            )
-        )
-    print(
-        "[parallel:note] result-builders: 4-thread AllocationInput + PFIC "
-        "flow-up collect/write; FormFlowups already ran on the caller thread",
-        flush=True,
-    )
-    for _, local_cfg in run_parallel(collector_tasks, "result-builders"):
+        writer(spark, local_cfg, *args)
         merge_collector_cfg(cfg, local_cfg)
     print(f"[phase 9] Collect results (groupBy/agg): {time.time() - t_phase:.1f}s")
 
