@@ -69,9 +69,11 @@ def clear_modules(package):
 ```
 
 Always move the selected `source_path` to the front of `sys.path`, even when it
-is already present, and fail early unless
-`Common_V2/core/checkpoint_V2.py` exists there. Otherwise an older bundle or
-workspace checkout can resolve a stale `Common_V2` package that lacks V2.
+is already present, then `import Common_V2.core.checkpoint_V2` to prove V2 is
+on that path. Do **not** use `os.path.isfile` on `/Workspace/...` files;
+Databricks workspace files are importable via `sys.path` but often invisible
+to the local filesystem APIs. Evict cached `Common_V2*` modules so an older
+bundle package cannot hide the workspace copy.
 
 Validate that the updated package contains at least:
 
