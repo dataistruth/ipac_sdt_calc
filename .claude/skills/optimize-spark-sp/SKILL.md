@@ -1,12 +1,12 @@
 ---
 name: optimize-spark-sp
-description: Creates an isolated Source/AllocationV2/<sp>/output/updated package for Databricks PySpark stored procedures. Never edits production output/*.py. Adds FEP-style plan profiling, checkpoint recommendations, ThreadPoolExecutor parallelism with max_threads=4, RunID pruning, bounded broadcasts, reuse-aware caching, and an old-vs-new parity notebook under output/updated/notebook/. Use when optimizing an AllocationV2 SP or asking to profile and benchmark a Spark orchestrator.
+description: Creates an isolated Source/AllocationV2/<sp>/outputV2 package for Databricks PySpark stored procedures. Never edits production output/*.py. Adds FEP-style plan profiling, checkpoint recommendations, ThreadPoolExecutor parallelism with max_threads=4, RunID pruning, bounded broadcasts, reuse-aware caching, and an old-vs-new parity notebook under outputV2/notebook/. Use when optimizing an AllocationV2 SP or asking to profile and benchmark a Spark orchestrator.
 ---
 
 # Optimize Spark Stored Procedure
 
 Create a reviewable, parity-tested optimization candidate. Production files under
-`output/` stay unchanged. Every optimization lives in `output/updated/`.
+`output/` stay unchanged. Every optimization lives in sibling `outputV2/`.
 
 Read [implementation-reference.md](implementation-reference.md) before editing.
 Read [benchmark-reference.md](benchmark-reference.md) before creating the notebook.
@@ -21,23 +21,23 @@ ipac-sdt-calc/
     └── AllocationV2/
         ├── plan_profiler/                 # shared profiler (sync to workspace Source/)
         └── <sp_name>/
-            └── output/
-                ├── __init__.py            # package marker only
-                ├── orchestrator.py        # PRODUCTION — never edit here
-                ├── ai_*.py                # PRODUCTION — never edit here
-                └── updated/               # ALL candidate changes
-                    ├── __init__.py
-                    ├── orchestrator.py    # copy of prod, then edit
-                    ├── plan_profiler.py
-                    ├── parent.py
-                    ├── ...
-                    └── notebook/
-                        └── benchmark_<sp_name>.py
+            ├── output/
+            │   ├── __init__.py            # package marker only
+            │   ├── orchestrator.py        # PRODUCTION — never edit here
+            │   └── ai_*.py                # PRODUCTION — never edit here
+            └── outputV2/                  # ALL candidate changes
+                ├── __init__.py
+                ├── orchestrator.py        # candidate entry module
+                ├── plan_profiler.py
+                ├── parent.py
+                ├── ...
+                └── notebook/
+                    └── benchmark_<sp_name>.py
 ```
 
 Python import root is `Source/` (`PYTHONPATH=Source` locally; Databricks
 `source_path` widget points at workspace `.../Source`). Package names stay
-`AllocationV2.<sp_name>.output` and `AllocationV2.<sp_name>.output.updated`.
+`AllocationV2.<sp_name>.output` and `AllocationV2.<sp_name>.outputV2`.
 
 This repo may omit production `ai_*.py` / orchestrator files (they live on the
 monolith). Still treat `output/` as production: do not add optimized modules there.
@@ -56,11 +56,11 @@ Resolve these from the request and source tree; ask only when they cannot be inf
 
 1. Never edit production files under `Source/AllocationV2/<sp>/output/` except
    creating an empty `__init__.py` if the package marker is missing.
-2. Put every candidate change under `Source/AllocationV2/<sp>/output/updated/`.
+2. Put every candidate change under `Source/AllocationV2/<sp>/outputV2/`.
 3. Never create sibling `*_updated.py` files in `output/` (legacy anti-pattern:
    `load_allocation_input_updated.py`, `checkpoint_updated.py`, etc.).
 4. Never put the A/B notebook at SP-root `notebooks/`. It belongs in
-   `output/updated/notebook/`.
+   `outputV2/notebook/`.
 5. Preserve business logic, filters, join conditions, schemas and write semantics.
 6. Do not parallelize dependent stages, shared mutable temp-view creation, conflicting
    writes, gating validations, or operations whose ordering changes results.
@@ -72,7 +72,7 @@ Resolve these from the request and source tree; ask only when they cannot be inf
 10. Updated orchestrators import checkpointing from
     `Common_V2.core.checkpoint_V2` only (`checkpoint_V2` / alias `checkpoint`,
     `initialize_checkpoint_V2`, `normalize_checkpoint_mode`). Do **not** create
-    `output/updated/checkpoint.py` and do **not** import
+    `outputV2/checkpoint.py` and do **not** import
     `Common_V2.core.checkpoint` (production stats-on writer) from updated code.
     Call `initialize_checkpoint_V2(cfg, CheckpointMode)` once at start; default
     mode is **2**. Modes: 1=all stats-off Delta; 2=odd localCheckpoint / even
@@ -97,6 +97,11 @@ Resolve these from the request and source tree; ask only when they cannot be inf
     checkpoint write. Large checkpoint plans must retain available write
     parallelism. Tune `spark.sql.shuffle.partitions` for the run instead; do
     not add `CheckpointCoalesce` / `checkpoint_coalesce` controls.
+14. Preserve every production checkpoint seam by default. Do not create
+    `CheckpointProfile`, named profile sets such as `lean`, runtime checkpoint
+    bypass lists, or benchmark widgets/options that select them. If measured
+    evidence justifies removing a seam, make that explicit SP-specific code
+    change and accept it only after isolated A/B parity and timing.
 
 ## Output package
 
@@ -104,7 +109,7 @@ Create only this tree (file names may match the SP's orchestrator, e.g.
 `load_allocation_input.py` instead of `orchestrator.py`):
 
 ```text
-Source/AllocationV2/<sp_name>/output/updated/
+Source/AllocationV2/<sp_name>/outputV2/
 ├── __init__.py
 ├── orchestrator.py              # or the SP's real entry module name
 ├── parent.py                    # import unchanged prod services from output/
@@ -117,11 +122,12 @@ Source/AllocationV2/<sp_name>/output/updated/
     └── benchmark_<sp_name>.py
 ```
 
-Copy the production orchestrator into `output/updated/`, then modify only that copy.
+Copy or isolate the production orchestrator under `outputV2/`, then modify only
+the candidate package.
 Use relative imports for updated helpers. Import unchanged production services from
 the parent `output` package via `parent.py` / `output_module()`.
 
-Export the same public entry function from `output/updated/__init__.py`.
+Export the same public entry function from `outputV2/__init__.py`.
 
 ## Workflow
 
@@ -213,7 +219,7 @@ max_threads: int = 4,
 MaxThreads: int | None = None,
 ```
 
-Normalize to `1..8`; PascalCase overrides only when supplied. Use the resulting value
+Normalize to `1..4`; PascalCase overrides only when supplied. Use the resulting value
 for all eligible pools, with stage-specific worker counts capped by task count.
 
 Parallelize only independent, latency-bound groups such as:
@@ -249,7 +255,7 @@ Document each prune, broadcast and cache with its consumer count and safety reas
 
 ### 6. Create the A/B benchmark notebook
 
-Create `Source/AllocationV2/<sp_name>/output/updated/notebook/benchmark_<sp_name>.py`
+Create `Source/AllocationV2/<sp_name>/outputV2/notebook/benchmark_<sp_name>.py`
 as a Databricks source notebook.
 It must run production and updated implementations against identical inputs, purge the
 RunID output before each variant, capture timing, and compare order-independent output
@@ -268,7 +274,7 @@ imports so workspace syncs are not hidden by Python module caching.
 - Syntax-check every new Python file.
 - Confirm the updated orchestrator imports
   `Common_V2.core.checkpoint_V2` (not `Common_V2.core.checkpoint` and not
-  `output/updated/checkpoint.py`). Confirm `initialize_checkpoint_V2` runs once
+  `outputV2/checkpoint.py`). Confirm `initialize_checkpoint_V2` runs once
   with default mode 2. Confirm `drop_checkpoints_V2` is not on the hot path.
 - Confirm no new files under `output/` except `__init__.py` and `updated/`.
 - Search for unresolved imports and accidental production-file modifications.
@@ -296,9 +302,9 @@ State:
 
 User: “Use optimize-spark-sp on `usp_example`.”
 
-Result: Creates `Source/AllocationV2/usp_example/output/updated/`, instruments the
+Result: Creates `Source/AllocationV2/usp_example/outputV2/`, instruments the
 copied orchestrator, applies only safe proven optimizations, and creates
-`output/updated/notebook/benchmark_usp_example.py`.
+`outputV2/notebook/benchmark_usp_example.py`.
 
 ### Profile without adding checkpoints
 

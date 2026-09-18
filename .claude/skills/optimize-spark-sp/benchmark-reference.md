@@ -3,7 +3,7 @@
 Create a Databricks source notebook at:
 
 ```text
-Source/AllocationV2/<sp_name>/output/updated/notebook/benchmark_<sp_name>.py
+Source/AllocationV2/<sp_name>/outputV2/notebook/benchmark_<sp_name>.py
 ```
 
 Do not create `Source/AllocationV2/<sp_name>/notebooks/` or
@@ -15,7 +15,7 @@ Default `source_path` widget:
 /Workspace/Users/<user>/iPACSCore_SDT_Databricks/Source
 ```
 
-After a local edit, sync `Source/AllocationV2/<sp>/output/updated/` (and
+After a local edit, sync `Source/AllocationV2/<sp>/outputV2/` (and
 `Source/AllocationV2/plan_profiler/` if the profiler changed) to that workspace
 `Source/` tree. Do not sync optimized files into production `output/`.
 
@@ -78,15 +78,15 @@ bundle package cannot hide the workspace copy.
 Validate that the updated package contains at least:
 
 ```text
-Source/AllocationV2/<sp>/output/updated/__init__.py
-Source/AllocationV2/<sp>/output/updated/<entry_module>.py
-Source/AllocationV2/<sp>/output/updated/plan_profiler.py
-Source/AllocationV2/<sp>/output/updated/output_reconcile.py
-Source/AllocationV2/<sp>/output/updated/notebook/benchmark_<sp>.py
+Source/AllocationV2/<sp>/outputV2/__init__.py
+Source/AllocationV2/<sp>/outputV2/<entry_module>.py
+Source/AllocationV2/<sp>/outputV2/plan_profiler.py
+Source/AllocationV2/<sp>/outputV2/output_reconcile.py
+Source/AllocationV2/<sp>/outputV2/notebook/benchmark_<sp>.py
 ```
 
 Original module: `AllocationV2.<sp>.output.<prod_entry>`
-Updated module: `AllocationV2.<sp>.output.updated.<entry>`
+Updated module: `AllocationV2.<sp>.outputV2.<entry>`
 
 ## Fair execution
 

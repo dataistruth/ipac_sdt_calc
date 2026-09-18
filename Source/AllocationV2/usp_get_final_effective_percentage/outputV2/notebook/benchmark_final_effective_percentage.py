@@ -33,14 +33,13 @@ dbutils.widgets.dropdown(
 dbutils.widgets.text("VolumePath", "", "12. Volume path")
 dbutils.widgets.text("MaxThreads", "4", "13. Max threads")
 dbutils.widgets.dropdown(
-    "ProfilePlan", "on", ["off", "on"], "14. Plan profile"
+    "ProfilePlan", "off", ["off", "on"], "14. Plan profile"
 )
 dbutils.widgets.text(
     "PlanCheckpointThreshold", "30", "15. Plan threshold"
 )
 dbutils.widgets.dropdown(
-    # Screenshot used CheckpointBackend=delta; V2 mode 1 is all Delta.
-    "CheckpointMode", "1", ["1", "2", "3", "4"], "16. Checkpoint mode"
+    "CheckpointMode", "2", ["1", "2", "3", "4"], "16. Checkpoint mode"
 )
 dbutils.widgets.text(
     "SqlShufflePartitions", "4", "17. Shuffle partitions"
@@ -68,6 +67,8 @@ shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
+if not 1 <= max_threads <= 4:
+    raise ValueError("MaxThreads must be between 1 and 4")
 if result_type.lower() != "deltalake":
     raise ValueError("Reconciliation requires ResultType=deltalake")
 if shuffle_partitions:
@@ -284,6 +285,66 @@ for pass_number in range(1, number_of_runs + 1):
         }
     )
 display(spark.createDataFrame(delta_rows).orderBy("pass"))
+
+# COMMAND ----------
+
+checkpoint_rows = [
+    {
+        "pass": row["pass"],
+        "name": item.get("name"),
+        "sequence": item.get("sequence"),
+        "mode": item.get("mode"),
+        "backend": item.get("backend"),
+        "elapsed_seconds": item.get("elapsed_seconds"),
+    }
+    for row in records
+    if row["variant"] == "updated"
+    for item in row["profile"].get("checkpoint_activity", [])
+]
+if checkpoint_rows:
+    display(
+        spark.createDataFrame(checkpoint_rows).orderBy(
+            "pass", "sequence"
+        )
+    )
+
+parallel_rows = [
+    {
+        "pass": row["pass"],
+        "group": item.get("group"),
+        "task": item.get("task"),
+        "status": item.get("status"),
+        "elapsed_seconds": item.get("elapsed_seconds"),
+        "thread": item.get("thread"),
+    }
+    for row in records
+    if row["variant"] == "updated"
+    for item in row["profile"].get("parallel_activity", [])
+]
+if parallel_rows:
+    display(
+        spark.createDataFrame(parallel_rows).orderBy(
+            "pass", "group", "task"
+        )
+    )
+
+timing_rows = [
+    {
+        "pass": row["pass"],
+        "step": item.get("step"),
+        "calls": item.get("calls"),
+        "elapsed_seconds": item.get("elapsed_seconds"),
+    }
+    for row in records
+    if row["variant"] == "updated"
+    for item in row["profile"].get("timings", [])
+]
+if timing_rows:
+    display(
+        spark.createDataFrame(timing_rows).orderBy(
+            "pass", "elapsed_seconds", ascending=[True, False]
+        )
+    )
 
 # COMMAND ----------
 

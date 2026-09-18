@@ -7,8 +7,11 @@ import functools
 import inspect
 import logging
 import re
+import threading
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import Any, Callable
 
 from Common_V2.core.checkpoint_V2 import (
@@ -23,10 +26,10 @@ from .plan_profiler import (
     finish_checkpoint_plan_profile,
     finish_plan_profile,
     plan_profile_report,
+    profile_action,
     start_action_profile,
     start_checkpoint_plan_profile,
     start_plan_profile,
-    track_checkpoint_plan,
     track_plan,
 )
 
@@ -50,45 +53,18 @@ _ACTIVE_PROFILE_PLAN: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _ACTIVE_RUN_CFG: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "fep_output_v2_run_cfg", default=None
 )
-_ACTIVE_CHECKPOINT_PROFILE: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "fep_output_v2_checkpoint_profile", default="lean"
-)
 _ACTIVE_LOCAL_DENYLIST: contextvars.ContextVar[frozenset[str]] = (
     contextvars.ContextVar(
         "fep_output_v2_local_delta_denylist",
         default=frozenset({"final_cost_pct"}),
     )
 )
-_ACTIVE_SPLIT_CPBT: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "fep_output_v2_split_cpbt_inputs", default=True
-)
+_ACTIVE_PARALLEL_COORDINATOR: contextvars.ContextVar[
+    "_ParallelCoordinator | None"
+] = contextvars.ContextVar("fep_output_v2_parallel_coordinator", default=None)
 _LAST_RUN_PROFILE: dict[str, Any] = {}
 
 _BUILTIN_LOCAL_DELTA_DENYLIST = frozenset({"final_cost_pct"})
-CHECKPOINT_PROFILES = {
-    "full": frozenset(),
-    "lean": frozenset(
-        {
-            "eff_dt_fused",
-            "uc_ordered_common",
-            "all_und_common_nolt",
-            "input_lines_nolt",
-            "eff_dated_s6_m0",
-            "entity_und_common_nolt",
-        }
-    ),
-    "conservative": frozenset(
-        {"underlyings_common", "nde_post_miss_fused"}
-    ),
-    "balanced": frozenset(
-        {
-            "underlyings_common",
-            "nde_post_miss_fused",
-            "all_ent_pre_tag_m0",
-            "eff_dated_s6_m0",
-        }
-    ),
-}
 
 
 def _normalize_workers(max_threads: Any = 4, MaxThreads: Any = None) -> int:
@@ -118,13 +94,88 @@ def _timed(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapped
 
 
-def _normalize_profile(value: Any) -> str:
-    profile = str(value or "lean").strip().lower()
-    if profile not in CHECKPOINT_PROFILES:
-        raise ValueError(
-            "CheckpointProfile must be one of full, lean, conservative, balanced"
+class _ParallelCoordinator:
+    """Run named, read-only planning and distinct-table write tasks safely."""
+
+    def __init__(self, workers: int):
+        self.workers = workers
+        self._executor = (
+            ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="fep-output-v2"
+            )
+            if workers > 1
+            else None
         )
-    return profile
+        self._futures = {}
+        self._groups: set[str] = set()
+        self._activity: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+
+    def submit_group(self, group: str, tasks) -> None:
+        if self._executor is None:
+            return
+        with self._lock:
+            first_submission = group not in self._groups
+            self._groups.add(group)
+        if first_submission:
+            print(
+                f"[outputV2 parallel] group={group} "
+                f"tasks={[name for name, _, _, _ in tasks]} "
+                f"workers={self.workers}",
+                flush=True,
+            )
+        for name, fn, args, kwargs in tasks:
+            key = (group, name)
+            with self._lock:
+                if key in self._futures:
+                    continue
+                context = contextvars.copy_context()
+                self._futures[key] = self._executor.submit(
+                    context.run,
+                    self._execute,
+                    group,
+                    name,
+                    fn,
+                    args,
+                    kwargs,
+                )
+
+    def _execute(self, group, name, fn, args, kwargs):
+        started = time.time()
+        status = "PASS"
+        try:
+            return fn(*args, **kwargs)
+        except Exception:
+            status = "FAIL"
+            raise
+        finally:
+            event = {
+                "group": group,
+                "task": name,
+                "status": status,
+                "elapsed_seconds": round(time.time() - started, 3),
+                "thread": threading.current_thread().name,
+            }
+            with self._lock:
+                self._activity.append(event)
+
+    def result(self, group, name, fn, *args, **kwargs):
+        if self._executor is None:
+            return fn(*args, **kwargs)
+        self.submit_group(group, ((name, fn, args, kwargs),))
+        return self._futures[(group, name)].result()
+
+    def shutdown(self) -> None:
+        if self._executor is not None:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+
+    @property
+    def activity(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return sorted(
+                (dict(item) for item in self._activity),
+                key=lambda item: (item["group"], item["task"]),
+            )
 
 
 def _normalize_denylist(value: Any, mode: Any) -> frozenset[str]:
@@ -139,29 +190,9 @@ def _normalize_denylist(value: Any, mode: Any) -> frozenset[str]:
     return frozenset(set(_BUILTIN_LOCAL_DELTA_DENYLIST) | supplied)
 
 
-def _is_dataframe(value: Any) -> bool:
-    """Duck-type classic and Spark Connect DataFrames."""
-    return all(
-        hasattr(value, attribute)
-        for attribute in ("schema", "columns", "explain")
-    )
-
-
 def _checkpoint(spark, df, name, cfg):
-    """Apply the measured profile and V2 backend safety policy."""
+    """Preserve every production seam and apply the V2 backend safety policy."""
     started = time.time()
-    profile = _ACTIVE_CHECKPOINT_PROFILE.get()
-    if name in CHECKPOINT_PROFILES[profile]:
-        if cfg.get("profile_plan"):
-            track_checkpoint_plan(name, df, cfg)
-        cfg.setdefault("_output_v2_checkpoint_bypasses", []).append(name)
-        print(
-            f"[outputV2 checkpoint] bypass name={name} profile={profile}",
-            flush=True,
-        )
-        _record(f"checkpoint-bypass:{name}", time.time() - started)
-        return df
-
     activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
     forced_delta = any(
         str(name).startswith(prefix)
@@ -215,7 +246,6 @@ def _delegated_run_modes(*args, **kwargs):
     cfg = _build_cfg_for_run_modes(bound)
     cfg.pop("_checkpoint_v2_state", None)
     cfg["_checkpoint_v2_activity"] = []
-    cfg["_output_v2_checkpoint_bypasses"] = []
     cfg["_output_v2_forced_delta"] = []
     cfg["profile_plan"] = _ACTIVE_PROFILE_PLAN.get()
     _ACTIVE_RUN_CFG.set(cfg)
@@ -229,48 +259,6 @@ def _delegated_run_modes(*args, **kwargs):
 _base._checkpoint = _checkpoint
 _base._drop_checkpoints = _drop_checkpoints_noop
 _base.run_modes = _delegated_run_modes
-
-
-_CPBT_INPUT_SPLIT_SPECS = (
-    (6, "nde_pre_cpbt_cpbtin"),
-    (7, "de_pre_cpbt_cpbtin"),
-)
-
-
-def _split_cpbt_inputs(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Pre-checkpoint only CPBT's positional non-dated and dated inputs."""
-    @functools.wraps(fn)
-    def wrapped(*args, **kwargs):
-        checkpoint_fn = kwargs.get("checkpoint_fn")
-        cfg = args[1] if len(args) >= 2 else None
-        if (
-            _ACTIVE_SPLIT_CPBT.get()
-            and callable(checkpoint_fn)
-            and len(args) >= 9
-            and isinstance(cfg, dict)
-        ):
-            mutable_args = list(args)
-            mode = cfg.get("_current_mode", 1)
-            for index, prefix in _CPBT_INPUT_SPLIT_SPECS:
-                if _is_dataframe(mutable_args[index]):
-                    mutable_args[index] = checkpoint_fn(
-                        args[0],
-                        mutable_args[index],
-                        f"{prefix}_m{mode}",
-                        cfg,
-                    )
-            args = tuple(mutable_args)
-        return fn(*args, **kwargs)
-
-    return wrapped
-
-
-# Install the proven CPBT input split as the innermost wrapper, so timing and
-# plan profiling observe the post-split builder. The production builder itself
-# remains unchanged; warning-only reader swaps and cost_pct_loader stay off.
-_base_build_cpbt = getattr(_base, "build_cost_percentage_by_type", None)
-if callable(_base_build_cpbt):
-    _base.build_cost_percentage_by_type = _split_cpbt_inputs(_base_build_cpbt)
 
 _TIMED_GLOBALS = (
     "load_config",
@@ -326,6 +314,222 @@ for _name in _TIMED_GLOBALS:
         setattr(_base, _name, track_plan(_timed(_name, _fn)))
 
 
+_PARALLEL_ORIGINALS = {
+    name: getattr(_base, name)
+    for name in (
+        "build_cost_percentage_snapshot_modes123",
+        "build_cost_percentage_snapshot_mode4",
+        "build_entity_partners",
+        "build_asset_class_relationship",
+        "load_line_items",
+        "load_book_effective_data",
+        "load_quarters",
+        "load_yearly_data",
+        "build_lookthrough_input_modes14",
+        "build_footnote_lines",
+    )
+}
+
+
+def _parallel_result(group, name, *args, **kwargs):
+    coordinator = _ACTIVE_PARALLEL_COORDINATOR.get()
+    original = _PARALLEL_ORIGINALS[name]
+    if coordinator is None:
+        return original(*args, **kwargs)
+    return coordinator.result(group, name, original, *args, **kwargs)
+
+
+def _snapshot_with_common_dimensions(name):
+    @functools.wraps(_PARALLEL_ORIGINALS[name])
+    def wrapped(spark, cfg, *args, **kwargs):
+        coordinator = _ACTIVE_PARALLEL_COORDINATOR.get()
+        if coordinator is not None:
+            coordinator.submit_group(
+                "common_dimensions",
+                (
+                    (
+                        "build_entity_partners",
+                        _PARALLEL_ORIGINALS["build_entity_partners"],
+                        (spark, cfg),
+                        {},
+                    ),
+                    (
+                        "build_asset_class_relationship",
+                        _PARALLEL_ORIGINALS[
+                            "build_asset_class_relationship"
+                        ],
+                        (spark, cfg),
+                        {},
+                    ),
+                    (
+                        name,
+                        _PARALLEL_ORIGINALS[name],
+                        (spark, cfg, *args),
+                        kwargs,
+                    ),
+                ),
+            )
+        return _parallel_result(
+            "common_dimensions", name, spark, cfg, *args, **kwargs
+        )
+
+    return wrapped
+
+
+def _line_items_with_common_inputs(spark, cfg, *args, **kwargs):
+    coordinator = _ACTIVE_PARALLEL_COORDINATOR.get()
+    if coordinator is not None:
+        coordinator.submit_group(
+            "common_inputs",
+            tuple(
+                (
+                    name,
+                    _PARALLEL_ORIGINALS[name],
+                    (spark, cfg),
+                    {},
+                )
+                for name in (
+                    "load_line_items",
+                    "load_book_effective_data",
+                    "load_quarters",
+                    "load_yearly_data",
+                )
+            ),
+        )
+    return _parallel_result(
+        "common_inputs", "load_line_items", spark, cfg, *args, **kwargs
+    )
+
+
+def _lookthrough_with_footnote_lines(spark, cfg, *args, **kwargs):
+    coordinator = _ACTIVE_PARALLEL_COORDINATOR.get()
+    if coordinator is not None:
+        coordinator.submit_group(
+            "lookthrough_metadata",
+            tuple(
+                (
+                    name,
+                    _PARALLEL_ORIGINALS[name],
+                    (spark, cfg),
+                    {},
+                )
+                for name in (
+                    "build_lookthrough_input_modes14",
+                    "build_footnote_lines",
+                )
+            ),
+        )
+    return _parallel_result(
+        "lookthrough_metadata",
+        "build_lookthrough_input_modes14",
+        spark,
+        cfg,
+        *args,
+        **kwargs,
+    )
+
+
+for _snapshot_name in (
+    "build_cost_percentage_snapshot_modes123",
+    "build_cost_percentage_snapshot_mode4",
+):
+    setattr(
+        _base,
+        _snapshot_name,
+        _snapshot_with_common_dimensions(_snapshot_name),
+    )
+
+for _parallel_name, _parallel_group in (
+    ("build_entity_partners", "common_dimensions"),
+    ("build_asset_class_relationship", "common_dimensions"),
+    ("load_book_effective_data", "common_inputs"),
+    ("load_quarters", "common_inputs"),
+    ("load_yearly_data", "common_inputs"),
+    ("build_footnote_lines", "lookthrough_metadata"),
+):
+    setattr(
+        _base,
+        _parallel_name,
+        functools.partial(_parallel_result, _parallel_group, _parallel_name),
+    )
+
+_base.load_line_items = _line_items_with_common_inputs
+_base.build_lookthrough_input_modes14 = _lookthrough_with_footnote_lines
+
+
+_PRODUCTION_RESULT_STORER = _base.GenericResultStorer
+
+
+class _ParallelResultStorer(_PRODUCTION_RESULT_STORER):
+    """Write FEP's distinct output tables concurrently."""
+
+    def _store_profiled_table(
+        self, df, catalog_name, database_name, table_name, run_id
+    ):
+        cfg = _ACTIVE_RUN_CFG.get()
+        return profile_action(
+            f"write:{table_name}",
+            df,
+            lambda: self.store_output_to_delta_table(
+                df,
+                catalog_name,
+                database_name,
+                table_name,
+                run_id,
+            ),
+            cfg,
+        )
+
+    def store_output_to_delta_lake(
+        self, result, catalog_name, database_name, run_id
+    ):
+        coordinator = _ACTIVE_PARALLEL_COORDINATOR.get()
+        if coordinator is None or coordinator.workers <= 1 or len(result) <= 1:
+            return super().store_output_to_delta_lake(
+                result, catalog_name, database_name, run_id
+            )
+
+        print(f"🔄 Storing to Delta Tables in parallel: {datetime.now()}")
+        tasks = tuple(
+            (
+                table_name,
+                self._store_profiled_table,
+                (
+                    df,
+                    catalog_name,
+                    database_name,
+                    table_name,
+                    run_id,
+                ),
+                {},
+            )
+            for table_name, df in result.items()
+        )
+        coordinator.submit_group("output_writes", tasks)
+        failures = []
+        for table_name in result:
+            try:
+                coordinator.result(
+                    "output_writes",
+                    table_name,
+                    self._store_profiled_table,
+                )
+                print(f"   ✓ {table_name}")
+            except Exception as exc:
+                failures.append((table_name, str(exc)))
+                print(f"   ✗ {table_name}: {exc}")
+        if failures:
+            raise RuntimeError(
+                f"Failed to store {len(failures)} FEP output table(s): "
+                f"{failures}"
+            )
+        print(f"✅ Stored to Delta Tables: {datetime.now()}")
+        return None
+
+
+_base.GenericResultStorer = _ParallelResultStorer
+
+
 def _summarize(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     elapsed: dict[str, float] = defaultdict(float)
     calls: dict[str, int] = defaultdict(int)
@@ -369,9 +573,6 @@ def _pop_options(kwargs: dict[str, Any]) -> dict[str, Any]:
             kwargs.pop("plan_checkpoint_threshold", 30),
         )
     )
-    checkpoint_profile = _normalize_profile(
-        kwargs.pop("CheckpointProfile", kwargs.pop("checkpoint_profile", "lean"))
-    )
     denylist_value = kwargs.pop(
         "LocalDeltaDenylist", kwargs.pop("local_delta_denylist", None)
     )
@@ -383,22 +584,13 @@ def _pop_options(kwargs: dict[str, Any]) -> dict[str, Any]:
         or "extend"
     ).strip().lower()
     local_denylist = _normalize_denylist(denylist_value, denylist_mode)
-    split_cpbt_inputs = _as_bool(
-        kwargs.pop(
-            "SplitCpbtInputs",
-            kwargs.pop("split_cpbt_inputs", True),
-        ),
-        default=True,
-    )
     return {
         "checkpoint_mode": checkpoint_mode,
         "max_threads": max_threads,
         "profile_plan": profile_plan,
         "threshold": threshold,
-        "checkpoint_profile": checkpoint_profile,
         "local_denylist": local_denylist,
         "local_denylist_mode": denylist_mode,
-        "split_cpbt_inputs": split_cpbt_inputs,
     }
 
 
@@ -413,11 +605,9 @@ def _run_profiled(fn: Callable[..., Any], *args, **kwargs):
     mode_token = _ACTIVE_CHECKPOINT_MODE.set(checkpoint_mode)
     workers_token = _ACTIVE_MAX_THREADS.set(max_threads)
     profile_flag_token = _ACTIVE_PROFILE_PLAN.set(profile_plan)
-    checkpoint_profile_token = _ACTIVE_CHECKPOINT_PROFILE.set(
-        options["checkpoint_profile"]
-    )
     denylist_token = _ACTIVE_LOCAL_DENYLIST.set(options["local_denylist"])
-    split_cpbt_token = _ACTIVE_SPLIT_CPBT.set(options["split_cpbt_inputs"])
+    coordinator = _ParallelCoordinator(max_threads)
+    parallel_token = _ACTIVE_PARALLEL_COORDINATOR.set(coordinator)
     run_cfg_token = _ACTIVE_RUN_CFG.set(None)
     plan_token = checkpoint_token = action_token = None
     builder_records: list[dict[str, Any]] = []
@@ -430,15 +620,15 @@ def _run_profiled(fn: Callable[..., Any], *args, **kwargs):
 
     print(
         f"[outputV2] CheckpointMode={checkpoint_mode} "
-        f"CheckpointProfile={options['checkpoint_profile']} "
-        f"SplitCpbtInputs={'on' if options['split_cpbt_inputs'] else 'off'} "
-        f"MaxThreads={max_threads} execution=sequential"
+        f"MaxThreads={max_threads} "
+        f"execution={'bounded_parallel' if max_threads > 1 else 'sequential'}"
     )
     started = time.time()
     run_cfg = None
     try:
         result = fn(*args, **kwargs)
     finally:
+        coordinator.shutdown()
         if action_token is not None:
             finish_action_profile(action_token)
         if checkpoint_token is not None:
@@ -450,9 +640,8 @@ def _run_profiled(fn: Callable[..., Any], *args, **kwargs):
         _ACTIVE_MAX_THREADS.reset(workers_token)
         _ACTIVE_CHECKPOINT_MODE.reset(mode_token)
         _ACTIVE_PROFILE_PLAN.reset(profile_flag_token)
-        _ACTIVE_CHECKPOINT_PROFILE.reset(checkpoint_profile_token)
         _ACTIVE_LOCAL_DENYLIST.reset(denylist_token)
-        _ACTIVE_SPLIT_CPBT.reset(split_cpbt_token)
+        _ACTIVE_PARALLEL_COORDINATOR.reset(parallel_token)
         _ACTIVE_TIMINGS.reset(timing_token)
 
     wall = round(time.time() - started, 3)
@@ -477,11 +666,6 @@ def _run_profiled(fn: Callable[..., Any], *args, **kwargs):
         if isinstance(run_cfg, dict)
         else []
     )
-    bypassed = (
-        list(run_cfg.get("_output_v2_checkpoint_bypasses", ()))
-        if isinstance(run_cfg, dict)
-        else []
-    )
     forced_delta = (
         list(run_cfg.get("_output_v2_forced_delta", ()))
         if isinstance(run_cfg, dict)
@@ -492,15 +676,15 @@ def _run_profiled(fn: Callable[..., Any], *args, **kwargs):
         {
             "updated_wall_seconds": wall,
             "effective_max_threads": max_threads,
-            "execution_strategy": "sequential",
+            "execution_strategy": (
+                "bounded_parallel" if max_threads > 1 else "sequential"
+            ),
             "checkpoint_mode": checkpoint_mode,
-            "checkpoint_profile": options["checkpoint_profile"],
             "local_delta_denylist": sorted(options["local_denylist"]),
             "local_delta_denylist_mode": options["local_denylist_mode"],
-            "split_cpbt_inputs": options["split_cpbt_inputs"],
             "checkpoint_activity": activity,
-            "checkpoint_bypasses": bypassed,
             "forced_delta_names": forced_delta,
+            "parallel_activity": coordinator.activity,
             "timings": timings,
             "plan_profile": reports["builder"],
             "checkpoint_plan_profile": reports["checkpoint"],
@@ -533,6 +717,9 @@ def get_last_run_profile() -> dict[str, Any]:
         "timings": list(_LAST_RUN_PROFILE.get("timings", ())),
         "checkpoint_activity": list(
             _LAST_RUN_PROFILE.get("checkpoint_activity", ())
+        ),
+        "parallel_activity": list(
+            _LAST_RUN_PROFILE.get("parallel_activity", ())
         ),
         "plan_profile": list(_LAST_RUN_PROFILE.get("plan_profile", ())),
         "checkpoint_plan_profile": list(

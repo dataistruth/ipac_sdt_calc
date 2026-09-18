@@ -46,16 +46,27 @@ The method name and SP name do not change.
    plan profiling. BUILDER, CHECKPOINT, and ACTION reports are emitted when
    `ProfilePlan` is enabled; ACTION may be empty because production action sites
    are intentionally not copied or monkeypatched.
-7. No speculative collapsed checkpoints, post-builder checkpoints, CPBT input
+7. Every production checkpoint seam remains active. There is no
+   `CheckpointProfile`, runtime bypass list, or checkpoint-profile widget.
+8. No speculative collapsed checkpoints, post-builder checkpoints, CPBT input
    splits, experimental cost loader, caching, or helper substitutions are active.
 
 ## Parallelism decision
 
 `max_threads` and `MaxThreads` normalize to 1..4 and the effective value is
-reported. Execution remains sequential. At wrapper level no group is provably
-independent: production mutates shared mode state, consumes dependent
-checkpoints, performs gating validations, and writes the same RunID. Inventing a
-thread pool here would risk mode leakage and conflicting output commits.
+reported. Four bounded groups contain only independent work:
+
+1. `common_dimensions`: the applicable cost snapshot, entity-partner lookup,
+   and asset-class relationship plan.
+2. `common_inputs`: line items, book-effective data, quarters, and yearly data.
+3. `lookthrough_metadata`: lookthrough input and footnote-line mapping.
+4. `output_writes`: writes the three mode-specific results to distinct Delta
+   tables.
+
+Each task uses the same read-only configuration after config loading. Failures
+are re-raised on the main thread. Mode preparation, shared `cfg` mutations,
+checkpoint materialization order, fused CPBT/effective calculations, gating
+validations, and per-mode output assembly remain sequential.
 
 ## Checkpoint safety rule
 
@@ -66,6 +77,10 @@ thread pool here would risk mode leakage and conflicting output commits.
 | Actual local result | `toDF(*columns)` | Mimic qualifier reset from a fresh table relation |
 
 There is no hot-path cleanup and no `outputV2/checkpoint.py`.
+
+The outputV2 checkpoint set therefore matches the production checkpoint set;
+only the configured V2 backend and the `final_cost_pct*` Delta safety override
+can differ.
 
 ## Output tables and acceptance metrics
 
@@ -81,5 +96,7 @@ Run `notebook/benchmark_final_effective_percentage.py` in Databricks with
 `ExecutionOrder=alternate` and at least two passes. Accept only if all three
 table fingerprints, schemas, counts, and sums match in both orders and measured
 wall time improves beyond normal cluster variance. Profile separately with
-`ProfilePlan=on`; leave it off for timing. No local runtime improvement is
-claimed.
+`ProfilePlan=on`; leave it off for timing. The notebook displays benchmark
+timings, parity, checkpoint activity, parallel task activity, ranked step
+timings, and BUILDER/CHECKPOINT/ACTION profile tables. No local runtime
+improvement is claimed.

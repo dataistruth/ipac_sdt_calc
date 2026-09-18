@@ -4,7 +4,7 @@
 
 - Shared profiler: `Source/AllocationV2/plan_profiler/`
 - SP production (read-only): `Source/AllocationV2/<sp>/output/`
-- SP candidate (write here only): `Source/AllocationV2/<sp>/output/updated/`
+- SP candidate (write here only): `Source/AllocationV2/<sp>/outputV2/`
 
 Forbidden:
 
@@ -28,7 +28,7 @@ def output_module(name: str):
 
 If the production orchestrator contains substantial orchestration logic that cannot be
 cleanly imported, copy it verbatim to
-`Source/AllocationV2/<sp>/output/updated/<same_filename>.py` and make the smallest
+`Source/AllocationV2/<sp>/outputV2/<same_filename>.py` and make the smallest
 possible edits there. Never make an updated module import itself. Never write that
 copy into `output/` next to production.
 
@@ -170,7 +170,7 @@ Do not cache a single-consumer DataFrame.
 
 The shared package is `AllocationV2.plan_profiler`, implemented at
 `Source/AllocationV2/plan_profiler/`. Each SP's local shim is
-`output/updated/plan_profiler.py` and must re-export:
+`outputV2/plan_profiler.py` and must re-export:
 
 ```python
 finish_checkpoint_plan_profile
@@ -249,27 +249,17 @@ threshold or the same named action repeats; otherwise it prints `measure`.
 These are candidates only. A terminal write or one-off action may not benefit from a
 checkpoint even when expensive.
 
-When profiler evidence justifies collapsing an existing break, preserve a per-run
-escape hatch:
-
-```python
-DEFAULT_COLLAPSED_CHECKPOINTS = frozenset({"low_value_seam"})
-
-def should_checkpoint(cfg, name):
-    if name in set(cfg.get("_checkpoint_force", ()) or ()):
-        return True
-    bypass = set(DEFAULT_COLLAPSED_CHECKPOINTS)
-    bypass.update(cfg.get("_checkpoint_bypass", ()) or ())
-    return name not in bypass
-```
-
-Log the effective collapsed names at startup. Remove only materialization, never the
-DataFrame transformation, temp-view registration, or downstream consumers. Re-run
-parity in both execution orders and compare wall time before keeping the collapse.
+Preserve every production checkpoint seam by default. Do not add runtime checkpoint
+profiles, profile names such as `lean`, bypass lists, force lists, or corresponding
+notebook parameters. When profiler evidence justifies collapsing an existing break
+and the user asks to implement it, make the removal directly in the SP-specific
+`outputV2` code. Remove only materialization, never the DataFrame transformation,
+temp-view registration, or downstream consumers. Re-run parity in both execution
+orders and compare wall time before keeping the code change.
 
 ## Shared checkpoint V2 (required import)
 
-Do **not** add `output/updated/checkpoint.py`. Every updated orchestrator and
+Do **not** add `outputV2/checkpoint.py`. Every updated orchestrator and
 any copied service that materializes a lineage break imports:
 
 ```python
