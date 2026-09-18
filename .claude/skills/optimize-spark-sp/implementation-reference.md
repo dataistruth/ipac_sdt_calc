@@ -297,6 +297,11 @@ Modes: 1=all stats-off Delta; 2=odd local / even Delta (default); 3=odd local /
 even uncompressed Volume Parquet (`volume_path` required); 4=all local.
 `localCheckpoint` failure falls back to stats-off Delta.
 
+Do not call `coalesce()` or `repartition()` to narrow Delta checkpoint writes
+and do not expose a checkpoint-coalesce parameter. That can serialize large
+materializations and underutilize the cluster. Use the run-level
+`spark.sql.shuffle.partitions` setting instead.
+
 If a copied service still has `from Common_V2.core.checkpoint import checkpoint`,
 rewrite that import to `checkpoint_V2`. Alias `pipeline_checkpoint = checkpoint`
 in the orchestrator only if production used that name — do not invent a local

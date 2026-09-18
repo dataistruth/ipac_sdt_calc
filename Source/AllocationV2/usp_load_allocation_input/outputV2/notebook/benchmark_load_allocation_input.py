@@ -5,7 +5,6 @@
 
 import importlib
 import json
-import os
 import sys
 import time
 
@@ -67,21 +66,13 @@ dbutils.widgets.dropdown(
 
 # COMMAND ----------
 
-source_path = dbutils.widgets.get("source_path").rstrip("/")
-allocation_path = os.path.join(source_path, "AllocationV2")
-# Workspace /Workspace/... files are importable via sys.path but are often
-# invisible to os.path.isfile. Do not require a local-filesystem file check.
-if os.path.exists(allocation_path) and not os.path.isdir(allocation_path):
-    raise FileNotFoundError(
-        "source_path must be the monolith Source directory containing "
-        f"AllocationV2. Current value: {source_path!r}."
-    )
-# Always make the widget path authoritative. A stale bundle/repo path earlier
-# in sys.path can otherwise resolve an older Common_V2 package without V2.
-while source_path in sys.path:
-    sys.path.remove(source_path)
-sys.path.insert(0, source_path)
-print(f"[benchmark] sys.path[0]={sys.path[0]}", flush=True)
+source_root = dbutils.widgets.get("source_path").rstrip("/")
+# Import root is Source/, not Source/AllocationV2. AllocationV2 and Common_V2
+# are sibling packages beneath this directory.
+while source_root in sys.path:
+    sys.path.remove(source_root)
+sys.path.insert(0, source_root)
+print(f"[benchmark] Python import root={sys.path[0]}", flush=True)
 for loaded in list(sys.modules):
     if loaded == "Common_V2" or loaded.startswith("Common_V2."):
         del sys.modules[loaded]
@@ -91,7 +82,7 @@ try:
 except ImportError as exc:
     raise ImportError(
         "Could not import Common_V2.core.checkpoint_V2 after adding "
-        f"source_path to sys.path: {source_path}"
+        f"the Source folder to sys.path: {source_root}"
     ) from exc
 
 shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()

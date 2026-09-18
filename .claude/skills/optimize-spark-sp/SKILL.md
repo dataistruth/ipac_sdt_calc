@@ -93,6 +93,10 @@ Resolve these from the request and source tree; ask only when they cannot be inf
     shared end-of-day sweeper (`_tmp_%`, `_tmp_v2_%`, `volume/_checkpoints/`
     older than a safety window). `localCheckpoint` needs no drop. Never drop
     mid-run. Prefer `finally` only when an explicit opt-in flag is set.
+13. Never call `coalesce()` or `repartition()` solely to narrow a Delta
+    checkpoint write. Large checkpoint plans must retain available write
+    parallelism. Tune `spark.sql.shuffle.partitions` for the run instead; do
+    not add `CheckpointCoalesce` / `checkpoint_coalesce` controls.
 
 ## Output package
 
