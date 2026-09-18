@@ -34,11 +34,11 @@ The method name and SP name do not change.
 
 1. Every production `_checkpoint` seam delegates to
    `Common_V2.core.checkpoint_V2.checkpoint_V2`.
-2. `CheckpointMode` defaults to 2 and accepts either casing. Shared V2
-   initialization occurs once in the wrapper before the first checkpoint.
-3. Names beginning `final_cost_pct` always use explicit mode 1 (stats-off Delta)
-   because local checkpoint relations are a proven self-join qualifier hazard.
-4. Other seams use the configured mode. An actual local result is returned via
+2. `CheckpointMode` accepts either casing and otherwise inherits the sole
+   shared `checkpoint_V2.DEFAULT_CHECKPOINT_MODE`. Shared V2 initialization
+   occurs once in the wrapper before the first checkpoint.
+3. Every seam uses the resolved shared mode without a per-name backend bypass.
+4. An actual local result is returned via
    `toDF(*columns)` to reproduce the fresh-relation behavior of a table read.
 5. Production cleanup is replaced only in the private module with a no-op.
    Unique V2 names and common end-of-day cleanup own temporary-object hygiene.
@@ -70,17 +70,10 @@ validations, and per-mode output assembly remain sequential.
 
 ## Checkpoint safety rule
 
-| Checkpoint name | Backend rule | Reason |
-|---|---|---|
-| `final_cost_pct*` | Explicit mode 1 / Delta | Proven localCheckpoint self-join qualifier hazard |
-| Every other production seam | Configured mode 1..4 | Preserve seam order and shared V2 policy |
-| Actual local result | `toDF(*columns)` | Mimic qualifier reset from a fresh table relation |
-
-There is no hot-path cleanup and no `outputV2/checkpoint.py`.
-
-The outputV2 checkpoint set therefore matches the production checkpoint set;
-only the configured V2 backend and the `final_cost_pct*` Delta safety override
-can differ.
+Every production seam uses the mode returned by `resolve_checkpoint_mode`.
+Actual local results use `toDF(*columns)` to mimic the qualifier reset from a
+fresh table relation. There is no per-checkpoint mode override, hot-path
+cleanup, or `outputV2/checkpoint.py`.
 
 ## Output tables and acceptance metrics
 

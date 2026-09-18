@@ -6,7 +6,6 @@ import contextvars
 import functools
 import inspect
 import logging
-import re
 import threading
 import time
 from collections import defaultdict
@@ -17,7 +16,7 @@ from typing import Any, Callable
 from Common_V2.core.checkpoint_V2 import (
     checkpoint_V2,
     initialize_checkpoint_V2,
-    normalize_checkpoint_mode,
+    resolve_checkpoint_mode,
 )
 
 from .parent import isolated_output_module
@@ -41,8 +40,8 @@ _PRODUCTION_RUN_FINAL = _base.run_final_effective_percentages
 _ACTIVE_TIMINGS: contextvars.ContextVar[list[dict[str, Any]] | None] = (
     contextvars.ContextVar("fep_output_v2_timings", default=None)
 )
-_ACTIVE_CHECKPOINT_MODE: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "fep_output_v2_checkpoint_mode", default=2
+_ACTIVE_CHECKPOINT_MODE: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "fep_output_v2_checkpoint_mode", default=None
 )
 _ACTIVE_MAX_THREADS: contextvars.ContextVar[int] = contextvars.ContextVar(
     "fep_output_v2_max_threads", default=4
@@ -53,19 +52,10 @@ _ACTIVE_PROFILE_PLAN: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _ACTIVE_RUN_CFG: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "fep_output_v2_run_cfg", default=None
 )
-_ACTIVE_LOCAL_DENYLIST: contextvars.ContextVar[frozenset[str]] = (
-    contextvars.ContextVar(
-        "fep_output_v2_local_delta_denylist",
-        default=frozenset({"final_cost_pct"}),
-    )
-)
 _ACTIVE_PARALLEL_COORDINATOR: contextvars.ContextVar[
     "_ParallelCoordinator | None"
 ] = contextvars.ContextVar("fep_output_v2_parallel_coordinator", default=None)
 _LAST_RUN_PROFILE: dict[str, Any] = {}
-
-_BUILTIN_LOCAL_DELTA_DENYLIST = frozenset({"final_cost_pct"})
-
 
 def _normalize_workers(max_threads: Any = 4, MaxThreads: Any = None) -> int:
     raw = MaxThreads if MaxThreads is not None else max_threads
@@ -178,31 +168,12 @@ class _ParallelCoordinator:
             )
 
 
-def _normalize_denylist(value: Any, mode: Any) -> frozenset[str]:
-    supplied: set[str] = set()
-    if value:
-        tokens = re.split(r"[,\s]+", value) if isinstance(value, str) else value
-        supplied = {
-            str(token).strip() for token in tokens if str(token).strip()
-        }
-    if str(mode or "extend").strip().lower() == "replace":
-        return frozenset(supplied) if supplied else _BUILTIN_LOCAL_DELTA_DENYLIST
-    return frozenset(set(_BUILTIN_LOCAL_DELTA_DENYLIST) | supplied)
-
-
 def _checkpoint(spark, df, name, cfg):
-    """Preserve every production seam and apply the V2 backend safety policy."""
+    """Preserve every production seam and use the initialized shared V2 mode."""
     started = time.time()
     activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    forced_delta = any(
-        str(name).startswith(prefix)
-        for prefix in _ACTIVE_LOCAL_DENYLIST.get()
-    )
-    effective_mode = 1 if forced_delta else _ACTIVE_CHECKPOINT_MODE.get()
     try:
-        result = checkpoint_V2(
-            spark, df, name, cfg, checkpoint_mode=effective_mode
-        )
+        result = checkpoint_V2(spark, df, name, cfg)
         activity = cfg.get("_checkpoint_v2_activity", ())
         actual_backend = (
             activity[-1].get("backend")
@@ -211,8 +182,6 @@ def _checkpoint(spark, df, name, cfg):
         )
         if actual_backend == "local":
             result = result.toDF(*result.columns)
-        if forced_delta:
-            cfg.setdefault("_output_v2_forced_delta", []).append(name)
         return result
     finally:
         _record(f"checkpoint:{name}", time.time() - started)
@@ -246,7 +215,6 @@ def _delegated_run_modes(*args, **kwargs):
     cfg = _build_cfg_for_run_modes(bound)
     cfg.pop("_checkpoint_v2_state", None)
     cfg["_checkpoint_v2_activity"] = []
-    cfg["_output_v2_forced_delta"] = []
     cfg["profile_plan"] = _ACTIVE_PROFILE_PLAN.get()
     _ACTIVE_RUN_CFG.set(cfg)
     initialize_checkpoint_V2(cfg, _ACTIVE_CHECKPOINT_MODE.get())
@@ -558,10 +526,13 @@ def _as_bool(value: Any, default: bool = False) -> bool:
 
 
 def _pop_options(kwargs: dict[str, Any]) -> dict[str, Any]:
-    checkpoint_raw = kwargs.pop(
-        "CheckpointMode", kwargs.pop("checkpoint_mode", 2)
+    checkpoint_pascal = kwargs.pop("CheckpointMode", None)
+    checkpoint_snake = kwargs.pop("checkpoint_mode", None)
+    checkpoint_mode = resolve_checkpoint_mode(
+        kwargs.get("cfg"),
+        checkpoint_mode=checkpoint_snake,
+        CheckpointMode=checkpoint_pascal,
     )
-    checkpoint_mode = normalize_checkpoint_mode(checkpoint_raw)
     max_threads = _normalize_workers(
         kwargs.pop("max_threads", 4), kwargs.pop("MaxThreads", None)
     )
@@ -573,24 +544,11 @@ def _pop_options(kwargs: dict[str, Any]) -> dict[str, Any]:
             kwargs.pop("plan_checkpoint_threshold", 30),
         )
     )
-    denylist_value = kwargs.pop(
-        "LocalDeltaDenylist", kwargs.pop("local_delta_denylist", None)
-    )
-    denylist_mode = str(
-        kwargs.pop(
-            "LocalDeltaDenylistMode",
-            kwargs.pop("local_delta_denylist_mode", "extend"),
-        )
-        or "extend"
-    ).strip().lower()
-    local_denylist = _normalize_denylist(denylist_value, denylist_mode)
     return {
         "checkpoint_mode": checkpoint_mode,
         "max_threads": max_threads,
         "profile_plan": profile_plan,
         "threshold": threshold,
-        "local_denylist": local_denylist,
-        "local_denylist_mode": denylist_mode,
     }
 
 
@@ -605,7 +563,6 @@ def _run_profiled(fn: Callable[..., Any], *args, **kwargs):
     mode_token = _ACTIVE_CHECKPOINT_MODE.set(checkpoint_mode)
     workers_token = _ACTIVE_MAX_THREADS.set(max_threads)
     profile_flag_token = _ACTIVE_PROFILE_PLAN.set(profile_plan)
-    denylist_token = _ACTIVE_LOCAL_DENYLIST.set(options["local_denylist"])
     coordinator = _ParallelCoordinator(max_threads)
     parallel_token = _ACTIVE_PARALLEL_COORDINATOR.set(coordinator)
     run_cfg_token = _ACTIVE_RUN_CFG.set(None)
@@ -640,7 +597,6 @@ def _run_profiled(fn: Callable[..., Any], *args, **kwargs):
         _ACTIVE_MAX_THREADS.reset(workers_token)
         _ACTIVE_CHECKPOINT_MODE.reset(mode_token)
         _ACTIVE_PROFILE_PLAN.reset(profile_flag_token)
-        _ACTIVE_LOCAL_DENYLIST.reset(denylist_token)
         _ACTIVE_PARALLEL_COORDINATOR.reset(parallel_token)
         _ACTIVE_TIMINGS.reset(timing_token)
 
@@ -666,11 +622,6 @@ def _run_profiled(fn: Callable[..., Any], *args, **kwargs):
         if isinstance(run_cfg, dict)
         else []
     )
-    forced_delta = (
-        list(run_cfg.get("_output_v2_forced_delta", ()))
-        if isinstance(run_cfg, dict)
-        else []
-    )
     _LAST_RUN_PROFILE.clear()
     _LAST_RUN_PROFILE.update(
         {
@@ -680,10 +631,7 @@ def _run_profiled(fn: Callable[..., Any], *args, **kwargs):
                 "bounded_parallel" if max_threads > 1 else "sequential"
             ),
             "checkpoint_mode": checkpoint_mode,
-            "local_delta_denylist": sorted(options["local_denylist"]),
-            "local_delta_denylist_mode": options["local_denylist_mode"],
             "checkpoint_activity": activity,
-            "forced_delta_names": forced_delta,
             "parallel_activity": coordinator.activity,
             "timings": timings,
             "plan_profile": reports["builder"],

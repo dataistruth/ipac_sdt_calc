@@ -39,7 +39,7 @@ dbutils.widgets.text(
     "PlanCheckpointThreshold", "30", "15. Plan threshold"
 )
 dbutils.widgets.dropdown(
-    "CheckpointMode", "2", ["1", "2", "3", "4"], "16. Checkpoint mode"
+    "CheckpointMode", "default", ["default", "1", "2", "3", "4"], "16. Checkpoint mode"
 )
 dbutils.widgets.text(
     "SqlShufflePartitions", "4", "17. Shuffle partitions"
@@ -62,7 +62,10 @@ profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
 plan_threshold = int(
     dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
 )
-checkpoint_mode = int(dbutils.widgets.get("CheckpointMode"))
+checkpoint_mode_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
+checkpoint_mode = (
+    None if checkpoint_mode_raw in {"", "default"} else int(checkpoint_mode_raw)
+)
 shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
 
 if number_of_runs < 1:
@@ -121,7 +124,10 @@ _evict_fep_modules()
 reconcile = importlib.import_module(f"{OUTPUT_V2_ROOT}.output_reconcile")
 capture_outputs = reconcile.capture_outputs
 compare_outputs = reconcile.compare_outputs
+create_run_snapshots = reconcile.create_run_snapshots
+drop_run_snapshots = reconcile.drop_run_snapshots
 purge_run = reconcile.purge_run
+restore_run_snapshots = reconcile.restore_run_snapshots
 summarize_outputs = reconcile.summarize_outputs
 
 # COMMAND ----------
@@ -164,9 +170,10 @@ def _run_variant(variant, pass_number):
                 "MaxThreads": max_threads,
                 "ProfilePlan": profile_plan,
                 "PlanCheckpointThreshold": plan_threshold,
-                "CheckpointMode": checkpoint_mode,
             }
         )
+        if checkpoint_mode is not None:
+            run_kwargs["CheckpointMode"] = checkpoint_mode
 
     started = time.time()
     result = runner.run_final_effective_percentages(spark, **run_kwargs)
@@ -209,40 +216,50 @@ def _order_for_pass(pass_number):
 
 records = []
 parity_rows = []
-for pass_number in range(1, number_of_runs + 1):
-    order = _order_for_pass(pass_number)
-    print(
-        f"[benchmark] pass {pass_number} execution order: "
-        f"{' -> '.join(order)}"
-    )
-    by_variant = {
-        variant: _run_variant(variant, pass_number) for variant in order
-    }
-    records.extend(by_variant.values())
-    mismatches = compare_outputs(
-        by_variant["original"]["outputs"],
-        by_variant["updated"]["outputs"],
-    )
-    for table in reconcile.OUTPUT_TABLES:
-        parity_rows.append(
-            {
-                "pass": pass_number,
-                "table": table,
-                "matches": not any(
-                    mismatch["table"] == table for mismatch in mismatches
-                ),
-            }
+snapshots = create_run_snapshots(spark, catalog, schema, run_id)
+try:
+    for pass_number in range(1, number_of_runs + 1):
+        order = _order_for_pass(pass_number)
+        print(
+            f"[benchmark] pass {pass_number} execution order: "
+            f"{' -> '.join(order)}"
         )
-    if mismatches:
-        first = mismatches[0]
-        raise AssertionError(
-            f"First mismatch: pass={pass_number} table={first['table']} "
-            f"original={first['original']} updated={first['updated']}"
+        by_variant = {
+            variant: _run_variant(variant, pass_number) for variant in order
+        }
+        records.extend(by_variant.values())
+        mismatches = compare_outputs(
+            by_variant["original"]["outputs"],
+            by_variant["updated"]["outputs"],
         )
-    print(
-        f"[reconcile] PASS {pass_number}: "
-        "all output fingerprints match"
-    )
+        for table in reconcile.OUTPUT_TABLES:
+            parity_rows.append(
+                {
+                    "pass": pass_number,
+                    "table": table,
+                    "matches": not any(
+                        mismatch["table"] == table for mismatch in mismatches
+                    ),
+                }
+            )
+        if mismatches:
+            first = mismatches[0]
+            raise AssertionError(
+                f"First mismatch: pass={pass_number} table={first['table']} "
+                f"original={first['original']} updated={first['updated']}"
+            )
+        print(
+            f"[reconcile] PASS {pass_number}: "
+            "all output fingerprints match"
+        )
+finally:
+    try:
+        restore_run_snapshots(spark, catalog, schema, run_id, snapshots)
+    except Exception:
+        print(f"[reconcile] RESTORE FAILED; snapshots retained: {snapshots}")
+        raise
+    else:
+        drop_run_snapshots(spark, catalog, schema, snapshots)
 
 # COMMAND ----------
 

@@ -267,7 +267,7 @@ from Common_V2.core.checkpoint_V2 import (
     checkpoint_V2 as checkpoint,
     drop_checkpoints_V2,
     initialize_checkpoint_V2,
-    normalize_checkpoint_mode,
+    resolve_checkpoint_mode,
 )
 ```
 
@@ -277,11 +277,24 @@ code.
 At orchestrator start, before worker threads copy `cfg`:
 
 ```python
-initialize_checkpoint_V2(cfg, CheckpointMode)  # default mode 2
+def run_sp(
+    ...,
+    checkpoint_mode: int | None = None,
+    CheckpointMode: int | None = None,
+):
+    mode = resolve_checkpoint_mode(
+        cfg,
+        checkpoint_mode=checkpoint_mode,
+        CheckpointMode=CheckpointMode,
+    )
+    initialize_checkpoint_V2(cfg, mode)
 ```
 
 Then call `checkpoint(spark, df, name, cfg)` at existing seams (and any new
 break the user asked for). Sequence/backend selection lives entirely in V2.
+Do not use `checkpoint_mode=2`, `kwargs.pop("checkpoint_mode", 2)`, or any
+other orchestrator-local default. `DEFAULT_CHECKPOINT_MODE` in Common V2 is
+the only runtime default.
 
 Modes: 1=all stats-off Delta; 2=odd local / even Delta (default); 3=odd local /
 even uncompressed Volume Parquet (`volume_path` required); 4=all local.

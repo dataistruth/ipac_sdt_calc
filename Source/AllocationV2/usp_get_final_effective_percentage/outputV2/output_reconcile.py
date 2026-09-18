@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pyspark.sql.functions as F
@@ -30,6 +31,47 @@ def purge_run(spark, catalog: str, schema: str, run_id: int) -> list[str]:
             purged.append(table)
     print(f"[reconcile] purged RunID={run_id} from {len(purged)} table(s)")
     return purged
+
+
+def create_run_snapshots(spark, catalog: str, schema: str, run_id: int) -> dict:
+    """Snapshot every RunID partition mutated by the benchmark."""
+    snapshots = {}
+    try:
+        for table in OUTPUT_TABLES:
+            source = _fqn(catalog, schema, table)
+            if not spark.catalog.tableExists(source):
+                continue
+            name = (
+                f"_benchmark_fep_{table.lower().replace('_', '')[:16]}_"
+                f"{int(run_id)}_{uuid.uuid4().hex[:8]}"
+            )
+            snapshot = _fqn(catalog, schema, name)
+            spark.sql(
+                f"CREATE TABLE {snapshot} USING DELTA AS "
+                f"SELECT * FROM {source} WHERE RunID = {int(run_id)}"
+            )
+            snapshots[table] = name
+    except Exception:
+        drop_run_snapshots(spark, catalog, schema, snapshots)
+        raise
+    return snapshots
+
+
+def restore_run_snapshots(
+    spark, catalog: str, schema: str, run_id: int, snapshots: dict
+) -> None:
+    """Restore the exact pre-benchmark RunID state."""
+    purge_run(spark, catalog, schema, run_id)
+    for table, name in snapshots.items():
+        spark.sql(
+            f"INSERT INTO {_fqn(catalog, schema, table)} "
+            f"SELECT * FROM {_fqn(catalog, schema, name)}"
+        )
+
+
+def drop_run_snapshots(spark, catalog: str, schema: str, snapshots: dict) -> None:
+    for name in snapshots.values():
+        spark.sql(f"DROP TABLE IF EXISTS {_fqn(catalog, schema, name)}")
 
 
 def fingerprint_table(
@@ -116,9 +158,12 @@ __all__ = [
     "capture_outputs",
     "compare_outputs",
     "compare_variants",
+    "create_run_snapshots",
+    "drop_run_snapshots",
     "fingerprint_table",
     "purge_output_partitions_for_run",
     "purge_run",
+    "restore_run_snapshots",
     "summarize_metrics",
     "summarize_outputs",
 ]

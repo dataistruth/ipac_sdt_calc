@@ -43,8 +43,8 @@ performance acceptance.
 - Intra-builder plan breaks: `entity_levels`, `alloc_pass1`,
   `alloc_pass2`, `alloc_pass3`, and `alloc_pass4`.
 - Shared `Common_V2.core.checkpoint_V2` supplies all checkpoint backends.
-  Mode 2 is the default. No checkpoint coalesce/repartition and no hot-path
-  cleanup are present.
+  Blank/default mode inherits its sole shared default. No checkpoint
+  coalesce/repartition and no hot-path cleanup are present.
 - S3's four independent lazy plan builders and S5's independent cost plan
   share a pool capped at four workers. Dependent quarter updates remain
   sequential.

@@ -41,7 +41,7 @@ from Common_V2.core.helpers import table_prefix, log_section, log_timing
 from Common_V2.core.checkpoint_V2 import (
     checkpoint_V2 as checkpoint,
     initialize_checkpoint_V2,
-    normalize_checkpoint_mode,
+    resolve_checkpoint_mode,
 )
 from .parallel import (
     isolated_collector_cfg,
@@ -129,7 +129,7 @@ def run_load_allocation_input(
     CallFrom: str = None,
     max_threads: int = 4,
     MaxThreads: int = None,
-    checkpoint_mode: int = 2,
+    checkpoint_mode: int = None,
     CheckpointMode: int = None,
     profile_plan: bool = False,
     ProfilePlan: object = None,
@@ -181,8 +181,10 @@ def run_load_allocation_input(
     cfg["max_threads"] = normalize_workers(
         MaxThreads if MaxThreads is not None else max_threads
     )
-    cfg["checkpoint_mode"] = normalize_checkpoint_mode(
-        CheckpointMode if CheckpointMode is not None else checkpoint_mode
+    cfg["checkpoint_mode"] = resolve_checkpoint_mode(
+        cfg,
+        checkpoint_mode=checkpoint_mode,
+        CheckpointMode=CheckpointMode,
     )
     # Initialize before any shallow cfg copies enter worker threads so every
     # checkpoint receives one atomic per-run sequence number.
@@ -367,12 +369,6 @@ def run_load_allocation_input(
         _entity_id = cfg.get("entity_id", entity_id)
         _execution_id = cfg.get("execution_id", execution_id) or "1"
         _volume_path = cfg.get("volume_path") or ""
-        # Tables that use coalesce(1) to avoid excessive small files
-        small_tables = {"Form926Flowup", "Form199AFlowup", "Form8865Flowup",
-                        "Form8886Flowup", "AtRiskFlowup", "CustomFootnoteFlowup",
-                        "Form200616Flowup", "PFICFootnoteFlowup",
-                        "PFICFootnoteFlowupWithTrackingKey"}
-
         def _align(df, tbl_name):
             """Add missing target columns and project to the table's column order."""
             fqn = f"{prefix}.{tbl_name}"
@@ -412,8 +408,6 @@ def run_load_allocation_input(
             if tbl_name == "AllocationInput":
                 continue
             write_df = _align(df, tbl_name)
-            if tbl_name in small_tables:
-                write_df = write_df.coalesce(1)
             profile_dataframe(
                 f"{tbl_name}.write", write_df, cfg, kind="action"
             )

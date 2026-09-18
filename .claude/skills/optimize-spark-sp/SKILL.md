@@ -71,13 +71,20 @@ Resolve these from the request and source tree; ask only when they cannot be inf
    `isinstance(obj, pyspark.sql.DataFrame)`.
 10. Updated orchestrators import checkpointing from
     `Common_V2.core.checkpoint_V2` only (`checkpoint_V2` / alias `checkpoint`,
-    `initialize_checkpoint_V2`, `normalize_checkpoint_mode`). Do **not** create
+    `initialize_checkpoint_V2`, `resolve_checkpoint_mode`). Do **not** create
     `outputV2/checkpoint.py` and do **not** import
     `Common_V2.core.checkpoint` (production stats-on writer) from updated code.
-    Call `initialize_checkpoint_V2(cfg, CheckpointMode)` once at start; default
-    mode is **2**. Modes: 1=all stats-off Delta; 2=odd localCheckpoint / even
+    The single shared default is `checkpoint_V2.DEFAULT_CHECKPOINT_MODE`; never
+    duplicate it as an orchestrator parameter default or fallback literal. Entry
+    parameters must use `checkpoint_mode=None` and `CheckpointMode=None`, then call
+    `resolve_checkpoint_mode(cfg, checkpoint_mode, CheckpointMode)`. Resolution
+    priority is explicit `CheckpointMode`, explicit `checkpoint_mode`, cfg
+    `CheckpointMode`, cfg `checkpoint_mode`, then the shared default. Call
+    `initialize_checkpoint_V2(cfg, resolved_mode)` once at start. Modes:
+    1=all stats-off Delta; 2=odd localCheckpoint / even
     stats-off Delta; 3=odd localCheckpoint / even uncompressed Volume Parquet;
-    4=all localCheckpoint. Pass `CheckpointMode` from the notebook/orchestrator.
+    4=all localCheckpoint. A notebook may override with `CheckpointMode`; an SP
+    may override with either entry parameter or its cfg.
     LocalCheckpoint failures fall back to stats-off Delta. Call
     `track_checkpoint_plan` via V2 (already hooked when `profile_plan` is on).
 11. Do not rename public helper symbols the orchestrator already imports. After
@@ -264,7 +271,11 @@ fingerprints.
 Include widgets for source path, run count, execution order, SP parameters, catalog,
 schema, result type, volume path when needed, `MaxThreads` (default `4`),
 `ProfilePlan` (default `off`), `PlanCheckpointThreshold` (default `30`),
-`CheckpointMode` (default `2`; values `1|2|3|4`), and `SqlShufflePartitions`.
+optional `CheckpointMode` (blank/`default` means inherit; explicit values
+`1|2|3|4` override), and `SqlShufflePartitions`. Only add `CheckpointMode` to
+the updated runner kwargs when the widget contains an explicit numeric value.
+The orchestrator otherwise inherits `DEFAULT_CHECKPOINT_MODE` from Common V2,
+so changing the shared constant changes every non-overridden SP.
 
 Evict the SP package and `AllocationV2.plan_profiler` from `sys.modules` before fresh
 imports so workspace syncs are not hidden by Python module caching.
@@ -275,7 +286,10 @@ imports so workspace syncs are not hidden by Python module caching.
 - Confirm the updated orchestrator imports
   `Common_V2.core.checkpoint_V2` (not `Common_V2.core.checkpoint` and not
   `outputV2/checkpoint.py`). Confirm `initialize_checkpoint_V2` runs once
-  with default mode 2. Confirm `drop_checkpoints_V2` is not on the hot path.
+  with the mode from `resolve_checkpoint_mode`; confirm there is no hardcoded
+  orchestrator fallback such as `checkpoint_mode=2` or
+  `kwargs.pop("checkpoint_mode", 2)`. Confirm `drop_checkpoints_V2` is not on
+  the hot path.
 - Confirm no new files under `output/` except `__init__.py` and `updated/`.
 - Search for unresolved imports and accidental production-file modifications.
 - Run the original and updated variants in both orders when practical.

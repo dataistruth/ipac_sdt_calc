@@ -13,7 +13,7 @@ import pyspark.sql.functions as F
 from Common_V2.core.checkpoint_V2 import (
     checkpoint_V2,
     initialize_checkpoint_V2,
-    normalize_checkpoint_mode,
+    resolve_checkpoint_mode,
 )
 from Common_V2.core.config import load_common_config
 
@@ -173,7 +173,7 @@ def run_load_footnotes_allocation_to_output(
     ProfilePlan=None,
     plan_checkpoint_threshold: int = 30,
     PlanCheckpointThreshold: int = None,
-    checkpoint_mode: int = 2,
+    checkpoint_mode: int = None,
     CheckpointMode: int = None,
     **kwargs,
 ):
@@ -182,9 +182,7 @@ def run_load_footnotes_allocation_to_output(
     started = time.time()
     timings = []
     workers = _normalize_workers(max_threads, MaxThreads)
-    mode = normalize_checkpoint_mode(
-        CheckpointMode if CheckpointMode is not None else checkpoint_mode
-    )
+    mode = None
     profile_enabled = _as_bool(
         ProfilePlan if ProfilePlan is not None else profile_plan
     )
@@ -221,6 +219,11 @@ def run_load_footnotes_allocation_to_output(
                     catalog=CatalogName,
                     schema=SchemaName,
                 )
+            mode = resolve_checkpoint_mode(
+                cfg,
+                checkpoint_mode=checkpoint_mode,
+                CheckpointMode=CheckpointMode,
+            )
             cfg = {
                 **cfg,
                 "_checkpoint_tables": [],

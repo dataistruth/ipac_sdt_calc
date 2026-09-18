@@ -39,7 +39,7 @@ dbutils.widgets.text(
     "PlanCheckpointThreshold", "30", "13. Plan threshold"
 )
 dbutils.widgets.dropdown(
-    "CheckpointMode", "2", ["1", "2", "3", "4"], "14. Checkpoint mode"
+    "CheckpointMode", "default", ["default", "1", "2", "3", "4"], "14. Checkpoint mode"
 )
 dbutils.widgets.text(
     "SqlShufflePartitions", "4", "15. Shuffle partitions"
@@ -62,7 +62,10 @@ profile_plan = dbutils.widgets.get("ProfilePlan").lower() == "on"
 plan_threshold = int(
     dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
 )
-checkpoint_mode = int(dbutils.widgets.get("CheckpointMode"))
+checkpoint_mode_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
+checkpoint_mode = (
+    None if checkpoint_mode_raw in {"", "default"} else int(checkpoint_mode_raw)
+)
 shuffle_partitions = dbutils.widgets.get(
     "SqlShufflePartitions"
 ).strip()
@@ -168,9 +171,10 @@ def _run_variant(variant, pass_number, snapshot):
                 "MaxThreads": max_threads,
                 "ProfilePlan": profile_plan,
                 "PlanCheckpointThreshold": plan_threshold,
-                "CheckpointMode": checkpoint_mode,
             }
         )
+        if checkpoint_mode is not None:
+            kwargs["CheckpointMode"] = checkpoint_mode
     started = time.time()
     result = runner.run_load_footnotes_allocation_to_output(
         spark, **kwargs

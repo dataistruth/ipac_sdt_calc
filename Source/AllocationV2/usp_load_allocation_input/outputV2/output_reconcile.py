@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pyspark.sql.functions as F
 from pyspark.sql.types import NumericType
 
@@ -101,6 +103,54 @@ def capture_outputs(spark, catalog, schema, run_id) -> dict:
     }
 
 
+def create_run_snapshots(spark, catalog, schema, run_id) -> dict:
+    """Snapshot all existing RunID-scoped outputs before either variant."""
+    snapshots = {}
+    try:
+        for table in OUTPUT_TABLES:
+            source = _quoted_fqn(catalog, schema, table)
+            if not spark.catalog.tableExists(source):
+                continue
+            if "RunID" not in spark.table(source).columns:
+                continue
+            name = (
+                f"_benchmark_alloc_{table.lower().replace('_', '')[:14]}_"
+                f"{int(run_id)}_{uuid.uuid4().hex[:8]}"
+            )
+            snapshot = _quoted_fqn(catalog, schema, name)
+            spark.sql(
+                f"CREATE TABLE {snapshot} USING DELTA AS "
+                f"SELECT * FROM {source} WHERE RunID = {int(run_id)}"
+            )
+            snapshots[table] = name
+    except Exception:
+        drop_run_snapshots(spark, catalog, schema, snapshots)
+        raise
+    return snapshots
+
+
+def restore_run_snapshots(spark, catalog, schema, run_id, snapshots) -> None:
+    """Restore exact pre-benchmark partitions after success or failure."""
+    for table in OUTPUT_TABLES:
+        target = _quoted_fqn(catalog, schema, table)
+        if (
+            spark.catalog.tableExists(target)
+            and "RunID" in spark.table(target).columns
+        ):
+            spark.sql(f"DELETE FROM {target} WHERE RunID = {int(run_id)}")
+    for table, name in snapshots.items():
+        target = _quoted_fqn(catalog, schema, table)
+        snapshot = _quoted_fqn(catalog, schema, name)
+        spark.sql(f"INSERT INTO {target} SELECT * FROM {snapshot}")
+
+
+def drop_run_snapshots(spark, catalog, schema, snapshots) -> None:
+    for name in snapshots.values():
+        spark.sql(
+            f"DROP TABLE IF EXISTS {_quoted_fqn(catalog, schema, name)}"
+        )
+
+
 def compare_outputs(production: dict, updated: dict) -> list[dict]:
     mismatches = []
     for table in OUTPUT_TABLES:
@@ -117,5 +167,8 @@ __all__ = [
     "OUTPUT_TABLES",
     "capture_outputs",
     "compare_outputs",
+    "create_run_snapshots",
+    "drop_run_snapshots",
     "fingerprint_table",
+    "restore_run_snapshots",
 ]

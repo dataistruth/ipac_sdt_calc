@@ -49,17 +49,37 @@ def normalize_checkpoint_mode(value=None) -> int:
     return mode
 
 
+def resolve_checkpoint_mode(
+    cfg: dict | None = None,
+    checkpoint_mode=None,
+    CheckpointMode=None,
+) -> int:
+    """Resolve an SP override before falling back to the shared default.
+
+    Priority:
+      1. Explicit ``CheckpointMode`` (notebook/schedule convention)
+      2. Explicit ``checkpoint_mode`` (Python/SP-local convention)
+      3. ``cfg["CheckpointMode"]``
+      4. ``cfg["checkpoint_mode"]``
+      5. ``DEFAULT_CHECKPOINT_MODE``
+    """
+    value = CheckpointMode
+    if value is None:
+        value = checkpoint_mode
+    if value is None and isinstance(cfg, dict):
+        value = cfg.get("CheckpointMode")
+    if value is None and isinstance(cfg, dict):
+        value = cfg.get("checkpoint_mode")
+    return normalize_checkpoint_mode(value)
+
+
 def initialize_checkpoint_V2(cfg: dict, checkpoint_mode=None) -> dict:
     """Initialize the shared per-invocation counter before copying ``cfg``.
 
     Shallow cfg copies keep the same state object, making sequence assignment
     atomic when independent stages call checkpoint_V2 from worker threads.
     """
-    mode = normalize_checkpoint_mode(
-        checkpoint_mode
-        if checkpoint_mode is not None
-        else cfg.get("checkpoint_mode", cfg.get("CheckpointMode", 2))
-    )
+    mode = resolve_checkpoint_mode(cfg, checkpoint_mode=checkpoint_mode)
     with _STATE_CREATION_LOCK:
         state = cfg.get("_checkpoint_v2_state")
         if not isinstance(state, dict) or "lock" not in state:
@@ -73,11 +93,7 @@ def initialize_checkpoint_V2(cfg: dict, checkpoint_mode=None) -> dict:
 
 
 def _next_sequence(cfg: dict, checkpoint_mode=None) -> tuple[int, int]:
-    mode = normalize_checkpoint_mode(
-        checkpoint_mode
-        if checkpoint_mode is not None
-        else cfg.get("checkpoint_mode", cfg.get("CheckpointMode", 2))
-    )
+    mode = resolve_checkpoint_mode(cfg, checkpoint_mode=checkpoint_mode)
     state = initialize_checkpoint_V2(cfg, mode)
     with state["lock"]:
         state["count"] += 1
@@ -293,4 +309,5 @@ __all__ = [
     "drop_checkpoints_V2",
     "initialize_checkpoint_V2",
     "normalize_checkpoint_mode",
+    "resolve_checkpoint_mode",
 ]

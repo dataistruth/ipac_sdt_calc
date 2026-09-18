@@ -48,8 +48,8 @@ dbutils.widgets.text(
 )
 dbutils.widgets.dropdown(
     "CheckpointMode",
-    "2",
-    ["1", "2", "3", "4"],
+    "default",
+    ["default", "1", "2", "3", "4"],
     "14. Checkpoint mode",
 )
 dbutils.widgets.text(
@@ -102,12 +102,14 @@ common_args = {
 updated_args = {
     **common_args,
     "MaxThreads": int(dbutils.widgets.get("MaxThreads") or "4"),
-    "CheckpointMode": int(dbutils.widgets.get("CheckpointMode") or "2"),
     "ProfilePlan": dbutils.widgets.get("ProfilePlan"),
     "PlanCheckpointThreshold": int(
         dbutils.widgets.get("PlanCheckpointThreshold")
     ),
 }
+checkpoint_mode_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
+if checkpoint_mode_raw not in {"", "default"}:
+    updated_args["CheckpointMode"] = int(checkpoint_mode_raw)
 
 # COMMAND ----------
 
@@ -203,6 +205,12 @@ def _reported_seconds(result):
     return None
 
 
+reconcile_tools = _fresh_import(RECONCILE_MODULE)
+create_run_snapshots = reconcile_tools.create_run_snapshots
+drop_run_snapshots = reconcile_tools.drop_run_snapshots
+restore_run_snapshots = reconcile_tools.restore_run_snapshots
+
+
 def _run_variant(name):
     if name == "production":
         module_name = PRODUCTION_MODULE
@@ -222,12 +230,22 @@ def _run_variant(name):
         common_args["SchemaName"],
         common_args["RunID"],
     )
+    parsed_result = result
+    if isinstance(parsed_result, str):
+        try:
+            parsed_result = json.loads(parsed_result)
+        except (TypeError, ValueError):
+            parsed_result = {}
+    if not isinstance(parsed_result, dict):
+        parsed_result = {}
     return {
         "variant": name,
         "elapsed_seconds": round(elapsed, 3),
         "reported_seconds": _reported_seconds(result),
         "checkpoint_mode": (
-            str(updated_args["CheckpointMode"]) if name == "updated" else "production"
+            str(updated_args.get("CheckpointMode", "common-default"))
+            if name == "updated"
+            else "production"
         ),
         "profile_plan": (
             updated_args["ProfilePlan"] if name == "updated" else "off"
@@ -235,6 +253,10 @@ def _run_variant(name):
         "fingerprints": json.dumps(
             fingerprints, default=str, sort_keys=True
         ),
+        "checkpoint_activity": parsed_result.get(
+            "checkpoint_timings", []
+        ),
+        "plan_profile": parsed_result.get("plan_profile") or [],
         "result": json.dumps(result, default=str, sort_keys=True),
     }
 
@@ -243,54 +265,122 @@ number_of_runs = max(1, int(dbutils.widgets.get("number_of_runs")))
 execution_order = dbutils.widgets.get("ExecutionOrder")
 
 rows = []
-for iteration in range(1, number_of_runs + 1):
-    if execution_order == "alternate":
-        order = (
-            ["production", "updated"]
-            if iteration % 2
-            else ["updated", "production"]
+snapshots = create_run_snapshots(
+    spark,
+    common_args["CatalogName"],
+    common_args["SchemaName"],
+    common_args["RunID"],
+)
+try:
+    for iteration in range(1, number_of_runs + 1):
+        if execution_order == "alternate":
+            order = (
+                ["production", "updated"]
+                if iteration % 2
+                else ["updated", "production"]
+            )
+        elif execution_order == "original_first":
+            order = ["production", "updated"]
+        else:
+            order = ["updated", "production"]
+        print(
+            f"[benchmark] pass {iteration} execution order: "
+            f"{' -> '.join(order)}"
         )
-    elif execution_order == "original_first":
-        order = ["production", "updated"]
+        pass_rows = {}
+        for variant in order:
+            row = _run_variant(variant)
+            row["iteration"] = iteration
+            row["order"] = " -> ".join(order)
+            rows.append(row)
+            pass_rows[variant] = row
+            print(
+                f"[benchmark] {variant}: wall={row['elapsed_seconds']:.3f}s "
+                f"reported={row['reported_seconds']}"
+            )
+        production = json.loads(pass_rows["production"]["fingerprints"])
+        updated = json.loads(pass_rows["updated"]["fingerprints"])
+        reconcile = importlib.import_module(RECONCILE_MODULE)
+        mismatches = reconcile.compare_outputs(production, updated)
+        if mismatches:
+            print(
+                f"[reconcile] FAIL run={iteration}: "
+                f"{[row['table'] for row in mismatches]}"
+            )
+            raise AssertionError(
+                f"Output parity failed: {json.dumps(mismatches, default=str)}"
+            )
+        print(f"[reconcile] PASS {iteration}: all output fingerprints match")
+finally:
+    try:
+        restore_run_snapshots(
+            spark,
+            common_args["CatalogName"],
+            common_args["SchemaName"],
+            common_args["RunID"],
+            snapshots,
+        )
+    except Exception:
+        print(f"[reconcile] RESTORE FAILED; snapshots retained: {snapshots}")
+        raise
     else:
-        order = ["updated", "production"]
-    print(
-        f"[benchmark] pass {iteration} execution order: "
-        f"{' -> '.join(order)}"
-    )
-    pass_rows = {}
-    for variant in order:
-        row = _run_variant(variant)
-        row["iteration"] = iteration
-        row["order"] = " -> ".join(order)
-        rows.append(row)
-        pass_rows[variant] = row
-        print(
-            f"[benchmark] {variant}: wall={row['elapsed_seconds']:.3f}s "
-            f"reported={row['reported_seconds']}"
+        drop_run_snapshots(
+            spark,
+            common_args["CatalogName"],
+            common_args["SchemaName"],
+            snapshots,
         )
-    production = json.loads(pass_rows["production"]["fingerprints"])
-    updated = json.loads(pass_rows["updated"]["fingerprints"])
-    reconcile = importlib.import_module(RECONCILE_MODULE)
-    mismatches = reconcile.compare_outputs(production, updated)
-    if mismatches:
-        print(
-            f"[reconcile] FAIL run={iteration}: "
-            f"{[row['table'] for row in mismatches]}"
-        )
-        raise AssertionError(
-            f"Output parity failed: {json.dumps(mismatches, default=str)}"
-        )
-    print(f"[reconcile] PASS {iteration}: all output fingerprints match")
 
-display(spark.createDataFrame(rows).orderBy("iteration", "variant"))
+benchmark_rows = [
+    {
+        key: row[key]
+        for key in (
+            "iteration",
+            "order",
+            "variant",
+            "elapsed_seconds",
+            "reported_seconds",
+            "checkpoint_mode",
+            "profile_plan",
+        )
+    }
+    for row in rows
+]
+display(
+    spark.createDataFrame(benchmark_rows).orderBy("iteration", "variant")
+)
 
 # COMMAND ----------
 
 summary = (
-    spark.createDataFrame(rows)
+    spark.createDataFrame(benchmark_rows)
     .groupBy("variant", "checkpoint_mode", "profile_plan")
     .avg("elapsed_seconds")
     .withColumnRenamed("avg(elapsed_seconds)", "average_elapsed_seconds")
 )
 display(summary)
+
+# COMMAND ----------
+
+checkpoint_rows = [
+    {"iteration": row["iteration"], **item}
+    for row in rows
+    if row["variant"] == "updated"
+    for item in row["checkpoint_activity"]
+]
+plan_rows = [
+    {"iteration": row["iteration"], **item}
+    for row in rows
+    if row["variant"] == "updated"
+    for item in row["plan_profile"]
+]
+print("===== CHECKPOINT TELEMETRY =====")
+if checkpoint_rows:
+    display(spark.createDataFrame(checkpoint_rows).orderBy("iteration", "sequence"))
+else:
+    print("No checkpoint telemetry returned")
+print("===== PLAN TELEMETRY =====")
+if plan_rows:
+    display(spark.createDataFrame(plan_rows).orderBy("iteration"))
+else:
+    print("Enable ProfilePlan to populate plan telemetry")

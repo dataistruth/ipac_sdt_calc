@@ -8,7 +8,8 @@ isolated in sibling package `outputV2`.
 ## Runtime contract
 
 - Shared checkpoints: `Common_V2.core.checkpoint_V2`
-- Default `CheckpointMode=2`: odd local, even stats-off Delta
+- Blank/default checkpoint mode inherits
+  `checkpoint_V2.DEFAULT_CHECKPOINT_MODE`; explicit modes remain supported
 - No checkpoint cleanup on the SP hot path; common EOD cleanup owns temporary
   Delta tables and Volume paths
 - Shared parallel default/cap: four threads
@@ -40,8 +41,9 @@ new materialization.
 
 Run `outputV2/notebook/benchmark_load_allocation_input.py` with
 `ExecutionOrder=alternate` and at least two passes to exercise both orders. The
-notebook fresh-imports production and `outputV2`, purges the selected RunID before
-each variant when the table supports `DELETE`, and compares all ten
+notebook fresh-imports production and `outputV2`, snapshots and restores all
+existing RunID output partitions, purges the selected RunID before each variant
+when the table supports `DELETE`, and compares all ten
 order-independent output fingerprints. Accept only when every fingerprint matches
 and timing improvement exceeds serverless run-to-run variance. Use
 `ProfilePlan=off` for timing and turn it on separately for

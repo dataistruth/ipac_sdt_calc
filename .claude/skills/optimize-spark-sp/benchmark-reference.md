@@ -38,11 +38,14 @@ VolumePath                 # only when the SP supports it
 MaxThreads                 # default 4
 ProfilePlan                # off | on; default off
 PlanCheckpointThreshold    # default 30
-CheckpointMode             # 1 | 2 | 3 | 4; default 2
+CheckpointMode             # blank/default | 1 | 2 | 3 | 4
 SqlShufflePartitions       # blank means unchanged
 ```
 
 Add SP-specific widgets only when they map to real entry-function parameters.
+Default the widget to blank or `default`. Add `CheckpointMode` to the updated
+runner kwargs only when the widget contains `1`, `2`, `3`, or `4`. The common
+`DEFAULT_CHECKPOINT_MODE` remains the only runtime default.
 
 ## Fresh import
 
