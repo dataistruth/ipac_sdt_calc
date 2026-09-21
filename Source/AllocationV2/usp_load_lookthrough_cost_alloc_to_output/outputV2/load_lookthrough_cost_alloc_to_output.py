@@ -120,10 +120,18 @@ def _read_table_with_pruned_entity_rel(spark, name, cfg, *args, **kwargs):
     df = _orig_hierarchy_read_table(spark, name, cfg, *args, **kwargs)
     if name != "EntityRelationship":
         return df
+    # Keep ClientID/TaxPeriodID so production's follow-on filter still
+    # resolves; select them plus the two join keys so the checkpoint is
+    # not the full EntityRelationship width.
     pruned = df.filter(
         (F.col("ClientID") == cfg["client_id"])
         & (F.col("TaxPeriodID") == cfg["tax_period_id"])
-    ).select("LowerTierEntityID", "UpperTierEntityID")
+    ).select(
+        "ClientID",
+        "TaxPeriodID",
+        "LowerTierEntityID",
+        "UpperTierEntityID",
+    )
     return _checkpoint(spark, pruned, "entity_relationship_pruned", cfg)
 
 
