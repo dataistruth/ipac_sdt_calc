@@ -27,12 +27,16 @@
 
 ## Parallelism
 
-- `lookthrough-load`: up to `MaxThreads` (bounded to 1–4) for five independent,
-  read-only plan builders. Each task receives a shallow cfg copy with isolated
-  checkpoint state.
-- `lookthrough-write`: exactly two workers when both mutations run. This
-  preserves the production pool because the targets are distinct tables;
-  each writer receives its own cfg copy.
+- `lookthrough-load`: up to `MaxThreads`, capped by
+  `Common_V2.core.MAX_PARALLEL_THREADS`, for five independent read-only plan
+  builders. Each task receives a shallow cfg copy with isolated checkpoint
+  state.
+- `lookthrough-validation`: overlaps the independent by-amount warning
+  validation with allocation computation when the effective limit is greater
+  than one; `MaxThreads=1` keeps it sequential.
+- `lookthrough-write`: writes output and input concurrently only when the
+  effective limit permits two workers. The targets are distinct tables and
+  each writer receives its own cfg copy; `MaxThreads=1` is sequential.
 - Hierarchy recursion remains sequential.
 - By-amount, input deduction, and by-percentage remain sequential because each
   stage changes the logical input to the next.

@@ -82,8 +82,6 @@ shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
-if not 1 <= max_threads <= 4:
-    raise ValueError("MaxThreads must be between 1 and 4")
 if shuffle_partitions:
     spark.conf.set("spark.sql.shuffle.partitions", shuffle_partitions)
 
@@ -96,6 +94,13 @@ import uuid
 
 sys.path[:] = [item for item in sys.path if item != source_path]
 sys.path.insert(0, source_path)
+
+from Common_V2.core import MAX_PARALLEL_THREADS
+
+if not 1 <= max_threads <= MAX_PARALLEL_THREADS:
+    raise ValueError(
+        f"MaxThreads must be between 1 and {MAX_PARALLEL_THREADS}"
+    )
 
 PACKAGE = "AllocationV2.usp_load_lookthrough_cost_alloc_to_output"
 PRODUCTION_ROOT = f"{PACKAGE}.output"

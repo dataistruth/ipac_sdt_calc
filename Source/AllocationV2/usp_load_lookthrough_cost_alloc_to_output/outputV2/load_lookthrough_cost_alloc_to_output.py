@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pyspark.sql.functions as F
+from Common_V2.core import DEFAULT_MAX_THREADS
 from Common_V2.core.checkpoint_V2 import (
     checkpoint_V2 as checkpoint,
 )
@@ -176,7 +178,7 @@ def run_load_lookthrough_cost_alloc(
     SchemaName: str = None,
     VolumePath: str = None,
     ExecutionID: str = None,
-    max_threads: int = 4,
+    max_threads: int = DEFAULT_MAX_THREADS,
     MaxThreads: int = None,
     profile_plan: bool = False,
     ProfilePlan=None,
@@ -202,6 +204,9 @@ def run_load_lookthrough_cost_alloc(
     builder_records = []
     checkpoint_records = []
     action_records = []
+    validation_pool = None
+    validation_future = None
+    validation_cfg = None
 
     entity_id = entity_id or EntityID
     client_id = client_id or ClientID
@@ -383,20 +388,51 @@ def run_load_lookthrough_cost_alloc(
             )
 
         final_eff_pct = load_final_effective_percentages(spark, cfg)
-        profile_action(
-            "validate_by_amount_allocations",
-            input_data,
-            lambda: validate_by_amount_allocations(
-                spark,
-                cfg,
-                input_data,
-                final_eff_pct,
-                partners,
-                rules["default_rules"],
-                rules["map_rules"],
-            ),
-            cfg,
-        )
+        validation_cfg = isolated_cfg(cfg)
+        validation_cfg["_action_plan_profile"] = []
+        validation_input = input_data
+        validation_fep = final_eff_pct
+        validation_partners = partners
+        validation_default_rules = rules["default_rules"]
+        validation_map_rules = rules["map_rules"]
+
+        def run_validation():
+            validation_started = time.perf_counter()
+            try:
+                return profile_action(
+                    "validate_by_amount_allocations",
+                    validation_input,
+                    lambda: validate_by_amount_allocations(
+                        spark,
+                        validation_cfg,
+                        validation_input,
+                        validation_fep,
+                        validation_partners,
+                        validation_default_rules,
+                        validation_map_rules,
+                    ),
+                    validation_cfg,
+                )
+            finally:
+                parallel_activity.append({
+                    "pool": "lookthrough-validation",
+                    "task": "validate_by_amount_allocations",
+                    "elapsed_seconds": round(
+                        time.perf_counter() - validation_started, 3
+                    ),
+                })
+
+        # Validation only reads allocation inputs (apart from its independent
+        # warning-table write), so overlap it with allocation computation when
+        # the shared worker limit permits concurrency.
+        if workers > 1:
+            validation_pool = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="lookthrough-validation",
+            )
+            validation_future = validation_pool.submit(run_validation)
+        else:
+            run_validation()
 
         if line_type == "704c":
             allocation_percentages = final_eff_pct.groupBy(
@@ -572,6 +608,15 @@ def run_load_lookthrough_cost_alloc(
             )
             allocation_output = by_amount.unionByName(by_pct)
 
+        if validation_future is not None:
+            validation_future.result()
+            validation_pool.shutdown(wait=True)
+            validation_pool = None
+        if profile_enabled:
+            action_records.extend(
+                validation_cfg.get("_action_plan_profile", ())
+            )
+
         # Preserve the production fan-out checkpoint and its exact name.
         allocation_output = _checkpoint(
             spark, allocation_output, "alloc_output", cfg
@@ -608,6 +653,7 @@ def run_load_lookthrough_cost_alloc(
                     ),
                 ),
             ],
+            workers,
             parallel_activity,
         )
         if profile_enabled:
@@ -624,6 +670,8 @@ def run_load_lookthrough_cost_alloc(
         logger.error("[FAIL] %s", exc, exc_info=True)
         raise
     finally:
+        if validation_pool is not None:
+            validation_pool.shutdown(wait=True)
         if profile_enabled and isinstance(cfg, dict):
             builder_records.extend(cfg.get("_plan_profile", ()))
         if action_token is not None:

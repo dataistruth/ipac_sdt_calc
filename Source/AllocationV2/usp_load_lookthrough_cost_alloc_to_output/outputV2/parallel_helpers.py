@@ -4,14 +4,16 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from Common_V2.core import DEFAULT_MAX_THREADS, MAX_PARALLEL_THREADS
 
-def normalize_workers(max_threads=4, MaxThreads=None):
+
+def normalize_workers(max_threads=DEFAULT_MAX_THREADS, MaxThreads=None):
     raw = MaxThreads if MaxThreads is not None else max_threads
     try:
         workers = int(raw)
     except (TypeError, ValueError):
-        workers = 4
-    return max(1, min(workers, 4))
+        workers = DEFAULT_MAX_THREADS
+    return max(1, min(workers, MAX_PARALLEL_THREADS))
 
 
 def isolated_cfg(cfg):
@@ -65,11 +67,25 @@ def run_parallel(tasks, max_threads, activity, label):
     return [results[name] for name, _ in tasks]
 
 
-def run_distinct_writers(tasks, activity):
-    """Run two independent mutations on demonstrably distinct workers."""
+def run_distinct_writers(tasks, max_threads, activity):
+    """Run independent mutations within the shared concurrency limit."""
     if len(tasks) != 2:
         raise ValueError("writer pool requires exactly two tasks")
-    barrier = threading.Barrier(2)
+    workers = max(1, min(max_threads, len(tasks)))
+    if workers == 1:
+        results = []
+        for name, fn in tasks:
+            started = time.perf_counter()
+            results.append(fn())
+            activity.append({
+                "pool": "lookthrough-write",
+                "task": name,
+                "thread": threading.current_thread().name,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+            })
+        return results
+
+    barrier = threading.Barrier(workers)
     results = {}
 
     def invoke(name, fn):
@@ -86,7 +102,7 @@ def run_distinct_writers(tasks, activity):
         return result
 
     with ThreadPoolExecutor(
-        max_workers=2, thread_name_prefix="lookthrough-write"
+        max_workers=workers, thread_name_prefix="lookthrough-write"
     ) as pool:
         futures = {
             pool.submit(invoke, name, fn): name for name, fn in tasks
@@ -99,7 +115,7 @@ def run_distinct_writers(tasks, activity):
         if item.get("pool") == "lookthrough-write"
         and item.get("task") != "__wall__"
     }
-    if len(writer_threads) != 2:
+    if len(writer_threads) != workers:
         raise RuntimeError("output/input writes did not use distinct workers")
     return [results[name] for name, _ in tasks]
 
