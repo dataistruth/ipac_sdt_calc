@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 import time
 
 import pyspark.sql.functions as F
@@ -24,10 +23,6 @@ from .parallel_helpers import (
     run_distinct_writers,
     run_parallel,
 )
-from ._hierarchy import (
-    build_entity_hierarchy,
-    build_rule_ordered_underlyings,
-)
 from .parent import output_module
 from .plan_profiler import (
     finish_action_profile,
@@ -45,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 _prod = output_module("load_lookthrough_cost_alloc_to_output")
 _loads = output_module("_data_loading")
+_hierarchy = output_module("_hierarchy")
 _allocation = output_module("_allocation")
 
 _load_sp_specific_config = _prod._load_sp_specific_config
@@ -63,6 +59,9 @@ apply_704c_to_k1_mappings = _loads.apply_704c_to_k1_mappings
 load_book_effective_rules = _loads.load_book_effective_rules
 add_footnote_inheritance = _loads.add_footnote_inheritance
 load_final_effective_percentages = _loads.load_final_effective_percentages
+
+build_entity_hierarchy = _hierarchy.build_entity_hierarchy
+build_rule_ordered_underlyings = _hierarchy.build_rule_ordered_underlyings
 
 prepare_lookthrough_input = _allocation.prepare_lookthrough_input
 validate_by_amount_allocations = _allocation.validate_by_amount_allocations
@@ -110,9 +109,25 @@ def _checkpoint(spark, df, name, cfg):
     return result
 
 
-# Isolated outputV2 hierarchy calls its module-global helper. Redirect to
-# shared checkpoint_V2 so sequence, mode, and local alias reset stay aligned.
-sys.modules[f"{__package__}._hierarchy"]._checkpoint = _checkpoint
+# Production hierarchy still owns the recursion. Redirect its helper to
+# checkpoint_V2, and materialize the pruned EntityRelationship scan once
+# before base + recursive joins reuse it.
+_hierarchy._checkpoint = _checkpoint
+_orig_hierarchy_read_table = _hierarchy.read_table
+
+
+def _read_table_with_pruned_entity_rel(spark, name, cfg, *args, **kwargs):
+    df = _orig_hierarchy_read_table(spark, name, cfg, *args, **kwargs)
+    if name != "EntityRelationship":
+        return df
+    pruned = df.filter(
+        (F.col("ClientID") == cfg["client_id"])
+        & (F.col("TaxPeriodID") == cfg["tax_period_id"])
+    ).select("LowerTierEntityID", "UpperTierEntityID")
+    return _checkpoint(spark, pruned, "entity_relationship_pruned", cfg)
+
+
+_hierarchy.read_table = _read_table_with_pruned_entity_rel
 
 
 def _emit_reports(enabled, threshold, sinks):

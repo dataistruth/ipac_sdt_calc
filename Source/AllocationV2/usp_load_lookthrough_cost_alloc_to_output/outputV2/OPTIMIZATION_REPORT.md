@@ -46,7 +46,8 @@ default applies when no override is supplied.
 
 - `cost_underlyings`
 - `entity_relationship_pruned` (outputV2-only; ClientID/TaxPeriodID-filtered
-  `EntityRelationship` before hierarchy recursion)
+  `EntityRelationship` before hierarchy recursion, injected by wrapping
+  production `_hierarchy.read_table`)
 - each `hierarchy_lvl_<n>`
 - `entity_hier_final`
 - `all_underlyings`
