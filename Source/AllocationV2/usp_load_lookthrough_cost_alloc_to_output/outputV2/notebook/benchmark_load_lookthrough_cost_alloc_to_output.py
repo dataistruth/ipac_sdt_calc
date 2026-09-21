@@ -358,6 +358,7 @@ if profile_plan:
 
 consumer_counts = {
     "cost_underlyings": 3,
+    "entity_relationship_pruned": 4,
     "entity_hier_final": 2,
     "all_underlyings": 3,
     "asset_class_rel": 2,

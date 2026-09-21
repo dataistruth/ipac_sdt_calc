@@ -45,6 +45,8 @@ the backend selected by `resolve_checkpoint_mode`; only the shared Common V2
 default applies when no override is supplied.
 
 - `cost_underlyings`
+- `entity_relationship_pruned` (outputV2-only; ClientID/TaxPeriodID-filtered
+  `EntityRelationship` before hierarchy recursion)
 - each `hierarchy_lvl_<n>`
 - `entity_hier_final`
 - `all_underlyings`
@@ -56,6 +58,11 @@ narrowing, and no checkpoint deletion on the hot path.
 
 ## Initial checkpoint recommendation
 
+- **Keep `entity_relationship_pruned`**: the filtered relationship frame is
+  joined at the base level and every hierarchy iteration. Without this seam,
+  each eager `hierarchy_lvl_*` checkpoint re-scans `EntityRelationship`.
+  A/B with inherited/default `CheckpointMode` first; isolate the extra seam
+  with `CheckpointMode=1` if later mode-2 backends need a clean rematch.
 - **Keep `hierarchy_lvl_<n>`**: loop guards consume each level and the next
   iteration depends on it; truncation prevents recursive lineage replay.
 - **Keep `cost_underlyings`**: it fans out to the base hierarchy,

@@ -23,6 +23,7 @@ from .parallel_helpers import (
     run_distinct_writers,
     run_parallel,
 )
+from . import _hierarchy
 from .parent import output_module
 from .plan_profiler import (
     finish_action_profile,
@@ -40,7 +41,6 @@ logger = logging.getLogger(__name__)
 
 _prod = output_module("load_lookthrough_cost_alloc_to_output")
 _loads = output_module("_data_loading")
-_hierarchy = output_module("_hierarchy")
 _allocation = output_module("_allocation")
 
 _load_sp_specific_config = _prod._load_sp_specific_config
@@ -109,8 +109,8 @@ def _checkpoint(spark, df, name, cfg):
     return result
 
 
-# The copied production hierarchy calls its module-global helper. Redirect only
-# this candidate import to shared checkpoint_V2 while preserving every seam.
+# Isolated outputV2 hierarchy calls its module-global helper. Redirect to
+# shared checkpoint_V2 so sequence, mode, and local alias reset stay aligned.
 _hierarchy._checkpoint = _checkpoint
 
 
