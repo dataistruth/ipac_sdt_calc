@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 
 import pyspark.sql.functions as F
@@ -23,7 +24,10 @@ from .parallel_helpers import (
     run_distinct_writers,
     run_parallel,
 )
-from . import _hierarchy
+from ._hierarchy import (
+    build_entity_hierarchy,
+    build_rule_ordered_underlyings,
+)
 from .parent import output_module
 from .plan_profiler import (
     finish_action_profile,
@@ -59,9 +63,6 @@ apply_704c_to_k1_mappings = _loads.apply_704c_to_k1_mappings
 load_book_effective_rules = _loads.load_book_effective_rules
 add_footnote_inheritance = _loads.add_footnote_inheritance
 load_final_effective_percentages = _loads.load_final_effective_percentages
-
-build_entity_hierarchy = _hierarchy.build_entity_hierarchy
-build_rule_ordered_underlyings = _hierarchy.build_rule_ordered_underlyings
 
 prepare_lookthrough_input = _allocation.prepare_lookthrough_input
 validate_by_amount_allocations = _allocation.validate_by_amount_allocations
@@ -111,7 +112,7 @@ def _checkpoint(spark, df, name, cfg):
 
 # Isolated outputV2 hierarchy calls its module-global helper. Redirect to
 # shared checkpoint_V2 so sequence, mode, and local alias reset stay aligned.
-_hierarchy._checkpoint = _checkpoint
+sys.modules[f"{__package__}._hierarchy"]._checkpoint = _checkpoint
 
 
 def _emit_reports(enabled, threshold, sinks):
