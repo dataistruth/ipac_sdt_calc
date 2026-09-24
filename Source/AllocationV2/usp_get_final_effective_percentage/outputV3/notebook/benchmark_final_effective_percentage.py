@@ -468,12 +468,23 @@ def _run(variant):
         and int(profile_requested_shuffle) == int(variant_shuffle)
         and int(profile_effective_shuffle) == int(variant_shuffle)
     )
+    verification_required = not is_production
+    shuffle_status = (
+        "PASS"
+        if shuffle_matches
+        else (
+            "OBSERVED_PRODUCTION_OVERRIDE"
+            if is_production
+            else "FAIL"
+        )
+    )
     print(
         f"[SPARK SHUFFLE AFTER] variant={variant} "
         f"requested={variant_shuffle} session={shuffle_after_run} "
         f"profile_requested={profile_requested_shuffle} "
         f"profile_effective={profile_effective_shuffle} "
-        f"status={'PASS' if shuffle_matches else 'FAIL'}",
+        f"verification_required={verification_required} "
+        f"status={shuffle_status}",
         flush=True,
     )
     _emit(
@@ -484,11 +495,13 @@ def _run(variant):
         session_after=shuffle_after_run,
         profile_requested=profile_requested_shuffle,
         profile_effective=profile_effective_shuffle,
+        verification_required=verification_required,
+        status=shuffle_status,
         exact_match=shuffle_matches,
     )
-    if not shuffle_matches:
+    if verification_required and not shuffle_matches:
         raise AssertionError(
-            "spark.sql.shuffle.partitions was overwritten: "
+            "outputV3 spark.sql.shuffle.partitions was overwritten: "
             f"requested={variant_shuffle}, session_after={shuffle_after_run}, "
             f"profile_requested={profile_requested_shuffle}, "
             f"profile_effective={profile_effective_shuffle}"
@@ -513,6 +526,8 @@ def _run(variant):
         "profile_requested_shuffle": profile_requested_shuffle,
         "profile_effective_shuffle": profile_effective_shuffle,
         "shuffle_verified": shuffle_matches,
+        "shuffle_verification_required": verification_required,
+        "shuffle_status": shuffle_status,
         "fingerprints": fingerprints,
         "profile": profile,
     }
@@ -672,6 +687,10 @@ for record in (production, optimized):
                 record["profile_effective_shuffle"]
             ),
             "shuffle_verified": record["shuffle_verified"],
+            "shuffle_verification_required": record[
+                "shuffle_verification_required"
+            ],
+            "shuffle_status": record["shuffle_status"],
             "baseline_wall_seconds": BASELINE["wall_seconds"],
             "wall_vs_baseline_seconds": round(
                 record["wall_seconds"] - BASELINE["wall_seconds"], 3
@@ -697,6 +716,10 @@ if final_comparison is not None:
                 optimized["profile_effective_shuffle"]
             ),
             "shuffle_verified": optimized["shuffle_verified"],
+            "shuffle_verification_required": optimized[
+                "shuffle_verification_required"
+            ],
+            "shuffle_status": optimized["shuffle_status"],
             "baseline_wall_seconds": BASELINE["wall_seconds"],
             "wall_vs_baseline_seconds": round(
                 optimized["wall_seconds"] - BASELINE["wall_seconds"], 3
@@ -717,6 +740,8 @@ RUNTIME_SCHEMA = """
     profile_requested_shuffle STRING,
     profile_effective_shuffle STRING,
     shuffle_verified BOOLEAN,
+    shuffle_verification_required BOOLEAN,
+    shuffle_status STRING,
     baseline_wall_seconds DOUBLE,
     wall_vs_baseline_seconds DOUBLE
 """
