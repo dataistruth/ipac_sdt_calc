@@ -478,6 +478,15 @@ def run_modes_parallel(
                         entity_partners,
                     )
                 )
+                # Both state entity branches consume the same four-pass union.
+                # Cut that lineage once so the non-dated and dated branches do
+                # not independently rebuild the state-allocation input.
+                state_lines = checkpoint(
+                    spark,
+                    state_lines,
+                    f"state_lines_m{mode}",
+                    mode_cfg,
+                )
                 non_dated, dated = business.build_state_entities(
                     spark,
                     mode_cfg,

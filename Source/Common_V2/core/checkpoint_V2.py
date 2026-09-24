@@ -6,7 +6,8 @@ Modes:
     1 - Delta with column statistics disabled.
     2 - Odd calls localCheckpoint; even calls stats-off Delta (default).
     3 - Odd calls localCheckpoint; even calls uncompressed Volume Parquet.
-    4 - All calls localCheckpoint.
+    4 - All calls localCheckpoint, materialized eagerly.
+    5 - All calls localCheckpoint, materialized by the next Spark action.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHECKPOINT_MODE = 2
-VALID_CHECKPOINT_MODES = frozenset({1, 2, 3, 4})
+VALID_CHECKPOINT_MODES = frozenset({1, 2, 3, 4, 5})
 DELTA_STATS_KEY = "spark.databricks.delta.stats.collect"
 
 _STATE_CREATION_LOCK = threading.Lock()
@@ -38,14 +39,14 @@ _DELTA_STATS_LOCK = threading.Lock()
 
 
 def normalize_checkpoint_mode(value=None) -> int:
-    """Validate and return a checkpoint mode in the range 1..4."""
+    """Validate and return a checkpoint mode in the range 1..5."""
     raw = DEFAULT_CHECKPOINT_MODE if value is None else value
     try:
         mode = int(raw)
     except (TypeError, ValueError) as exc:
-        raise ValueError("CheckpointMode must be one of 1, 2, 3, 4") from exc
+        raise ValueError("CheckpointMode must be one of 1, 2, 3, 4, 5") from exc
     if mode not in VALID_CHECKPOINT_MODES:
-        raise ValueError("CheckpointMode must be one of 1, 2, 3, 4")
+        raise ValueError("CheckpointMode must be one of 1, 2, 3, 4, 5")
     return mode
 
 
@@ -213,18 +214,21 @@ def checkpoint_V2(
     """
     mode, sequence = _next_sequence(cfg, checkpoint_mode)
     requested_backend = _select_backend(mode, sequence)
+    local_checkpoint_eager = mode != 5
+    emit_progress = mode != 5
     _track_plan(f"{name}#{sequence}", df, cfg)
     started = time.time()
-    print(
-        f"[CHECKPOINT_V2] start name={name} sequence={sequence} "
-        f"mode={mode} backend={requested_backend}",
-        flush=True,
-    )
+    if emit_progress:
+        print(
+            f"[CHECKPOINT_V2] start name={name} sequence={sequence} "
+            f"mode={mode} backend={requested_backend}",
+            flush=True,
+        )
 
     actual_backend = requested_backend
     if requested_backend == "local":
         try:
-            result = df.localCheckpoint(eager=True)
+            result = df.localCheckpoint(eager=local_checkpoint_eager)
         except Exception as exc:
             actual_backend = "delta"
             print(
@@ -246,14 +250,23 @@ def checkpoint_V2(
             "mode": mode,
             "requested_backend": requested_backend,
             "backend": actual_backend,
+            "local_checkpoint_eager": (
+                local_checkpoint_eager
+                if actual_backend == "local"
+                else None
+            ),
             "elapsed_seconds": elapsed,
         }
     )
-    print(
-        f"[CHECKPOINT_V2] done name={name} sequence={sequence} mode={mode} "
-        f"backend={actual_backend} elapsed={elapsed:.3f}s",
-        flush=True,
-    )
+    if emit_progress:
+        print(
+            f"[CHECKPOINT_V2] done name={name} sequence={sequence} "
+            f"mode={mode} backend={actual_backend} "
+            f"materialization="
+            f"{'eager' if local_checkpoint_eager else 'deferred'} "
+            f"elapsed={elapsed:.3f}s",
+            flush=True,
+        )
     return result
 
 

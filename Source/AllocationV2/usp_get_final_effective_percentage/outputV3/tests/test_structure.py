@@ -181,26 +181,23 @@ class OutputV3StructureTests(unittest.TestCase):
             "result.toDF(*result.columns)", source("checkpoint_policy.py")
         )
 
-    def test_benchmark_runs_one_side_by_side_stdout_report(self):
+    def test_benchmark_runs_one_side_by_side_with_result_tables(self):
         text = source("notebook/benchmark_final_effective_percentage.py")
         self.assertIn('"wall_seconds": 181.893', text)
         self.assertIn('"reported_seconds": 172.0', text)
         self.assertIn('"rows": 79', text)
         self.assertIn('"ParallelGroups"', text)
         self.assertIn('"CheckpointMode"', text)
-        self.assertIn('["1", "2", "3", "4"]', text)
+        self.assertIn('["1", "2", "3", "4", "5"]', text)
         self.assertIn('"ProfilePlan"', text)
         self.assertIn('"PlanCheckpointThreshold"', text)
         self.assertIn('"VolumePath"', text)
-        self.assertIn('order=["production", "outputV3"]', text)
-        self.assertIn("[FEP_BENCHMARK]", text)
-        self.assertIn("def _banner(", text)
-        self.assertIn("FEP BENCHMARK CONFIGURATION", text)
-        self.assertIn("ABOUT TO RUN variant=", text)
-        self.assertIn("FEP BENCHMARK FINAL COMPARISON", text)
-        self.assertIn('"FINAL_COMPARISON"', text)
+        self.assertNotIn("[FEP_BENCHMARK]", text)
+        self.assertNotIn("def _banner(", text)
+        self.assertIn('"local/deferred"', text)
         self.assertIn("RUNTIME_SCHEMA", text)
         self.assertIn("COMPARE_SCHEMA", text)
+        self.assertIn("CHECKPOINT_TIMING_SCHEMA", text)
         self.assertIn("display(spark.createDataFrame(runtime_rows", text)
         self.assertIn("display(spark.createDataFrame(compare_rows", text)
 
@@ -237,16 +234,33 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"_output_v3_target_checkpoint"', checkpoint)
         self.assertIn('"started_at": started_at', checkpoint)
         self.assertIn('"ended_at": ended_at', checkpoint)
-        self.assertIn("CHECKPOINT_START", notebook)
-        self.assertIn("CHECKPOINT_DONE", notebook)
         self.assertIn("CHECKPOINT_TIMING_SCHEMA", notebook)
-        self.assertIn("SPARK_SHUFFLE_VERIFY", notebook)
+        self.assertIn('"materialization"', notebook)
+        self.assertIn('"registration only"', notebook)
         self.assertIn("shuffle_verified", notebook)
         self.assertIn('"parallel_wave_critical_path"', orchestrator)
         self.assertIn('"critical_actions"', orchestrator)
         self.assertIn("Run one experiment at a time", notebook)
-        self.assertIn('"OUTPUTV3_PROFILE"', notebook)
-        self.assertIn('"CRITICAL_ACTION"', notebook)
+        self.assertNotIn("_emit(", notebook)
+
+    def test_mode_five_and_shared_state_boundary_are_enabled(self):
+        orchestrator = source("orchestrator.py")
+        pipeline = source("pipeline.py")
+        checkpoint = source("checkpoint_policy.py")
+        checkpoint_v2 = (
+            ROOT.parents[2] / "Common_V2/core/checkpoint_V2.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("checkpoint_mode\", 5", orchestrator)
+        self.assertIn("sql_shuffle_partitions\", 8", orchestrator)
+        self.assertIn("missing_entity_identity\", True", orchestrator)
+        self.assertIn("checkpoint_mode != 5", checkpoint)
+        self.assertIn('f"state_lines_m{mode}"', pipeline)
+        self.assertIn("frozenset({1, 2, 3, 4, 5})", checkpoint_v2)
+        self.assertIn("local_checkpoint_eager = mode != 5", checkpoint_v2)
+        self.assertIn(
+            "df.localCheckpoint(eager=local_checkpoint_eager)",
+            checkpoint_v2,
+        )
 
     def test_warning_probe_experiments_are_output_v3_local(self):
         text = source("orchestrator.py")
