@@ -270,7 +270,69 @@ def _print_output_v3_profile(profile):
     )
     _emit_rows("STAGE", profile.get("stage_timings", []))
     _emit_rows("OPERATION", profile.get("operation_timings", []))
-    _emit_rows("CHECKPOINT", profile.get("checkpoint_activity", []))
+    # Checkpoints run inside worker threads, so their inline START/DONE prints
+    # are not captured by the notebook. Re-emit each one from the main thread,
+    # ordered by wall-clock start, so every start/end time is visible here.
+    checkpoints = sorted(
+        profile.get("checkpoint_activity", []),
+        key=lambda row: str(row.get("started_at") or ""),
+    )
+    checkpoint_events = []
+    for row in checkpoints:
+        checkpoint_events.extend(
+            [
+                (
+                    str(row.get("started_at") or ""),
+                    "START",
+                    row,
+                ),
+                (
+                    str(row.get("ended_at") or ""),
+                    "DONE",
+                    row,
+                ),
+            ]
+        )
+    print("\n[outputV3 checkpoint replay] chronological START/DONE events")
+    for event_at, event_type, row in sorted(checkpoint_events):
+        if event_type == "START":
+            print(
+                f"[{event_at}] [outputV3 checkpoint] START "
+                f"name={row.get('name')} stage={row.get('stage')} "
+                f"mode={row.get('checkpoint_mode')} "
+                f"thread={row.get('thread')}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[{event_at}] [outputV3 checkpoint] DONE "
+                f"name={row.get('name')} stage={row.get('stage')} "
+                f"mode={row.get('checkpoint_mode')} "
+                f"backend={row.get('actual_backend')} "
+                f"thread={row.get('thread')} "
+                f"elapsed={row.get('elapsed_seconds')}s",
+                flush=True,
+            )
+    for row in checkpoints:
+        _emit(
+            "CHECKPOINT_START",
+            name=row.get("name"),
+            stage=row.get("stage"),
+            checkpoint_mode=row.get("checkpoint_mode"),
+            thread=row.get("thread"),
+            started_at=row.get("started_at"),
+        )
+        _emit(
+            "CHECKPOINT_DONE",
+            name=row.get("name"),
+            stage=row.get("stage"),
+            checkpoint_mode=row.get("checkpoint_mode"),
+            actual_backend=row.get("actual_backend"),
+            thread=row.get("thread"),
+            ended_at=row.get("ended_at"),
+            elapsed_seconds=row.get("elapsed_seconds"),
+        )
+    _emit_rows("CHECKPOINT", checkpoints)
     _emit_rows("PARALLEL_TASK", profile.get("parallel_activity", []))
     _emit_rows("ARTIFACT_MERGE", profile.get("artifact_merges", []))
     _emit(
@@ -300,9 +362,22 @@ def _print_output_v3_profile(profile):
 
 def _run(variant):
     is_production = variant == "production"
+    print(
+        "\n"
+        + "=" * 96
+        + f"\nFEP BENCHMARK VARIANT START: {variant}\n"
+        + "=" * 96,
+        flush=True,
+    )
     variant_shuffle = 4 if is_production else shuffle_partitions
     spark.conf.set(
         "spark.sql.shuffle.partitions", str(variant_shuffle)
+    )
+    shuffle_before_run = spark.conf.get("spark.sql.shuffle.partitions")
+    print(
+        f"[SPARK SHUFFLE BEFORE] variant={variant} "
+        f"requested={variant_shuffle} session={shuffle_before_run}",
+        flush=True,
     )
     if is_production:
         spark.conf.set(
@@ -365,6 +440,59 @@ def _run(variant):
     fingerprints = capture_outputs(spark, catalog, schema, run_id)
     summary = summarize_outputs(fingerprints)
     profile = runner.get_last_run_profile() if not is_production else {}
+    shuffle_after_run = spark.conf.get("spark.sql.shuffle.partitions")
+    profile_requested_shuffle = (
+        profile.get("requested_shuffle_partitions")
+        if not is_production
+        else variant_shuffle
+    )
+    profile_effective_shuffle = (
+        profile.get("effective_spark_config", {}).get(
+            "spark.sql.shuffle.partitions"
+        )
+        if not is_production
+        else shuffle_after_run
+    )
+    if not is_production and profile_requested_shuffle is None:
+        raise RuntimeError(
+            "outputV3 profile has no requested_shuffle_partitions; "
+            "an old orchestrator is still loaded"
+        )
+    if not is_production and profile_effective_shuffle is None:
+        raise RuntimeError(
+            "outputV3 profile has no effective shuffle value; "
+            "an old pipeline/orchestrator is still loaded"
+        )
+    shuffle_matches = (
+        int(shuffle_after_run) == int(variant_shuffle)
+        and int(profile_requested_shuffle) == int(variant_shuffle)
+        and int(profile_effective_shuffle) == int(variant_shuffle)
+    )
+    print(
+        f"[SPARK SHUFFLE AFTER] variant={variant} "
+        f"requested={variant_shuffle} session={shuffle_after_run} "
+        f"profile_requested={profile_requested_shuffle} "
+        f"profile_effective={profile_effective_shuffle} "
+        f"status={'PASS' if shuffle_matches else 'FAIL'}",
+        flush=True,
+    )
+    _emit(
+        "SPARK_SHUFFLE_VERIFY",
+        variant=variant,
+        requested=variant_shuffle,
+        session_before=shuffle_before_run,
+        session_after=shuffle_after_run,
+        profile_requested=profile_requested_shuffle,
+        profile_effective=profile_effective_shuffle,
+        exact_match=shuffle_matches,
+    )
+    if not shuffle_matches:
+        raise AssertionError(
+            "spark.sql.shuffle.partitions was overwritten: "
+            f"requested={variant_shuffle}, session_after={shuffle_after_run}, "
+            f"profile_requested={profile_requested_shuffle}, "
+            f"profile_effective={profile_effective_shuffle}"
+        )
     reported = (
         float(result["elapsed_seconds"])
         if isinstance(result, dict)
@@ -379,6 +507,12 @@ def _run(variant):
         "reported_seconds": reported,
         "rows": summary["total_rows"],
         "tables": summary["tables_present"],
+        "requested_shuffle_partitions": variant_shuffle,
+        "session_shuffle_before": shuffle_before_run,
+        "session_shuffle_after": shuffle_after_run,
+        "profile_requested_shuffle": profile_requested_shuffle,
+        "profile_effective_shuffle": profile_effective_shuffle,
+        "shuffle_verified": shuffle_matches,
         "fingerprints": fingerprints,
         "profile": profile,
     }
@@ -390,6 +524,9 @@ def _run(variant):
         reported_seconds=reported,
         rows=record["rows"],
         tables=record["tables"],
+        requested_shuffle_partitions=variant_shuffle,
+        effective_shuffle_partitions=profile_effective_shuffle,
+        shuffle_verified=shuffle_matches,
     )
     for table, fingerprint in sorted(fingerprints.items()):
         _emit(
@@ -400,6 +537,13 @@ def _run(variant):
         )
     if not is_production:
         _print_output_v3_profile(profile)
+    print(
+        "=" * 96
+        + f"\nFEP BENCHMARK VARIANT DONE: {variant} "
+        f"wall={wall:.3f}s reported={reported}\n"
+        + "=" * 96,
+        flush=True,
+    )
     return record
 
 
@@ -408,6 +552,10 @@ _emit(
     timestamp=datetime.now().isoformat(),
     order=["production", "outputV3"],
 )
+production = None
+optimized = None
+mismatches = []
+final_comparison = None
 snapshots = create_run_snapshots(spark, catalog, schema, run_id)
 _emit("SNAPSHOT_CREATED", snapshots=snapshots)
 try:
@@ -446,21 +594,28 @@ try:
         if production["wall_seconds"]
         else 0.0
     )
-    _emit(
-        "FINAL_COMPARISON",
-        parity="PASS",
-        production_wall_seconds=production["wall_seconds"],
-        production_reported_seconds=production["reported_seconds"],
-        optimized_wall_seconds=optimized["wall_seconds"],
-        optimized_reported_seconds=optimized["reported_seconds"],
-        improvement_seconds=round(wall_delta, 3),
-        improvement_percent=round(improvement, 2),
-        optimized_under_50_seconds=optimized["wall_seconds"] < 50.0,
-        optimized_under_55_seconds=optimized["wall_seconds"] <= 55.0,
-        optimized_under_80_seconds=optimized["wall_seconds"] <= 80.0,
-        rows=optimized["rows"],
-        tables=optimized["tables"],
-    )
+    final_comparison = {
+        "parity": "PASS",
+        "production_wall_seconds": production["wall_seconds"],
+        "production_reported_seconds": production["reported_seconds"],
+        "optimized_wall_seconds": optimized["wall_seconds"],
+        "optimized_reported_seconds": optimized["reported_seconds"],
+        "improvement_seconds": round(wall_delta, 3),
+        "improvement_percent": round(improvement, 2),
+        "optimized_under_50_seconds": optimized["wall_seconds"] < 50.0,
+        "optimized_under_55_seconds": optimized["wall_seconds"] <= 55.0,
+        "optimized_under_80_seconds": optimized["wall_seconds"] <= 80.0,
+        "requested_shuffle_partitions": optimized[
+            "requested_shuffle_partitions"
+        ],
+        "effective_shuffle_partitions": optimized[
+            "profile_effective_shuffle"
+        ],
+        "shuffle_verified": optimized["shuffle_verified"],
+        "rows": optimized["rows"],
+        "tables": optimized["tables"],
+    }
+    _emit("FINAL_COMPARISON", **final_comparison)
 finally:
     try:
         restore_run_snapshots(spark, catalog, schema, run_id, snapshots)
@@ -483,3 +638,158 @@ finally:
             timestamp=datetime.now().isoformat(),
             restored_spark_config=ORIGINAL_SPARK_CONFIG,
         )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Runtime and data-compare tables
+# MAGIC
+# MAGIC The cells above stream copyable `[FEP_BENCHMARK][...]` JSON lines to
+# MAGIC stdout. The tables below render the same runtime and parity results in
+# MAGIC the notebook result tabs.
+
+# COMMAND ----------
+
+runtime_rows = []
+for record in (production, optimized):
+    if record is None:
+        continue
+    runtime_rows.append(
+        {
+            "variant": record["variant"],
+            "wall_seconds": record["wall_seconds"],
+            "reported_seconds": record["reported_seconds"],
+            "rows": record["rows"],
+            "tables": record["tables"],
+            "requested_shuffle_partitions": record[
+                "requested_shuffle_partitions"
+            ],
+            "session_shuffle_after": record["session_shuffle_after"],
+            "profile_requested_shuffle": str(
+                record["profile_requested_shuffle"]
+            ),
+            "profile_effective_shuffle": str(
+                record["profile_effective_shuffle"]
+            ),
+            "shuffle_verified": record["shuffle_verified"],
+            "baseline_wall_seconds": BASELINE["wall_seconds"],
+            "wall_vs_baseline_seconds": round(
+                record["wall_seconds"] - BASELINE["wall_seconds"], 3
+            ),
+        }
+    )
+if final_comparison is not None:
+    runtime_rows.append(
+        {
+            "variant": "improvement (production - outputV3)",
+            "wall_seconds": final_comparison["improvement_seconds"],
+            "reported_seconds": final_comparison["improvement_percent"],
+            "rows": final_comparison["rows"],
+            "tables": final_comparison["tables"],
+            "requested_shuffle_partitions": optimized[
+                "requested_shuffle_partitions"
+            ],
+            "session_shuffle_after": optimized["session_shuffle_after"],
+            "profile_requested_shuffle": str(
+                optimized["profile_requested_shuffle"]
+            ),
+            "profile_effective_shuffle": str(
+                optimized["profile_effective_shuffle"]
+            ),
+            "shuffle_verified": optimized["shuffle_verified"],
+            "baseline_wall_seconds": BASELINE["wall_seconds"],
+            "wall_vs_baseline_seconds": round(
+                optimized["wall_seconds"] - BASELINE["wall_seconds"], 3
+            )
+            if optimized is not None
+            else None,
+        }
+    )
+
+RUNTIME_SCHEMA = """
+    variant STRING,
+    wall_seconds DOUBLE,
+    reported_seconds DOUBLE,
+    rows LONG,
+    tables LONG,
+    requested_shuffle_partitions INT,
+    session_shuffle_after STRING,
+    profile_requested_shuffle STRING,
+    profile_effective_shuffle STRING,
+    shuffle_verified BOOLEAN,
+    baseline_wall_seconds DOUBLE,
+    wall_vs_baseline_seconds DOUBLE
+"""
+if runtime_rows:
+    display(spark.createDataFrame(runtime_rows, RUNTIME_SCHEMA))
+
+# COMMAND ----------
+
+compare_rows = []
+if production is not None and optimized is not None:
+    mismatch_by_table = {}
+    for item in mismatches:
+        mismatch_by_table.setdefault(item["table"], []).append(item)
+    for table in reconcile.OUTPUT_TABLES:
+        table_mismatches = mismatch_by_table.get(table, [])
+        compare_rows.append(
+            {
+                "table": table,
+                "exact_match": not table_mismatches,
+                "production_fingerprint": str(
+                    production["fingerprints"].get(table)
+                ),
+                "outputV3_fingerprint": str(
+                    optimized["fingerprints"].get(table)
+                ),
+                "mismatch_detail": (
+                    str(table_mismatches[0]) if table_mismatches else None
+                ),
+            }
+        )
+
+COMPARE_SCHEMA = """
+    table STRING,
+    exact_match BOOLEAN,
+    production_fingerprint STRING,
+    outputV3_fingerprint STRING,
+    mismatch_detail STRING
+"""
+if compare_rows:
+    display(spark.createDataFrame(compare_rows, COMPARE_SCHEMA))
+
+# COMMAND ----------
+
+checkpoint_timing_rows = []
+if optimized is not None:
+    for row in sorted(
+        optimized["profile"].get("checkpoint_activity", []),
+        key=lambda item: str(item.get("started_at") or ""),
+    ):
+        checkpoint_timing_rows.append(
+            {
+                "name": row.get("name"),
+                "stage": row.get("stage"),
+                "thread": row.get("thread"),
+                "actual_backend": row.get("actual_backend"),
+                "started_at": row.get("started_at"),
+                "ended_at": row.get("ended_at"),
+                "elapsed_seconds": row.get("elapsed_seconds"),
+            }
+        )
+
+CHECKPOINT_TIMING_SCHEMA = """
+    name STRING,
+    stage STRING,
+    thread STRING,
+    actual_backend STRING,
+    started_at STRING,
+    ended_at STRING,
+    elapsed_seconds DOUBLE
+"""
+if checkpoint_timing_rows:
+    display(
+        spark.createDataFrame(
+            checkpoint_timing_rows, CHECKPOINT_TIMING_SCHEMA
+        ).orderBy("started_at")
+    )

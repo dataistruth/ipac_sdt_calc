@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 from Common_V2.core.checkpoint_V2 import (
     checkpoint_V2,
@@ -163,10 +165,13 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
     activity = cfg.setdefault("_checkpoint_v2_activity", [])
     before = len(activity)
     started = time.time()
+    started_at = datetime.now().isoformat()
+    thread_name = threading.current_thread().name
     checkpoint_mode = int(cfg.get("_output_v3_checkpoint_mode", 1))
     print(
         f"[outputV3 checkpoint] START name={name} "
-        f"stage={decision.stage} mode={checkpoint_mode}",
+        f"stage={decision.stage} mode={checkpoint_mode} "
+        f"thread={thread_name} at={started_at}",
         flush=True,
     )
     try:
@@ -201,6 +206,7 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
     if actual_backend == "local":
         # Match the qualifier reset of a fresh spark.table relation.
         result = result.toDF(*result.columns)
+    ended_at = datetime.now().isoformat()
     cfg.setdefault("_checkpoint_policy_activity", []).append(
         {
             "name": name,
@@ -209,6 +215,9 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
             "policy_backend": requested_backend,
             "actual_backend": actual_backend,
             "reason": f"checkpoint_V2 mode {checkpoint_mode}; {decision.reason}",
+            "thread": thread_name,
+            "started_at": started_at,
+            "ended_at": ended_at,
             "elapsed_seconds": round(time.time() - started, 3),
             "target_partition_applied": target_applied,
             "target_partition_strategy": (
@@ -233,7 +242,8 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
     print(
         f"[outputV3 checkpoint] DONE name={name} "
         f"stage={decision.stage} mode={checkpoint_mode} "
-        f"backend={actual_backend} elapsed={elapsed:.3f}s",
+        f"backend={actual_backend} thread={thread_name} "
+        f"at={ended_at} elapsed={elapsed:.3f}s",
         flush=True,
     )
     return result
