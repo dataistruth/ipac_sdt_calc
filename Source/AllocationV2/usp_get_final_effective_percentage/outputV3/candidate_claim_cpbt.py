@@ -8,9 +8,9 @@ def load_candidate_claim_builder():
     Keeping this lazy means baseline/action_lean deployments retain the exact
     production builder and do not import the experimental implementation.
     """
-    from .candidate_claim_builder import build_cost_percentage_by_type
+    from .parent import sibling_module
 
-    return build_cost_percentage_by_type
+    return sibling_module("candidate_claim_builder").build_cost_percentage_by_type
 
 
 __all__ = ["load_candidate_claim_builder"]

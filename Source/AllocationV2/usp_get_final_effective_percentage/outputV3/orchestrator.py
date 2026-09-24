@@ -17,10 +17,13 @@ from .checkpoint_policy import (
     initialize_named_checkpoint_policy,
     named_checkpoint,
 )
-from .parent import isolated_output_module
+from .parent import isolated_output_module, sibling_module
 from .pipeline import run_modes_parallel
-from .optimization import PROFILES, resolve_optimization_profile
-from . import read_optimizations
+
+_optimization = sibling_module("optimization")
+PROFILES = _optimization.PROFILES
+resolve_optimization_profile = _optimization.resolve_optimization_profile
+read_optimizations = sibling_module("read_optimizations")
 from .plan_profiler import (
     finish_action_profile,
     finish_checkpoint_plan_profile,
@@ -278,7 +281,9 @@ def _delegated_run_modes(*args, **kwargs):
         optimization_options.get("checkpoint_bypasses", ())
     )
     if optimization_options.get("candidate_claim_cpbt"):
-        from .candidate_claim_cpbt import load_candidate_claim_builder
+        load_candidate_claim_builder = sibling_module(
+            "candidate_claim_cpbt"
+        ).load_candidate_claim_builder
 
         cfg["_output_v3_cpbt_builder"] = track_plan(
             _timed(
