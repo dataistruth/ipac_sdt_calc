@@ -5,7 +5,9 @@ modules. It executes the production orchestrator in a private namespace and
 forks only its `run_modes` control flow in `pipeline.py`. Checkpointing, timing,
 bounded scheduling, and result-table storage are infrastructure seams. Every
 DataFrame transformation, validation, and output builder remains a production
-business function.
+business function by default. `safe_experiments.py` contains three
+default-off copies of simple source relations whose only removed behavior is a
+warning-only `isEmpty` action.
 
 ## Named stage contracts
 
@@ -21,6 +23,9 @@ The executable contracts are in `stages.py`:
 8. `output_write`
 
 Profiles always contain all eight names and include operation-level timings.
+They also include a wave-aware parallel critical path and a ranked list of
+checkpoint/actions with plan shape and partition metadata when plan profiling
+is enabled.
 The contracts identify production functions and whether parallel execution is
 allowed.
 
@@ -93,6 +98,28 @@ growth, plans entering checkpoints, and instrumented output-write action plans
 are returned separately by `get_last_run_profile` and displayed by the
 benchmark notebook. Profiling is off by default to avoid measurement overhead.
 
+## Isolated baseline experiments
+
+The baseline uses 32 shuffle partitions unless `SqlShufflePartitions`
+overrides it. The effective shuffle, AQE, and advisory-partition settings are
+recorded after Spark accepts the configuration. Default-off switches expose
+one-at-a-time tests for a warning probe, the documented missing-entity
+identity path, a dated/non-dated CPBT input break, one named checkpoint
+partition strategy, or entity-partner broadcast. Existing barriers are
+retained.
+
+For a non-baseline `ExperimentID`, the benchmark runs an unchanged outputV3
+control and the candidate in alternating order. It refuses stacked
+experiments and reports paired and final sub-50 promotion gates.
+
+The existing CPBT helper already filters the snapshot by client/tax period,
+broadcasts it, and applies tier-only predicates that Catalyst can push below
+each join. outputV3 therefore does not duplicate that large business helper
+for a redundant tier-filter experiment. Likewise, plugging probe removal is
+not exposed through a global `DataFrame.isEmpty` override; the diagnostic
+action report must first show enough cost to justify an isolated equivalent
+helper.
+
 ## Failure, retry, and cleanup behavior
 
 Every task in a parallel group is observed before the coordinator raises the
@@ -118,9 +145,9 @@ partitions in `finally`.
 ## Imports and public API
 
 The package imports only Python standard-library modules, production modules,
-and `Common_V2`. It does not import `outputV2` or `output/updated`. The copied
-control flow is confined to `pipeline.py`; no production helper module is
-copied.
+PySpark, and `Common_V2`. It does not import `outputV2` or `output/updated`.
+The copied orchestration is confined to `pipeline.py`; the three optional
+source relations in `safe_experiments.py` are the only copied helper logic.
 
 Public APIs:
 

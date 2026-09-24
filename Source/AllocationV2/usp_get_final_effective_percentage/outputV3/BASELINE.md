@@ -25,15 +25,24 @@ complete fingerprints and fails on any field mismatch. It also requires the
 production side to retain 79 rows and all three tables, preventing a candidate
 from passing by matching a drifted or incomplete write.
 
-The notebook defaults to two passes and alternates order:
+The notebook defaults to two passes and alternates order. A baseline run uses:
 
 1. production, then outputV3;
 2. outputV3, then production.
 
+For a non-baseline `ExperimentID`, each pass also includes a fresh unchanged
+outputV3 control (32 shuffle partitions). The notebook permits exactly one
+candidate switch, checks both outputV3 runs against production, and evaluates
+the candidate against its paired control. Promotion requires at least two
+paired runs with median gain of at least 3 seconds and 5%. Final sub-50
+acceptance requires five pairs, candidate median below 50 seconds, and no
+candidate run above 55 seconds.
+
 Before each variant it purges only RunID 17376. Before the benchmark it
 snapshots that RunID from all output tables and restores it in `finally`.
-Stage, checkpoint-policy, parallel-task, execution-strategy, and cfg-artifact
-merge records are shown separately. Parallel activity must contain
+Stage, checkpoint-policy, critical-action, parallel-wave,
+execution-strategy, effective Spark configuration, and cfg-artifact merge
+records are shown separately. Parallel activity must contain
 `lt_nolt_branches`, `mode_prep`, `output_build`, and `output_writes` for a
 non-empty modes 1/2/3 run with `MaxThreads > 1`.
 

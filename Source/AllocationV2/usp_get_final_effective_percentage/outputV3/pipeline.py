@@ -104,13 +104,25 @@ def run_modes_parallel(
     cfg.setdefault("_checkpoint_paths", [])
     cfg["_output_v3_pipeline_strategy"] = "parallel_modes_123_control_flow"
     for key, value in {
-        "spark.sql.shuffle.partitions": "32",
+        "spark.sql.shuffle.partitions": str(
+            cfg.get("_output_v3_shuffle_partitions", 32)
+        ),
         "spark.sql.adaptive.advisoryPartitionSizeInBytes": "128m",
     }.items():
         try:
             spark.conf.set(key, value)
         except Exception:
             business.logger.info("[AQE] %s unavailable", key)
+    cfg["_output_v3_effective_spark_config"] = {}
+    for key in (
+        "spark.sql.shuffle.partitions",
+        "spark.sql.adaptive.enabled",
+        "spark.sql.adaptive.advisoryPartitionSizeInBytes",
+    ):
+        try:
+            cfg["_output_v3_effective_spark_config"][key] = spark.conf.get(key)
+        except Exception:
+            cfg["_output_v3_effective_spark_config"][key] = None
     cfg.setdefault("result_type", ResultType)
     if VolumePath is not None:
         cfg["volume_path"] = VolumePath
@@ -551,55 +563,23 @@ def run_modes_parallel(
             tag = lambda df, mode: (
                 None if df is None else df.withColumn("_mode", F.lit(mode))
             )
-            fused_temp, fused_transfers = (
-                business.build_cost_percentage_by_type(
-                    spark,
-                    cfg,
-                    snapshot,
-                    _union(
-                        [
-                            tag(per_mode[m]["temp_cost_pct"], m)
-                            for m in valid_modes
-                        ]
-                    ),
-                    _union(
-                        [
-                            tag(per_mode[m]["all_underlyings"], m)
-                            for m in valid_modes
-                        ]
-                    ),
-                    _union(
-                        [
-                            tag(per_mode[m]["entity_underlyings"], m)
-                            for m in valid_modes
-                        ]
-                    ),
-                    _union(
-                        [
-                            tag(per_mode[m]["non_dated_entities"], m)
-                            for m in valid_modes
-                        ]
-                    ),
-                    _union(
-                        [
-                            tag(per_mode[m]["dated_entities"], m)
-                            for m in valid_modes
-                        ]
-                    ),
-                    _union(
-                        [
-                            tag(per_mode[m]["transfers_adj"], m)
-                            for m in valid_modes
-                        ]
-                    ),
-                    checkpoint_fn=checkpoint,
-                )
+            tagged_temp = _union(
+                [
+                    tag(per_mode[m]["temp_cost_pct"], m)
+                    for m in valid_modes
+                ]
             )
-            fused_temp = checkpoint(
-                spark, fused_temp, "tcp_by_type_fused", cfg
+            tagged_all_underlyings = _union(
+                [
+                    tag(per_mode[m]["all_underlyings"], m)
+                    for m in valid_modes
+                ]
             )
-            fused_transfers = checkpoint(
-                spark, fused_transfers, "txfr_adj_fused", cfg
+            tagged_entity_underlyings = _union(
+                [
+                    tag(per_mode[m]["entity_underlyings"], m)
+                    for m in valid_modes
+                ]
             )
             tagged_non_dated = _union(
                 [
@@ -613,11 +593,60 @@ def run_modes_parallel(
                     for m in valid_modes
                 ]
             )
-            fused_non_dated, fused_dated = (
-                business.compute_missing_entities(
-                    cfg, tagged_non_dated, tagged_dated, fused_temp
+            tagged_transfers = _union(
+                [
+                    tag(per_mode[m]["transfers_adj"], m)
+                    for m in valid_modes
+                ]
+            )
+            cpbt_break = cfg.get("_output_v3_cpbt_input_break", "off")
+            if cpbt_break in {"non_dated", "both"}:
+                tagged_non_dated = checkpoint(
+                    spark,
+                    tagged_non_dated,
+                    "cpbt_input_non_dated_fused",
+                    cfg,
+                )
+            if cpbt_break in {"dated", "both"}:
+                tagged_dated = checkpoint(
+                    spark,
+                    tagged_dated,
+                    "cpbt_input_dated_fused",
+                    cfg,
+                )
+            fused_temp, fused_transfers = (
+                business.build_cost_percentage_by_type(
+                    spark,
+                    cfg,
+                    snapshot,
+                    tagged_temp,
+                    tagged_all_underlyings,
+                    tagged_entity_underlyings,
+                    tagged_non_dated,
+                    tagged_dated,
+                    tagged_transfers,
+                    checkpoint_fn=checkpoint,
                 )
             )
+            fused_temp = checkpoint(
+                spark, fused_temp, "tcp_by_type_fused", cfg
+            )
+            fused_transfers = checkpoint(
+                spark, fused_transfers, "txfr_adj_fused", cfg
+            )
+            if cfg.get("_output_v3_missing_entity_identity", False):
+                cfg["_non_dated_entities_cost"] = None
+                cfg["_dated_entities_cost"] = None
+                fused_non_dated, fused_dated = (
+                    tagged_non_dated,
+                    tagged_dated,
+                )
+            else:
+                fused_non_dated, fused_dated = (
+                    business.compute_missing_entities(
+                        cfg, tagged_non_dated, tagged_dated, fused_temp
+                    )
+                )
             fused_non_dated = checkpoint(
                 spark, fused_non_dated, "nde_post_miss_fused", cfg
             )
@@ -625,7 +654,13 @@ def run_modes_parallel(
                 spark, fused_dated, "de_post_miss_fused", cfg
             )
             final_cost = business.build_final_cost_percentage(
-                fused_temp, entity_partners
+                fused_temp,
+                (
+                    F.broadcast(entity_partners)
+                    if cfg.get("_output_v3_business_optimization")
+                    == "broadcast_entity_partners"
+                    else entity_partners
+                ),
             )
             final_cost = checkpoint(
                 spark, final_cost, "final_cost_pct_fused", cfg

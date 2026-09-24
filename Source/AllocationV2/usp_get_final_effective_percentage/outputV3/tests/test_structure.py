@@ -216,6 +216,35 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"performance_summary": performance', text)
         self.assertIn("[outputV3 budget]", text)
 
+    def test_deep_baseline_experiments_are_isolated_and_reported(self):
+        orchestrator = source("orchestrator.py")
+        pipeline = source("pipeline.py")
+        checkpoint = source("checkpoint_policy.py")
+        notebook = source(
+            "notebook/benchmark_final_effective_percentage.py"
+        )
+        self.assertIn('"SqlShufflePartitions"', orchestrator)
+        self.assertIn('"_output_v3_effective_spark_config"', pipeline)
+        self.assertNotIn('"spark.sql.shuffle.partitions": "32"', pipeline)
+        self.assertIn('"WarningProbeRemoval"', orchestrator)
+        self.assertIn('"_output_v3_missing_entity_identity"', pipeline)
+        self.assertIn('"CpbtInputBreak"', orchestrator)
+        self.assertIn('"cpbt_input_non_dated_fused"', pipeline)
+        self.assertIn('"cpbt_input_dated_fused"', pipeline)
+        self.assertIn('"_output_v3_target_checkpoint"', checkpoint)
+        self.assertIn('"parallel_wave_critical_path"', orchestrator)
+        self.assertIn('"critical_actions"', orchestrator)
+        self.assertIn("Run one experiment at a time", notebook)
+        self.assertIn('"outputV3_control"', notebook)
+        self.assertIn('"promotion_eligible"', notebook)
+
+    def test_warning_probe_experiments_are_output_v3_local(self):
+        text = source("safe_experiments.py")
+        self.assertIn("load_line_items_without_warning_probe", text)
+        self.assertIn("load_quarters_without_warning_probe", text)
+        self.assertIn("build_lookthrough_without_warning_probe", text)
+        self.assertNotIn(".output.updated", text)
+
     def test_python_files_parse_without_importing_pyspark(self):
         for path in ROOT.rglob("*.py"):
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

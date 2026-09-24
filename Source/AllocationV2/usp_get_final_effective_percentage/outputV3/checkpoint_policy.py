@@ -15,6 +15,43 @@ from Common_V2.core.checkpoint_V2 import (
 from .cfg_isolation import ensure_thread_safe_checkpoint_collections
 
 
+def _incoming_plan_metrics(df, enabled: bool) -> dict:
+    """Inspect logical-plan metadata without starting a Spark action."""
+    if not enabled:
+        return {
+            "incoming_plan_nodes": None,
+            "incoming_plan_depth": None,
+            "incoming_partitions": None,
+        }
+    try:
+        tree = (
+            df._jdf.queryExecution()
+            .optimizedPlan()
+            .numberedTreeString()
+        )
+        lines = [line for line in tree.splitlines() if line.strip()]
+        depths = [
+            max(0, (len(line) - len(line.lstrip(" |:+-"))) // 2)
+            for line in lines
+        ]
+    except Exception:
+        lines, depths = [], []
+    try:
+        partitions = int(
+            df._jdf.queryExecution()
+            .sparkPlan()
+            .outputPartitioning()
+            .numPartitions()
+        )
+    except Exception:
+        partitions = None
+    return {
+        "incoming_plan_nodes": len(lines) or None,
+        "incoming_plan_depth": max(depths, default=0) if lines else None,
+        "incoming_partitions": partitions,
+    }
+
+
 @dataclass(frozen=True)
 class CheckpointDecision:
     backend: str
@@ -103,6 +140,26 @@ def initialize_named_checkpoint_policy(
 def named_checkpoint(spark, df, name: str, cfg: dict):
     """Materialize with the configured Common_V2 checkpoint mode."""
     decision = decide_checkpoint(name)
+    target_applied = False
+    if name == cfg.get("_output_v3_target_checkpoint"):
+        strategy = cfg.get("_output_v3_target_partition_strategy", "off")
+        partitions = int(cfg.get("_output_v3_target_partitions", 0) or 0)
+        if strategy == "coalesce":
+            df = df.coalesce(partitions)
+            target_applied = True
+        elif strategy == "repartition":
+            keys = list(cfg.get("_output_v3_target_partition_keys", ()))
+            unknown = sorted(set(keys) - set(df.columns))
+            if unknown:
+                raise ValueError(
+                    f"Unknown repartition keys for {name}: {unknown}"
+                )
+            columns = [df[key] for key in keys]
+            df = df.repartition(partitions, *columns)
+            target_applied = True
+    plan_metrics = _incoming_plan_metrics(
+        df, bool(cfg.get("profile_plan", False))
+    )
     activity = cfg.setdefault("_checkpoint_v2_activity", [])
     before = len(activity)
     started = time.time()
@@ -153,6 +210,23 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
             "actual_backend": actual_backend,
             "reason": f"checkpoint_V2 mode {checkpoint_mode}; {decision.reason}",
             "elapsed_seconds": round(time.time() - started, 3),
+            "target_partition_applied": target_applied,
+            "target_partition_strategy": (
+                cfg.get("_output_v3_target_partition_strategy", "off")
+                if target_applied
+                else "off"
+            ),
+            "target_partitions": (
+                int(cfg.get("_output_v3_target_partitions", 0) or 0)
+                if target_applied
+                else None
+            ),
+            "target_partition_keys": (
+                list(cfg.get("_output_v3_target_partition_keys", ()))
+                if target_applied
+                else []
+            ),
+            **plan_metrics,
         }
     )
     elapsed = time.time() - started

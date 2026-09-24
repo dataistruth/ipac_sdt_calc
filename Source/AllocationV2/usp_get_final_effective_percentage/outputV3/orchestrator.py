@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Callable
 
+from pyspark.sql import DataFrame
+
 from .checkpoint_policy import (
     drop_failed_run_checkpoints,
     initialize_named_checkpoint_policy,
@@ -30,6 +32,7 @@ from .plan_profiler import (
     start_plan_profile,
     track_plan,
 )
+from .safe_experiments import WARNING_PROBE_BUILDERS
 from .stages import FUNCTION_STAGE, StageName, stage_contracts
 
 _base = isolated_output_module("orchestrator")
@@ -57,6 +60,12 @@ _ACTIVE_PROFILE_PLAN: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 _ACTIVE_PLAN_THRESHOLD: contextvars.ContextVar[int] = contextvars.ContextVar(
     "fep_output_v3_plan_threshold", default=30
+)
+_ACTIVE_EXPERIMENT: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "fep_output_v3_experiment", default=None
+)
+_NAMED_ACTION_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "fep_output_v3_named_action_depth", default=0
 )
 _EVENT_LOCK = threading.Lock()
 _LAST_RUN_PROFILE: dict[str, Any] = {}
@@ -86,7 +95,9 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
-def _record(stage: str, operation: str, elapsed: float) -> None:
+def _record(
+    stage: str, operation: str, elapsed: float, **details: Any
+) -> None:
     sink = _ACTIVE_EVENTS.get()
     if sink is not None:
         with _EVENT_LOCK:
@@ -95,8 +106,45 @@ def _record(stage: str, operation: str, elapsed: float) -> None:
                     "stage": stage,
                     "operation": operation,
                     "elapsed_seconds": round(elapsed, 3),
+                    **details,
                 }
             )
+
+
+def _relation_metrics(df, enabled: bool) -> dict:
+    if df is None or not enabled:
+        return {
+            "incoming_plan_nodes": None,
+            "incoming_plan_depth": None,
+            "incoming_partitions": None,
+        }
+    try:
+        tree = (
+            df._jdf.queryExecution()
+            .optimizedPlan()
+            .numberedTreeString()
+        )
+        lines = [line for line in tree.splitlines() if line.strip()]
+        depths = [
+            max(0, (len(line) - len(line.lstrip(" |:+-"))) // 2)
+            for line in lines
+        ]
+    except Exception:
+        lines, depths = [], []
+    try:
+        partitions = int(
+            df._jdf.queryExecution()
+            .sparkPlan()
+            .outputPartitioning()
+            .numPartitions()
+        )
+    except Exception:
+        partitions = None
+    return {
+        "incoming_plan_nodes": len(lines) or None,
+        "incoming_plan_depth": max(depths, default=0) if lines else None,
+        "incoming_partitions": partitions,
+    }
 
 
 def _timed(stage: str, operation: str, fn: Callable) -> Callable:
@@ -129,21 +177,35 @@ class _Coordinator:
         self._futures = {}
         self._events = []
         self._lock = threading.Lock()
+        self._next_wave = 0
 
     def submit_group(self, group, tasks) -> None:
         if self._executor is None or group not in self.enabled_groups:
             return
-        for name, fn, args, kwargs in tasks:
-            key = (group, name)
-            with self._lock:
-                if key in self._futures:
-                    continue
+        with self._lock:
+            pending = [
+                task for task in tasks
+                if (group, task[0]) not in self._futures
+            ]
+            if not pending:
+                return
+            self._next_wave += 1
+            wave = self._next_wave
+            for name, fn, args, kwargs in pending:
+                key = (group, name)
                 context = contextvars.copy_context()
                 self._futures[key] = self._executor.submit(
-                    context.run, self._execute, group, name, fn, args, kwargs
+                    context.run,
+                    self._execute,
+                    wave,
+                    group,
+                    name,
+                    fn,
+                    args,
+                    kwargs,
                 )
 
-    def _execute(self, group, name, fn, args, kwargs):
+    def _execute(self, wave, group, name, fn, args, kwargs):
         started = time.time()
         status = "PASS"
         stage = {
@@ -172,6 +234,7 @@ class _Coordinator:
                 self._events.append(
                     {
                         "group": group,
+                        "wave": wave,
                         "task": name,
                         "status": status,
                         "elapsed_seconds": round(time.time() - started, 3),
@@ -190,9 +253,12 @@ class _Coordinator:
         tasks = tuple(tasks)
         if self._executor is None or group not in self.enabled_groups:
             results = {}
+            with self._lock:
+                self._next_wave += 1
+                wave = self._next_wave
             for name, fn, args, kwargs in tasks:
                 results[name] = self._execute(
-                    group, name, fn, args, kwargs
+                    wave, group, name, fn, args, kwargs
                 )
             return results
         self.submit_group(group, tasks)
@@ -228,10 +294,57 @@ def _checkpoint(spark, df, name, cfg):
 
 def _profile_pipeline_action(name, stage, df, action, cfg):
     started = time.time()
+    metrics = _relation_metrics(
+        df, bool(isinstance(cfg, dict) and cfg.get("profile_plan"))
+    )
+    depth_token = _NAMED_ACTION_DEPTH.set(_NAMED_ACTION_DEPTH.get() + 1)
     try:
         return profile_action(name, df, action, cfg)
     finally:
-        _record(stage, f"action:{name}", time.time() - started)
+        _NAMED_ACTION_DEPTH.reset(depth_token)
+        _record(
+            stage,
+            f"action:{name}",
+            time.time() - started,
+            **metrics,
+        )
+
+
+_ORIGINAL_DF_ISEMPTY = DataFrame.isEmpty
+
+
+def _profiled_dataframe_is_empty(self):
+    """Name helper-internal probes while preserving the original action."""
+    if _NAMED_ACTION_DEPTH.get() > 0:
+        return _ORIGINAL_DF_ISEMPTY(self)
+    frame = inspect.currentframe()
+    caller_name = "unknown"
+    try:
+        frame = frame.f_back if frame is not None else None
+        while frame is not None:
+            module_name = str(frame.f_globals.get("__name__", ""))
+            if (
+                "usp_get_final_effective_percentage.output" in module_name
+                and not module_name.endswith("outputV3.orchestrator")
+            ):
+                caller_name = frame.f_code.co_name
+                break
+            frame = frame.f_back
+    finally:
+        del frame
+    stage = (
+        _ACTIVE_STAGE_OVERRIDE.get()
+        or FUNCTION_STAGE.get(caller_name)
+        or StageName.MODE_PREP.value
+    )
+    cfg = _ACTIVE_RUN_CFG.get()
+    return _profile_pipeline_action(
+        f"{caller_name}.isEmpty",
+        stage,
+        self,
+        lambda: _ORIGINAL_DF_ISEMPTY(self),
+        cfg,
+    )
 
 
 def _drop_checkpoints_noop(spark, cfg):
@@ -263,6 +376,7 @@ def _delegated_run_modes(*args, **kwargs):
     cfg.pop("_checkpoint_v2_state", None)
     cfg["profile_plan"] = _ACTIVE_PROFILE_PLAN.get()
     cfg["plan_checkpoint_threshold"] = _ACTIVE_PLAN_THRESHOLD.get()
+    cfg.update(_ACTIVE_EXPERIMENT.get() or {})
     cfg.setdefault("result_type", bound.arguments.get("ResultType"))
     if bound.arguments.get("VolumePath") is not None:
         cfg["volume_path"] = bound.arguments["VolumePath"]
@@ -297,7 +411,6 @@ for _function_name, _stage_name in FUNCTION_STAGE.items():
             track_plan(_timed(_stage_name, _function_name, _function)),
         )
 
-
 _PARALLEL_ORIGINALS = {
     name: getattr(_base, name)
     for name in (
@@ -317,6 +430,15 @@ _PARALLEL_ORIGINALS = {
 def _parallel_result(group, name, *args, **kwargs):
     coordinator = _ACTIVE_COORDINATOR.get()
     fn = _PARALLEL_ORIGINALS[name]
+    cfg = args[1] if len(args) > 1 and isinstance(args[1], dict) else {}
+    if cfg.get("_output_v3_warning_probe_removal") == {
+        "load_line_items": "line_items",
+        "load_quarters": "quarters",
+        "build_lookthrough_input_modes14": "lookthrough",
+    }.get(name):
+        fn = WARNING_PROBE_BUILDERS[
+            cfg["_output_v3_warning_probe_removal"]
+        ]
     if coordinator is None:
         return fn(*args, **kwargs)
     return coordinator.result(group, name, fn, *args, **kwargs)
@@ -361,10 +483,32 @@ def _line_items_wrapper(spark, cfg, *args, **kwargs):
         "load_yearly_data",
     )
     if coordinator is not None:
+        line_items_fn = (
+            WARNING_PROBE_BUILDERS["line_items"]
+            if cfg.get("_output_v3_warning_probe_removal") == "line_items"
+            else _PARALLEL_ORIGINALS["load_line_items"]
+        )
         coordinator.submit_group(
             "common_inputs",
             tuple(
-                (name, _PARALLEL_ORIGINALS[name], (spark, cfg), {})
+                (
+                    name,
+                    (
+                        line_items_fn
+                        if name == "load_line_items"
+                        else (
+                            WARNING_PROBE_BUILDERS["quarters"]
+                            if name == "load_quarters"
+                            and cfg.get(
+                                "_output_v3_warning_probe_removal"
+                            )
+                            == "quarters"
+                            else _PARALLEL_ORIGINALS[name]
+                        )
+                    ),
+                    (spark, cfg),
+                    {},
+                )
                 for name in names
             ),
         )
@@ -377,10 +521,26 @@ def _lookthrough_wrapper(spark, cfg, *args, **kwargs):
     coordinator = _ACTIVE_COORDINATOR.get()
     names = ("build_lookthrough_input_modes14", "build_footnote_lines")
     if coordinator is not None:
+        lookthrough_fn = (
+            WARNING_PROBE_BUILDERS["lookthrough"]
+            if cfg.get("_output_v3_warning_probe_removal") == "lookthrough"
+            else _PARALLEL_ORIGINALS[
+                "build_lookthrough_input_modes14"
+            ]
+        )
         coordinator.submit_group(
             "lookthrough_metadata",
             tuple(
-                (name, _PARALLEL_ORIGINALS[name], (spark, cfg), {})
+                (
+                    name,
+                    (
+                        lookthrough_fn
+                        if name == "build_lookthrough_input_modes14"
+                        else _PARALLEL_ORIGINALS[name]
+                    ),
+                    (spark, cfg),
+                    {},
+                )
                 for name in names
             ),
         )
@@ -514,6 +674,56 @@ def _performance_summary(wall, cfg, events, parallel_events):
         for group, values in sorted(parallel_by_group.items())
         if values
     }
+    parallel_by_wave = defaultdict(list)
+    for row in parallel_events:
+        parallel_by_wave[int(row.get("wave", 0))].append(row)
+    wave_critical_path = []
+    for wave, rows in sorted(parallel_by_wave.items()):
+        elapsed = max(
+            float(row.get("elapsed_seconds", 0) or 0) for row in rows
+        )
+        wave_critical_path.append(
+            {
+                "wave": wave,
+                "elapsed_seconds": round(elapsed, 3),
+                "groups": sorted({row["group"] for row in rows}),
+                "tasks": sorted(row["task"] for row in rows),
+            }
+        )
+    critical_actions = sorted(
+        [
+            {
+                "kind": "checkpoint",
+                "name": row.get("name"),
+                "stage": row.get("stage"),
+                "elapsed_seconds": float(
+                    row.get("elapsed_seconds", 0) or 0
+                ),
+                "incoming_plan_nodes": row.get("incoming_plan_nodes"),
+                "incoming_plan_depth": row.get("incoming_plan_depth"),
+                "incoming_partitions": row.get("incoming_partitions"),
+            }
+            for row in checkpoint_rows
+        ]
+        + [
+            {
+                "kind": "action",
+                "name": str(row.get("operation", "")).removeprefix(
+                    "action:"
+                ),
+                "stage": row.get("stage"),
+                "elapsed_seconds": float(
+                    row.get("elapsed_seconds", 0) or 0
+                ),
+                "incoming_plan_nodes": row.get("incoming_plan_nodes"),
+                "incoming_plan_depth": row.get("incoming_plan_depth"),
+                "incoming_partitions": row.get("incoming_partitions"),
+            }
+            for row in action_events
+        ],
+        key=lambda row: row["elapsed_seconds"],
+        reverse=True,
+    )
     return {
         "target_wall_seconds": 50.0,
         "wall_seconds": wall,
@@ -523,6 +733,11 @@ def _performance_summary(wall, cfg, events, parallel_events):
         "checkpoint_count": len(checkpoint_rows),
         "explicit_action_count": len(action_events),
         "parallel_group_critical_seconds": parallel_critical,
+        "parallel_wave_critical_path": wave_critical_path,
+        "parallel_wave_total_seconds": round(
+            sum(row["elapsed_seconds"] for row in wave_critical_path), 3
+        ),
+        "critical_actions": critical_actions,
     }
 
 
@@ -546,6 +761,126 @@ def _run_profiled(fn, *args, **kwargs):
             kwargs.pop("plan_checkpoint_threshold", 30),
         )
     )
+    experiment = {
+        "_output_v3_experiment_id": str(
+            kwargs.pop(
+                "ExperimentID",
+                kwargs.pop("experiment_id", "baseline"),
+            )
+        ).strip() or "baseline",
+        "_output_v3_shuffle_partitions": int(
+            kwargs.pop(
+                "SqlShufflePartitions",
+                kwargs.pop("sql_shuffle_partitions", 32),
+            )
+        ),
+        "_output_v3_warning_probe_removal": str(
+            kwargs.pop(
+                "WarningProbeRemoval",
+                kwargs.pop("warning_probe_removal", "off"),
+            )
+        ).strip().lower(),
+        "_output_v3_missing_entity_identity": _as_bool(
+            kwargs.pop(
+                "MissingEntityIdentity",
+                kwargs.pop("missing_entity_identity", False),
+            )
+        ),
+        "_output_v3_cpbt_input_break": str(
+            kwargs.pop(
+                "CpbtInputBreak",
+                kwargs.pop("cpbt_input_break", "off"),
+            )
+        ).strip().lower(),
+        "_output_v3_target_checkpoint": str(
+            kwargs.pop(
+                "TargetCheckpoint",
+                kwargs.pop("target_checkpoint", ""),
+            )
+        ).strip(),
+        "_output_v3_target_partition_strategy": str(
+            kwargs.pop(
+                "TargetPartitionStrategy",
+                kwargs.pop("target_partition_strategy", "off"),
+            )
+        ).strip().lower(),
+        "_output_v3_target_partitions": int(
+            kwargs.pop(
+                "TargetPartitions",
+                kwargs.pop("target_partitions", 0),
+            )
+        ),
+        "_output_v3_target_partition_keys": [
+            item.strip()
+            for item in str(
+                kwargs.pop(
+                    "TargetPartitionKeys",
+                    kwargs.pop("target_partition_keys", ""),
+                )
+            ).split(",")
+            if item.strip()
+        ],
+        "_output_v3_business_optimization": str(
+            kwargs.pop(
+                "BusinessOptimization",
+                kwargs.pop("business_optimization", "off"),
+            )
+        ).strip().lower(),
+    }
+    if experiment["_output_v3_shuffle_partitions"] < 1:
+        raise ValueError("SqlShufflePartitions must be >= 1")
+    if experiment["_output_v3_warning_probe_removal"] not in {
+        "off",
+        "line_items",
+        "quarters",
+        "lookthrough",
+    }:
+        raise ValueError(
+            "WarningProbeRemoval must be off, line_items, quarters, "
+            "or lookthrough"
+        )
+    if experiment["_output_v3_cpbt_input_break"] not in {
+        "off",
+        "non_dated",
+        "dated",
+        "both",
+    }:
+        raise ValueError(
+            "CpbtInputBreak must be off, non_dated, dated, or both"
+        )
+    if experiment["_output_v3_target_partition_strategy"] not in {
+        "off",
+        "coalesce",
+        "repartition",
+    }:
+        raise ValueError(
+            "TargetPartitionStrategy must be off, coalesce, or repartition"
+        )
+    if (
+        experiment["_output_v3_target_partition_strategy"] != "off"
+        and (
+            not experiment["_output_v3_target_checkpoint"]
+            or experiment["_output_v3_target_partitions"] < 1
+        )
+    ):
+        raise ValueError(
+            "TargetCheckpoint and TargetPartitions >= 1 are required for "
+            "targeted partitioning"
+        )
+    if (
+        experiment["_output_v3_target_partition_strategy"] == "repartition"
+        and not experiment["_output_v3_target_partition_keys"]
+    ):
+        raise ValueError(
+            "TargetPartitionKeys is required for keyed repartition"
+        )
+    if experiment["_output_v3_business_optimization"] not in {
+        "off",
+        "broadcast_entity_partners",
+    }:
+        raise ValueError(
+            "BusinessOptimization must be off or broadcast_entity_partners"
+        )
     call_arguments = inspect.signature(fn).bind_partial(
         *args, **kwargs
     ).arguments
@@ -587,6 +922,7 @@ def _run_profiled(fn, *args, **kwargs):
     mode_token = _ACTIVE_CHECKPOINT_MODE.set(checkpoint_mode)
     profile_token = _ACTIVE_PROFILE_PLAN.set(profile_plan)
     threshold_token = _ACTIVE_PLAN_THRESHOLD.set(plan_threshold)
+    experiment_token = _ACTIVE_EXPERIMENT.set(experiment)
     coordinator = _Coordinator(max_threads, requested_groups)
     coordinator_token = _ACTIVE_COORDINATOR.set(coordinator)
     cfg_token = _ACTIVE_RUN_CFG.set(None)
@@ -602,10 +938,15 @@ def _run_profiled(fn, *args, **kwargs):
         action_token, action_records = start_action_profile()
     started = time.time()
     succeeded = False
+    previous_is_empty = DataFrame.isEmpty
+    if profile_plan:
+        DataFrame.isEmpty = _profiled_dataframe_is_empty
     try:
         result = fn(*args, **kwargs)
         succeeded = True
     finally:
+        if profile_plan:
+            DataFrame.isEmpty = previous_is_empty
         coordinator.close()
         if action_token is not None:
             finish_action_profile(action_token)
@@ -653,6 +994,19 @@ def _run_profiled(fn, *args, **kwargs):
                 "checkpoint_mode": checkpoint_mode,
                 "profile_plan": profile_plan,
                 "plan_checkpoint_threshold": plan_threshold,
+                "experiment_id": experiment["_output_v3_experiment_id"],
+                "requested_shuffle_partitions": experiment[
+                    "_output_v3_shuffle_partitions"
+                ],
+                "experiment_settings": {
+                    key.removeprefix("_output_v3_"): value
+                    for key, value in experiment.items()
+                },
+                "effective_spark_config": (
+                    dict(cfg.get("_output_v3_effective_spark_config", {}))
+                    if isinstance(cfg, dict)
+                    else {}
+                ),
                 "effective_max_threads": max_threads,
                 "enabled_parallel_groups": sorted(requested_groups),
                 "execution_strategy": (
@@ -711,11 +1065,21 @@ def _run_profiled(fn, *args, **kwargs):
         _ACTIVE_PROFILE_PLAN.reset(profile_token)
         _ACTIVE_CHECKPOINT_MODE.reset(mode_token)
         _ACTIVE_PLAN_THRESHOLD.reset(threshold_token)
+        _ACTIVE_EXPERIMENT.reset(experiment_token)
     print(
         f"[outputV3 timing] wall={wall:.3f}s "
         f"checkpoint_mode={checkpoint_mode} profile_plan={profile_plan} "
+        f"experiment={experiment['_output_v3_experiment_id']} "
         f"threads={max_threads} "
         f"groups={','.join(sorted(requested_groups)) or 'none'}"
+    )
+    effective_config = _LAST_RUN_PROFILE.get("effective_spark_config", {})
+    print(
+        "[outputV3 config] "
+        f"shuffle_partitions={effective_config.get('spark.sql.shuffle.partitions')} "
+        f"aqe_enabled={effective_config.get('spark.sql.adaptive.enabled')} "
+        "advisory_partition_bytes="
+        f"{effective_config.get('spark.sql.adaptive.advisoryPartitionSizeInBytes')}"
     )
     for stage in _LAST_RUN_PROFILE.get("stage_timings", ()):
         print(
@@ -731,6 +1095,22 @@ def _run_profiled(fn, *args, **kwargs):
         f"checkpoint_actions={perf.get('checkpoint_action_seconds', 0.0):.3f}s "
         f"explicit_actions={perf.get('explicit_action_seconds', 0.0):.3f}s"
     )
+    for row in perf.get("critical_actions", ())[:10]:
+        print(
+            "[outputV3 critical] "
+            f"kind={row['kind']} name={row['name']} stage={row['stage']} "
+            f"elapsed={row['elapsed_seconds']:.3f}s "
+            f"nodes={row.get('incoming_plan_nodes')} "
+            f"depth={row.get('incoming_plan_depth')} "
+            f"partitions={row.get('incoming_partitions')}"
+        )
+    for row in perf.get("parallel_wave_critical_path", ()):
+        print(
+            "[outputV3 wave] "
+            f"wave={row['wave']} elapsed={row['elapsed_seconds']:.3f}s "
+            f"groups={','.join(row['groups'])} "
+            f"tasks={','.join(row['tasks'])}"
+        )
     return result
 
 
@@ -769,6 +1149,18 @@ def get_last_run_profile() -> dict[str, Any]:
                     "parallel_group_critical_seconds", {}
                 )
             ),
+            "parallel_wave_critical_path": [
+                dict(item)
+                for item in _LAST_RUN_PROFILE.get(
+                    "performance_summary", {}
+                ).get("parallel_wave_critical_path", ())
+            ],
+            "critical_actions": [
+                dict(item)
+                for item in _LAST_RUN_PROFILE.get(
+                    "performance_summary", {}
+                ).get("critical_actions", ())
+            ],
         },
     }
 
