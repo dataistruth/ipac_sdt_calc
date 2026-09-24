@@ -81,6 +81,9 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"checkpoint_mode": checkpoint_mode', text)
         self.assertIn("drop_failed_run_checkpoints", text)
         self.assertIn("drop_checkpoints_V2", text)
+        self.assertIn("[outputV3 checkpoint] START", text)
+        self.assertIn("[outputV3 checkpoint] DONE", text)
+        self.assertIn("[outputV3 checkpoint] FAIL", text)
 
     def test_parallelism_is_bounded_and_staged(self):
         text = source("orchestrator.py")

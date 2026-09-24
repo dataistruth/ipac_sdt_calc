@@ -107,9 +107,24 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
     before = len(activity)
     started = time.time()
     checkpoint_mode = int(cfg.get("_output_v3_checkpoint_mode", 1))
-    result = checkpoint_V2(
-        spark, df, name, cfg, checkpoint_mode=checkpoint_mode
+    print(
+        f"[outputV3 checkpoint] START name={name} "
+        f"stage={decision.stage} mode={checkpoint_mode}",
+        flush=True,
     )
+    try:
+        result = checkpoint_V2(
+            spark, df, name, cfg, checkpoint_mode=checkpoint_mode
+        )
+    except Exception as exc:
+        elapsed = time.time() - started
+        print(
+            f"[outputV3 checkpoint] FAIL name={name} "
+            f"stage={decision.stage} mode={checkpoint_mode} "
+            f"elapsed={elapsed:.3f}s error={type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        raise
     own_activity = next(
         (
             item
@@ -139,6 +154,13 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
             "reason": f"checkpoint_V2 mode {checkpoint_mode}; {decision.reason}",
             "elapsed_seconds": round(time.time() - started, 3),
         }
+    )
+    elapsed = time.time() - started
+    print(
+        f"[outputV3 checkpoint] DONE name={name} "
+        f"stage={decision.stage} mode={checkpoint_mode} "
+        f"backend={actual_backend} elapsed={elapsed:.3f}s",
+        flush=True,
     )
     return result
 
