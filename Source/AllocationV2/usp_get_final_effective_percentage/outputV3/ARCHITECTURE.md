@@ -93,6 +93,25 @@ growth, plans entering checkpoints, and instrumented output-write action plans
 are returned separately by `get_last_run_profile` and displayed by the
 benchmark notebook. Profiling is off by default to avoid measurement overhead.
 
+## Optimization profiles
+
+`OptimizationProfile` keeps the second-wave experiments reversible:
+
+- `baseline`: the prior outputV3 control flow and checkpoint behavior.
+- `action_lean`: removes warning-only probes, reuses the LookThrough input,
+  bypasses proven low-value checkpoints, uses the SQL-bug-equivalent
+  missing-entity identity, and materializes shared post-type-update frames.
+- `aggressive`: additionally fuses mode-2/3 pre-CPBT barriers and enables the
+  vendored candidate-claim CPBT wave. Alias-sensitive dated and post-missing
+  barriers remain materialized.
+
+`OutputMaterialization` (`off`, `shared`, `per_output`) and
+`CandidateClaimCPBT` can override profile defaults for one-change A/B tests.
+The benchmark defaults to Common V2 checkpoint mode 4 and can run
+`baseline,action_lean,aggressive` in one alternating matrix. The run profile
+includes a 50-second budget, checkpoint/action totals, bypass count, and the
+critical elapsed time of each parallel group.
+
 ## Failure, retry, and cleanup behavior
 
 Every task in a parallel group is observed before the coordinator raises the

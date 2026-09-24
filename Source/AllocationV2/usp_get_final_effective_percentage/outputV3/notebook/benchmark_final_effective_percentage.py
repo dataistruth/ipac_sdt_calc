@@ -35,7 +35,7 @@ dbutils.widgets.text(
     "12. Parallel groups (all, none, or comma-separated)",
 )
 dbutils.widgets.dropdown(
-    "CheckpointMode", "1", ["1", "2", "3", "4"], "13. Checkpoint mode"
+    "CheckpointMode", "4", ["1", "2", "3", "4"], "13. Checkpoint mode"
 )
 dbutils.widgets.dropdown(
     "ProfilePlan", "off", ["off", "on"], "14. Profile Spark plans"
@@ -44,6 +44,23 @@ dbutils.widgets.text(
     "PlanCheckpointThreshold", "30", "15. Plan checkpoint threshold"
 )
 dbutils.widgets.text("VolumePath", "", "16. Volume path (required for mode 3)")
+dbutils.widgets.text(
+    "OptimizationProfiles",
+    "baseline,action_lean,aggressive",
+    "17. Optimization profiles",
+)
+dbutils.widgets.dropdown(
+    "OutputMaterialization",
+    "profile",
+    ["profile", "off", "shared", "per_output"],
+    "18. Output materialization override",
+)
+dbutils.widgets.dropdown(
+    "CandidateClaimCPBT",
+    "profile",
+    ["profile", "off", "on"],
+    "19. Candidate-claim CPBT override",
+)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs"))
@@ -63,6 +80,15 @@ plan_checkpoint_threshold = int(
     dbutils.widgets.get("PlanCheckpointThreshold")
 )
 volume_path = dbutils.widgets.get("VolumePath").strip()
+optimization_profiles = [
+    item.strip()
+    for item in dbutils.widgets.get("OptimizationProfiles").split(",")
+    if item.strip()
+]
+output_materialization = dbutils.widgets.get(
+    "OutputMaterialization"
+).strip()
+candidate_claim_cpbt = dbutils.widgets.get("CandidateClaimCPBT").strip()
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
@@ -72,6 +98,13 @@ if checkpoint_mode not in {1, 2, 3, 4}:
     raise ValueError("CheckpointMode must be one of 1, 2, 3, 4")
 if checkpoint_mode == 3 and not volume_path:
     raise ValueError("VolumePath is required when CheckpointMode=3")
+unknown_profiles = set(optimization_profiles) - {
+    "baseline", "action_lean", "aggressive"
+}
+if not optimization_profiles or unknown_profiles:
+    raise ValueError(
+        f"Invalid OptimizationProfiles: {sorted(unknown_profiles)}"
+    )
 if shuffle_partitions:
     spark.conf.set("spark.sql.shuffle.partitions", shuffle_partitions)
 
@@ -142,14 +175,23 @@ def _run(variant, pass_number):
         "CatalogName": catalog,
         "SchemaName": schema,
         "ResultType": "deltalake",
-        "ExecutionID": f"fep-v3-ab-{pass_number}",
+        "ExecutionID": (
+            f"fep-v3-ab-{pass_number}-"
+            f"{variant.replace(':', '-')}"
+        ),
     }
-    if variant == "outputV3":
+    if variant != "production":
+        optimization_profile = variant.split(":", 1)[1]
         kwargs["MaxThreads"] = max_threads
         kwargs["ParallelGroups"] = parallel_groups
         kwargs["CheckpointMode"] = checkpoint_mode
         kwargs["ProfilePlan"] = profile_plan
         kwargs["PlanCheckpointThreshold"] = plan_checkpoint_threshold
+        kwargs["OptimizationProfile"] = optimization_profile
+        if output_materialization != "profile":
+            kwargs["OutputMaterialization"] = output_materialization
+        if candidate_claim_cpbt != "profile":
+            kwargs["CandidateClaimCPBT"] = candidate_claim_cpbt
         if volume_path:
             kwargs["VolumePath"] = volume_path
     started = time.time()
@@ -159,7 +201,7 @@ def _run(variant, pass_number):
     summary = summarize_outputs(fingerprints)
     profile = (
         runner.get_last_run_profile()
-        if variant == "outputV3"
+        if variant != "production"
         else {}
     )
     reported = (
@@ -187,14 +229,17 @@ def _run(variant, pass_number):
 
 
 def _order(pass_number):
+    candidates = tuple(
+        f"outputV3:{profile}" for profile in optimization_profiles
+    )
     if execution_order == "production_first":
-        return ("production", "outputV3")
+        return ("production", *candidates)
     if execution_order == "outputV3_first":
-        return ("outputV3", "production")
+        return (*candidates, "production")
     return (
-        ("production", "outputV3")
+        ("production", *candidates)
         if pass_number % 2
-        else ("outputV3", "production")
+        else (*reversed(candidates), "production")
     )
 
 
@@ -210,26 +255,6 @@ try:
         }
         records.extend(by_variant.values())
         production = by_variant["production"]
-        candidate = by_variant["outputV3"]
-        mismatches = compare_outputs(
-            production["fingerprints"], candidate["fingerprints"]
-        )
-        for table in reconcile.OUTPUT_TABLES:
-            fingerprint_rows.append(
-                {
-                    "pass": pass_number,
-                    "table": table,
-                    "exact_match": not any(
-                        item["table"] == table for item in mismatches
-                    ),
-                    "production_fingerprint": str(
-                        production["fingerprints"].get(table)
-                    ),
-                    "outputV3_fingerprint": str(
-                        candidate["fingerprints"].get(table)
-                    ),
-                }
-            )
         if production["rows"] != BASELINE["rows"]:
             raise AssertionError(
                 f"Production rows changed: expected 79, got {production['rows']}"
@@ -238,20 +263,50 @@ try:
             raise AssertionError(
                 "Production must write exactly three output tables"
             )
-        if mismatches:
-            raise AssertionError(f"Exact fingerprint mismatch: {mismatches[0]}")
-        wall_delta = production["wall_seconds"] - candidate["wall_seconds"]
-        improvement = (
-            100.0 * wall_delta / production["wall_seconds"]
-            if production["wall_seconds"]
-            else 0.0
-        )
-        print(
-            f"[reconcile] PASS {pass_number}: exact fingerprints match; "
-            f"production={production['wall_seconds']:.3f}s "
-            f"outputV3={candidate['wall_seconds']:.3f}s "
-            f"delta={wall_delta:.3f}s improvement={improvement:.2f}%"
-        )
+        for variant in order:
+            if variant == "production":
+                continue
+            candidate = by_variant[variant]
+            mismatches = compare_outputs(
+                production["fingerprints"], candidate["fingerprints"]
+            )
+            for table in reconcile.OUTPUT_TABLES:
+                fingerprint_rows.append(
+                    {
+                        "pass": pass_number,
+                        "variant": variant,
+                        "table": table,
+                        "exact_match": not any(
+                            item["table"] == table for item in mismatches
+                        ),
+                        "production_fingerprint": str(
+                            production["fingerprints"].get(table)
+                        ),
+                        "outputV3_fingerprint": str(
+                            candidate["fingerprints"].get(table)
+                        ),
+                    }
+                )
+            if mismatches:
+                raise AssertionError(
+                    f"{variant} exact fingerprint mismatch: {mismatches[0]}"
+                )
+            wall_delta = (
+                production["wall_seconds"] - candidate["wall_seconds"]
+            )
+            improvement = (
+                100.0 * wall_delta / production["wall_seconds"]
+                if production["wall_seconds"]
+                else 0.0
+            )
+            print(
+                f"[reconcile] PASS {pass_number} {variant}: "
+                f"exact fingerprints match; "
+                f"production={production['wall_seconds']:.3f}s "
+                f"candidate={candidate['wall_seconds']:.3f}s "
+                f"delta={wall_delta:.3f}s "
+                f"improvement={improvement:.2f}%"
+            )
 finally:
     try:
         restore_run_snapshots(spark, catalog, schema, run_id, snapshots)
@@ -292,6 +347,7 @@ SUMMARY_SCHEMA = """
 """
 FINGERPRINT_SCHEMA = """
     pass INT,
+    variant STRING,
     table STRING,
     exact_match BOOLEAN,
     production_fingerprint STRING,
@@ -304,31 +360,33 @@ display(
 )
 display(
     spark.createDataFrame(fingerprint_rows, FINGERPRINT_SCHEMA).orderBy(
-        "pass", "table"
+        "pass", "variant", "table"
     )
 )
 
 stage_rows = [
-    {"pass": row["pass"], **item}
+    {"pass": row["pass"], "variant": row["variant"], **item}
     for row in records
-    if row["variant"] == "outputV3"
+    if row["variant"] != "production"
     for item in row["profile"].get("stage_timings", [])
 ]
 checkpoint_rows = [
-    {"pass": row["pass"], **item}
+    {"pass": row["pass"], "variant": row["variant"], **item}
     for row in records
-    if row["variant"] == "outputV3"
+    if row["variant"] != "production"
     for item in row["profile"].get("checkpoint_activity", [])
 ]
 parallel_rows = [
-    {"pass": row["pass"], **item}
+    {"pass": row["pass"], "variant": row["variant"], **item}
     for row in records
-    if row["variant"] == "outputV3"
+    if row["variant"] != "production"
     for item in row["profile"].get("parallel_activity", [])
 ]
 strategy_rows = [
     {
         "pass": row["pass"],
+        "variant": row["variant"],
+        "optimization_profile": row["profile"].get("optimization_profile"),
         "execution_strategy": row["profile"].get("execution_strategy"),
         "pipeline_strategy": row["profile"].get("pipeline_strategy"),
         "branch_strategy": row["profile"].get("branch_strategy"),
@@ -344,20 +402,35 @@ strategy_rows = [
         ),
     }
     for row in records
-    if row["variant"] == "outputV3"
+    if row["variant"] != "production"
 ]
 artifact_rows = [
-    {"pass": row["pass"], **item}
+    {"pass": row["pass"], "variant": row["variant"], **item}
     for row in records
-    if row["variant"] == "outputV3"
+    if row["variant"] != "production"
     for item in row["profile"].get("artifact_merges", [])
+]
+performance_rows = [
+    {
+        "pass": row["pass"],
+        "variant": row["variant"],
+        **{
+            key: value
+            for key, value in row["profile"].get(
+                "performance_summary", {}
+            ).items()
+            if key != "parallel_group_critical_seconds"
+        },
+    }
+    for row in records
+    if row["variant"] != "production"
 ]
 if stage_rows:
     display(
         spark.createDataFrame(
             stage_rows,
-            "pass INT, stage STRING, calls LONG, elapsed_seconds DOUBLE",
-        ).orderBy("pass", "stage")
+            "pass INT, variant STRING, stage STRING, calls LONG, elapsed_seconds DOUBLE",
+        ).orderBy("pass", "variant", "stage")
     )
 if checkpoint_rows:
     display(
@@ -365,6 +438,7 @@ if checkpoint_rows:
             checkpoint_rows,
             """
             pass INT,
+            variant STRING,
             name STRING,
             stage STRING,
             checkpoint_mode INT,
@@ -373,7 +447,7 @@ if checkpoint_rows:
             reason STRING,
             elapsed_seconds DOUBLE
             """,
-        ).orderBy("pass", "name")
+        ).orderBy("pass", "variant", "name")
     )
 if parallel_rows:
     display(
@@ -381,13 +455,14 @@ if parallel_rows:
             parallel_rows,
             """
             pass INT,
+            variant STRING,
             group STRING,
             task STRING,
             status STRING,
             elapsed_seconds DOUBLE,
             thread STRING
             """,
-        ).orderBy("pass", "group", "task")
+        ).orderBy("pass", "variant", "group", "task")
     )
 if strategy_rows:
     display(
@@ -395,6 +470,8 @@ if strategy_rows:
             strategy_rows,
             """
             pass INT,
+            variant STRING,
+            optimization_profile STRING,
             execution_strategy STRING,
             pipeline_strategy STRING,
             branch_strategy STRING,
@@ -403,7 +480,7 @@ if strategy_rows:
             effective_max_threads INT,
             enabled_parallel_groups STRING
             """,
-        ).orderBy("pass")
+        ).orderBy("pass", "variant")
     )
 if artifact_rows:
     display(
@@ -411,16 +488,35 @@ if artifact_rows:
             artifact_rows,
             """
             pass INT,
+            variant STRING,
             artifact STRING,
             producers ARRAY<INT>,
             winner_mode INT,
             conflict_check STRING
             """,
-        ).orderBy("pass", "artifact")
+        ).orderBy("pass", "variant", "artifact")
+    )
+if performance_rows:
+    display(
+        spark.createDataFrame(
+            performance_rows,
+            """
+            pass INT,
+            variant STRING,
+            target_wall_seconds DOUBLE,
+            wall_seconds DOUBLE,
+            seconds_over_target DOUBLE,
+            checkpoint_action_seconds DOUBLE,
+            explicit_action_seconds DOUBLE,
+            checkpoint_count LONG,
+            checkpoint_bypass_count LONG,
+            explicit_action_count LONG
+            """,
+        ).orderBy("pass", "variant")
     )
 
 for row in records:
-    if row["variant"] != "outputV3":
+    if row["variant"] == "production":
         continue
     for label, key, kind in (
         ("builder", "plan_profile", "builder"),

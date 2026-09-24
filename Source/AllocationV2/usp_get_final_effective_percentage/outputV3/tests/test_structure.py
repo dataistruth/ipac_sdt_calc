@@ -81,6 +81,28 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"checkpoint_mode": checkpoint_mode', text)
         self.assertIn("drop_failed_run_checkpoints", text)
         self.assertIn("drop_checkpoints_V2", text)
+        self.assertIn('"actual_backend": "bypass"', text)
+
+    def test_optimization_profiles_are_explicit_and_reversible(self):
+        spec = importlib.util.spec_from_file_location(
+            "output_v3_optimization", ROOT / "optimization.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(
+            {"baseline", "action_lean", "aggressive"},
+            set(module.PROFILES),
+        )
+        self.assertFalse(module.PROFILES["baseline"]["read_optimizations"])
+        self.assertTrue(module.PROFILES["aggressive"]["fused_mode_prep"])
+        self.assertTrue(
+            module.PROFILES["aggressive"]["candidate_claim_cpbt"]
+        )
+        name, options = module.resolve_optimization_profile(
+            "action_lean", output_materialization="per_output"
+        )
+        self.assertEqual("action_lean", name)
+        self.assertEqual("per_output", options["output_materialization"])
 
     def test_parallelism_is_bounded_and_staged(self):
         text = source("orchestrator.py")
@@ -94,6 +116,10 @@ class OutputV3StructureTests(unittest.TestCase):
         for group in ("lt_nolt_branches", "mode_prep", "output_build"):
             self.assertIn(f'"{group}"', pipeline)
         self.assertIn('"output_writes"', text)
+        self.assertIn('"fused_mode_prep"', pipeline)
+        self.assertIn('"missing_entity_identity"', pipeline)
+        self.assertIn('"output_materialization"', pipeline)
+        self.assertIn("_output_v3_cpbt_builder", pipeline)
 
     def test_cfg_forks_share_only_checkpoint_coordination(self):
         text = source("cfg_isolation.py")
@@ -193,6 +219,10 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"ProfilePlan"', text)
         self.assertIn('"PlanCheckpointThreshold"', text)
         self.assertIn('"VolumePath"', text)
+        self.assertIn('"OptimizationProfiles"', text)
+        self.assertIn('"OutputMaterialization"', text)
+        self.assertIn('"CandidateClaimCPBT"', text)
+        self.assertIn('"baseline,action_lean,aggressive"', text)
         self.assertIn("checkpoint_mode INT", text)
         self.assertIn("SUMMARY_SCHEMA", text)
         self.assertIn("[benchmark] pass=", text)
@@ -210,6 +240,8 @@ class OutputV3StructureTests(unittest.TestCase):
             '"checkpoint_plan_profile": reports["checkpoint"]', text
         )
         self.assertIn('"action_profile": reports["action"]', text)
+        self.assertIn('"performance_summary": performance', text)
+        self.assertIn("[outputV3 budget]", text)
 
     def test_python_files_parse_without_importing_pyspark(self):
         for path in ROOT.rglob("*.py"):
