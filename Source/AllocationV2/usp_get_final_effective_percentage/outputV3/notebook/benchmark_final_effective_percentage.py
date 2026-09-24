@@ -44,23 +44,6 @@ dbutils.widgets.text(
     "PlanCheckpointThreshold", "30", "15. Plan checkpoint threshold"
 )
 dbutils.widgets.text("VolumePath", "", "16. Volume path (required for mode 3)")
-dbutils.widgets.text(
-    "OptimizationProfiles",
-    "baseline,action_lean,aggressive",
-    "17. Optimization profiles",
-)
-dbutils.widgets.dropdown(
-    "OutputMaterialization",
-    "profile",
-    ["profile", "off", "shared", "per_output"],
-    "18. Output materialization override",
-)
-dbutils.widgets.dropdown(
-    "CandidateClaimCPBT",
-    "profile",
-    ["profile", "off", "on"],
-    "19. Candidate-claim CPBT override",
-)
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs"))
@@ -80,15 +63,6 @@ plan_checkpoint_threshold = int(
     dbutils.widgets.get("PlanCheckpointThreshold")
 )
 volume_path = dbutils.widgets.get("VolumePath").strip()
-optimization_profiles = [
-    item.strip()
-    for item in dbutils.widgets.get("OptimizationProfiles").split(",")
-    if item.strip()
-]
-output_materialization = dbutils.widgets.get(
-    "OutputMaterialization"
-).strip()
-candidate_claim_cpbt = dbutils.widgets.get("CandidateClaimCPBT").strip()
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
@@ -98,13 +72,6 @@ if checkpoint_mode not in {1, 2, 3, 4}:
     raise ValueError("CheckpointMode must be one of 1, 2, 3, 4")
 if checkpoint_mode == 3 and not volume_path:
     raise ValueError("VolumePath is required when CheckpointMode=3")
-unknown_profiles = set(optimization_profiles) - {
-    "baseline", "action_lean", "aggressive"
-}
-if not optimization_profiles or unknown_profiles:
-    raise ValueError(
-        f"Invalid OptimizationProfiles: {sorted(unknown_profiles)}"
-    )
 if shuffle_partitions:
     spark.conf.set("spark.sql.shuffle.partitions", shuffle_partitions)
 
@@ -180,18 +147,12 @@ def _run(variant, pass_number):
             f"{variant.replace(':', '-')}"
         ),
     }
-    if variant != "production":
-        optimization_profile = variant.split(":", 1)[1]
+    if variant == "outputV3":
         kwargs["MaxThreads"] = max_threads
         kwargs["ParallelGroups"] = parallel_groups
         kwargs["CheckpointMode"] = checkpoint_mode
         kwargs["ProfilePlan"] = profile_plan
         kwargs["PlanCheckpointThreshold"] = plan_checkpoint_threshold
-        kwargs["OptimizationProfile"] = optimization_profile
-        if output_materialization != "profile":
-            kwargs["OutputMaterialization"] = output_materialization
-        if candidate_claim_cpbt != "profile":
-            kwargs["CandidateClaimCPBT"] = candidate_claim_cpbt
         if volume_path:
             kwargs["VolumePath"] = volume_path
     started = time.time()
@@ -201,7 +162,7 @@ def _run(variant, pass_number):
     summary = summarize_outputs(fingerprints)
     profile = (
         runner.get_last_run_profile()
-        if variant != "production"
+        if variant == "outputV3"
         else {}
     )
     reported = (
@@ -229,17 +190,14 @@ def _run(variant, pass_number):
 
 
 def _order(pass_number):
-    candidates = tuple(
-        f"outputV3:{profile}" for profile in optimization_profiles
-    )
     if execution_order == "production_first":
-        return ("production", *candidates)
+        return ("production", "outputV3")
     if execution_order == "outputV3_first":
-        return (*candidates, "production")
+        return ("outputV3", "production")
     return (
-        ("production", *candidates)
+        ("production", "outputV3")
         if pass_number % 2
-        else (*reversed(candidates), "production")
+        else ("outputV3", "production")
     )
 
 
@@ -263,50 +221,43 @@ try:
             raise AssertionError(
                 "Production must write exactly three output tables"
             )
-        for variant in order:
-            if variant == "production":
-                continue
-            candidate = by_variant[variant]
-            mismatches = compare_outputs(
-                production["fingerprints"], candidate["fingerprints"]
+        candidate = by_variant["outputV3"]
+        mismatches = compare_outputs(
+            production["fingerprints"], candidate["fingerprints"]
+        )
+        for table in reconcile.OUTPUT_TABLES:
+            fingerprint_rows.append(
+                {
+                    "pass": pass_number,
+                    "variant": "outputV3",
+                    "table": table,
+                    "exact_match": not any(
+                        item["table"] == table for item in mismatches
+                    ),
+                    "production_fingerprint": str(
+                        production["fingerprints"].get(table)
+                    ),
+                    "outputV3_fingerprint": str(
+                        candidate["fingerprints"].get(table)
+                    ),
+                }
             )
-            for table in reconcile.OUTPUT_TABLES:
-                fingerprint_rows.append(
-                    {
-                        "pass": pass_number,
-                        "variant": variant,
-                        "table": table,
-                        "exact_match": not any(
-                            item["table"] == table for item in mismatches
-                        ),
-                        "production_fingerprint": str(
-                            production["fingerprints"].get(table)
-                        ),
-                        "outputV3_fingerprint": str(
-                            candidate["fingerprints"].get(table)
-                        ),
-                    }
-                )
-            if mismatches:
-                raise AssertionError(
-                    f"{variant} exact fingerprint mismatch: {mismatches[0]}"
-                )
-            wall_delta = (
-                production["wall_seconds"] - candidate["wall_seconds"]
+        if mismatches:
+            raise AssertionError(
+                f"Exact fingerprint mismatch: {mismatches[0]}"
             )
-            improvement = (
-                100.0 * wall_delta / production["wall_seconds"]
-                if production["wall_seconds"]
-                else 0.0
-            )
-            print(
-                f"[reconcile] PASS {pass_number} {variant}: "
-                f"exact fingerprints match; "
-                f"production={production['wall_seconds']:.3f}s "
-                f"candidate={candidate['wall_seconds']:.3f}s "
-                f"delta={wall_delta:.3f}s "
-                f"improvement={improvement:.2f}%"
-            )
+        wall_delta = production["wall_seconds"] - candidate["wall_seconds"]
+        improvement = (
+            100.0 * wall_delta / production["wall_seconds"]
+            if production["wall_seconds"]
+            else 0.0
+        )
+        print(
+            f"[reconcile] PASS {pass_number}: exact fingerprints match; "
+            f"production={production['wall_seconds']:.3f}s "
+            f"outputV3={candidate['wall_seconds']:.3f}s "
+            f"delta={wall_delta:.3f}s improvement={improvement:.2f}%"
+        )
 finally:
     try:
         restore_run_snapshots(spark, catalog, schema, run_id, snapshots)
@@ -386,7 +337,6 @@ strategy_rows = [
     {
         "pass": row["pass"],
         "variant": row["variant"],
-        "optimization_profile": row["profile"].get("optimization_profile"),
         "execution_strategy": row["profile"].get("execution_strategy"),
         "pipeline_strategy": row["profile"].get("pipeline_strategy"),
         "branch_strategy": row["profile"].get("branch_strategy"),
@@ -471,7 +421,6 @@ if strategy_rows:
             """
             pass INT,
             variant STRING,
-            optimization_profile STRING,
             execution_strategy STRING,
             pipeline_strategy STRING,
             branch_strategy STRING,
@@ -509,7 +458,6 @@ if performance_rows:
             checkpoint_action_seconds DOUBLE,
             explicit_action_seconds DOUBLE,
             checkpoint_count LONG,
-            checkpoint_bypass_count LONG,
             explicit_action_count LONG
             """,
         ).orderBy("pass", "variant")

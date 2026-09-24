@@ -100,7 +100,6 @@ def run_modes_parallel(
             catalog=catalog,
             schema=schema,
         )
-    optimization = cfg.get("_output_v3_optimization", {})
     cfg.setdefault("_checkpoint_tables", [])
     cfg.setdefault("_checkpoint_paths", [])
     cfg["_output_v3_pipeline_strategy"] = "parallel_modes_123_control_flow"
@@ -341,12 +340,8 @@ def run_modes_parallel(
             )
             lt_input = None
             if mode == 1:
-                lt_input = (
-                    lt_input_m14
-                    if optimization.get("reuse_lookthrough_input")
-                    else business.build_lookthrough_allocation_input(
-                        spark, mode_cfg
-                    )
+                lt_input = business.build_lookthrough_allocation_input(
+                    spark, mode_cfg
                 )
             alloc_empty = is_empty(
                 f"mode_{mode}.allocation_input.isEmpty",
@@ -486,9 +481,7 @@ def run_modes_parallel(
                         if final_amounts is not None
                         else state_amounts
                     )
-            if (mode == 2 or has_state) and not optimization.get(
-                "fused_mode_prep"
-            ):
+            if mode == 2 or has_state:
                 non_dated = checkpoint(
                     spark,
                     non_dated,
@@ -517,7 +510,6 @@ def run_modes_parallel(
                 "transfers_adj": transfers,
                 "input_lines": input_lines,
                 "final_amounts": final_amounts,
-                "requires_pre_cpbt": mode == 2 or has_state,
             }
             return {
                 "mode": mode,
@@ -559,111 +551,8 @@ def run_modes_parallel(
             tag = lambda df, mode: (
                 None if df is None else df.withColumn("_mode", F.lit(mode))
             )
-            prep_modes = [
-                mode
-                for mode in valid_modes
-                if per_mode[mode].get("requires_pre_cpbt")
-            ]
-            if optimization.get("fused_mode_prep") and prep_modes:
-                prep_non_dated = _union(
-                    [
-                        tag(per_mode[mode]["non_dated_entities"], mode)
-                        for mode in prep_modes
-                    ]
-                )
-                prep_dated = _union(
-                    [
-                        tag(per_mode[mode]["dated_entities"], mode)
-                        for mode in prep_modes
-                    ]
-                )
-                try:
-                    fused_prep = run_group(
-                        "mode_prep",
-                        (
-                            (
-                                "fused_non_dated",
-                                checkpoint,
-                                (
-                                    spark,
-                                    prep_non_dated,
-                                    "nde_pre_cpbt_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                            (
-                                "fused_dated",
-                                checkpoint,
-                                (
-                                    spark,
-                                    prep_dated,
-                                    "de_pre_cpbt_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                        ),
-                    )
-                    for mode in prep_modes:
-                        per_mode[mode]["non_dated_entities"] = (
-                            fused_prep["fused_non_dated"]
-                            .filter(F.col("_mode") == mode)
-                            .drop("_mode")
-                        )
-                        per_mode[mode]["dated_entities"] = (
-                            fused_prep["fused_dated"]
-                            .filter(F.col("_mode") == mode)
-                            .drop("_mode")
-                        )
-                except Exception as exc:
-                    business.logger.warning(
-                        "[outputV3] fused mode-prep failed; "
-                        "falling back to per-mode barriers: %s",
-                        exc,
-                    )
-                    fallback_tasks = []
-                    for mode in prep_modes:
-                        fallback_tasks.extend(
-                            (
-                                (
-                                    f"fallback_non_dated_{mode}",
-                                    checkpoint,
-                                    (
-                                        spark,
-                                        per_mode[mode]["non_dated_entities"],
-                                        f"nde_pre_cpbt_m{mode}",
-                                        mode_cfgs[mode],
-                                    ),
-                                    {},
-                                ),
-                                (
-                                    f"fallback_dated_{mode}",
-                                    checkpoint,
-                                    (
-                                        spark,
-                                        per_mode[mode]["dated_entities"],
-                                        f"de_pre_cpbt_m{mode}",
-                                        mode_cfgs[mode],
-                                    ),
-                                    {},
-                                ),
-                            )
-                        )
-                    fallback = run_group("mode_prep", fallback_tasks)
-                    for mode in prep_modes:
-                        per_mode[mode]["non_dated_entities"] = fallback[
-                            f"fallback_non_dated_{mode}"
-                        ]
-                        per_mode[mode]["dated_entities"] = fallback[
-                            f"fallback_dated_{mode}"
-                        ]
-            cpbt_builder = cfg.get(
-                "_output_v3_cpbt_builder",
-                business.build_cost_percentage_by_type,
-            )
             fused_temp, fused_transfers = (
-                cpbt_builder(
+                business.build_cost_percentage_by_type(
                     spark,
                     cfg,
                     snapshot,
@@ -724,22 +613,11 @@ def run_modes_parallel(
                     for m in valid_modes
                 ]
             )
-            if optimization.get("missing_entity_identity"):
-                # Production intentionally reproduces a SQL bug that tests a
-                # non-null left-side key for NULL, so both missing sets are
-                # always empty and the transformation is an identity.
-                fused_non_dated, fused_dated = (
-                    tagged_non_dated,
-                    tagged_dated,
+            fused_non_dated, fused_dated = (
+                business.compute_missing_entities(
+                    cfg, tagged_non_dated, tagged_dated, fused_temp
                 )
-                cfg["_non_dated_entities_cost"] = None
-                cfg["_dated_entities_cost"] = None
-            else:
-                fused_non_dated, fused_dated = (
-                    business.compute_missing_entities(
-                        cfg, tagged_non_dated, tagged_dated, fused_temp
-                    )
-                )
+            )
             fused_non_dated = checkpoint(
                 spark, fused_non_dated, "nde_post_miss_fused", cfg
             )
@@ -823,44 +701,6 @@ def run_modes_parallel(
                 cfg.get("_non_dated_entities_cost"),
                 cfg.get("_dated_entities_cost"),
             )
-            output_materialization = optimization.get(
-                "output_materialization", "off"
-            )
-            if output_materialization == "shared":
-                materialized_effective = run_group(
-                    "output_build",
-                    (
-                        (
-                            "materialize_effective_dated",
-                            checkpoint,
-                            (
-                                spark,
-                                eff_dated,
-                                "eff_dt_post_type_fused",
-                                cfg,
-                            ),
-                            {},
-                        ),
-                        (
-                            "materialize_effective_non_dated",
-                            checkpoint,
-                            (
-                                spark,
-                                eff_non_dated,
-                                "eff_nd_post_type_fused",
-                                cfg,
-                            ),
-                            {},
-                        ),
-                    ),
-                )
-                eff_dated = materialized_effective[
-                    "materialize_effective_dated"
-                ]
-                eff_non_dated = materialized_effective[
-                    "materialize_effective_non_dated"
-                ]
-
             def assemble(mode):
                 output_cfg = fork_cfg(cfg, mode=mode)
                 data = per_mode[mode]
@@ -882,30 +722,6 @@ def run_modes_parallel(
                     for mode in valid_modes
                 ],
             )
-            if output_materialization == "per_output":
-                materialized_outputs = run_group(
-                    "output_build",
-                    [
-                        (
-                            f"materialize_mode_{mode}",
-                            checkpoint,
-                            (
-                                spark,
-                                assembled[f"mode_{mode}"],
-                                f"final_output_m{mode}",
-                                mode_cfgs[mode],
-                            ),
-                            {},
-                        )
-                        for mode in valid_modes
-                    ],
-                )
-                assembled = {
-                    f"mode_{mode}": materialized_outputs[
-                        f"materialize_mode_{mode}"
-                    ]
-                    for mode in valid_modes
-                }
             for mode in valid_modes:
                 statuses[mode]["result"] = assembled[f"mode_{mode}"]
                 statuses[mode]["elapsed_seconds"] = round(

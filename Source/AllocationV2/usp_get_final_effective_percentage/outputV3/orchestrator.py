@@ -17,13 +17,8 @@ from .checkpoint_policy import (
     initialize_named_checkpoint_policy,
     named_checkpoint,
 )
-from .parent import isolated_output_module, sibling_module
+from .parent import isolated_output_module
 from .pipeline import run_modes_parallel
-
-_optimization = sibling_module("optimization")
-PROFILES = _optimization.PROFILES
-resolve_optimization_profile = _optimization.resolve_optimization_profile
-read_optimizations = sibling_module("read_optimizations")
 from .plan_profiler import (
     finish_action_profile,
     finish_checkpoint_plan_profile,
@@ -62,12 +57,6 @@ _ACTIVE_PROFILE_PLAN: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 _ACTIVE_PLAN_THRESHOLD: contextvars.ContextVar[int] = contextvars.ContextVar(
     "fep_output_v3_plan_threshold", default=30
-)
-_ACTIVE_OPTIMIZATION: contextvars.ContextVar[tuple[str, dict]] = (
-    contextvars.ContextVar(
-        "fep_output_v3_optimization",
-        default=("baseline", dict(PROFILES["baseline"])),
-    )
 )
 _EVENT_LOCK = threading.Lock()
 _LAST_RUN_PROFILE: dict[str, Any] = {}
@@ -274,24 +263,6 @@ def _delegated_run_modes(*args, **kwargs):
     cfg.pop("_checkpoint_v2_state", None)
     cfg["profile_plan"] = _ACTIVE_PROFILE_PLAN.get()
     cfg["plan_checkpoint_threshold"] = _ACTIVE_PLAN_THRESHOLD.get()
-    optimization_name, optimization_options = _ACTIVE_OPTIMIZATION.get()
-    cfg["_output_v3_optimization_profile"] = optimization_name
-    cfg["_output_v3_optimization"] = dict(optimization_options)
-    cfg["_output_v3_checkpoint_bypasses"] = set(
-        optimization_options.get("checkpoint_bypasses", ())
-    )
-    if optimization_options.get("candidate_claim_cpbt"):
-        load_candidate_claim_builder = sibling_module(
-            "candidate_claim_cpbt"
-        ).load_candidate_claim_builder
-
-        cfg["_output_v3_cpbt_builder"] = track_plan(
-            _timed(
-                StageName.FUSED_CPBT.value,
-                "build_cost_percentage_by_type_candidate_claim",
-                load_candidate_claim_builder(),
-            )
-        )
     cfg.setdefault("result_type", bound.arguments.get("ResultType"))
     if bound.arguments.get("VolumePath") is not None:
         cfg["volume_path"] = bound.arguments["VolumePath"]
@@ -343,52 +314,6 @@ _PARALLEL_ORIGINALS = {
     )
 }
 
-_READ_OPTIMIZATIONS = {
-    "load_line_items": track_plan(
-        _timed(
-            StageName.COMMON_READS.value,
-            "load_line_items_optimized",
-            read_optimizations.load_line_items,
-        )
-    ),
-    "load_quarters": track_plan(
-        _timed(
-            StageName.COMMON_READS.value,
-            "load_quarters_optimized",
-            read_optimizations.load_quarters,
-        )
-    ),
-    "build_lookthrough_input_modes14": (
-        track_plan(
-            _timed(
-                StageName.COMMON_READS.value,
-                "build_lookthrough_input_modes14_optimized",
-                read_optimizations.build_lookthrough_input_modes14,
-            )
-        )
-    ),
-}
-
-
-def _selected_read(name: str, cfg: dict):
-    options = cfg.get("_output_v3_optimization")
-    if not isinstance(options, dict):
-        _, options = _ACTIVE_OPTIMIZATION.get()
-    if options.get("read_optimizations") and name in _READ_OPTIMIZATIONS:
-        return _READ_OPTIMIZATIONS[name]
-    return _PARALLEL_ORIGINALS[name]
-
-
-def _selected_read_result(group: str, name: str, spark, cfg, *args, **kwargs):
-    coordinator = _ACTIVE_COORDINATOR.get()
-    fn = _selected_read(name, cfg)
-    if coordinator is None:
-        return fn(spark, cfg, *args, **kwargs)
-    return coordinator.result(
-        group, name, fn, spark, cfg, *args, **kwargs
-    )
-
-
 def _parallel_result(group, name, *args, **kwargs):
     coordinator = _ACTIVE_COORDINATOR.get()
     fn = _PARALLEL_ORIGINALS[name]
@@ -439,22 +364,12 @@ def _line_items_wrapper(spark, cfg, *args, **kwargs):
         coordinator.submit_group(
             "common_inputs",
             tuple(
-                (name, _selected_read(name, cfg), (spark, cfg), {})
+                (name, _PARALLEL_ORIGINALS[name], (spark, cfg), {})
                 for name in names
             ),
         )
-    if coordinator is None:
-        return _selected_read("load_line_items", cfg)(
-            spark, cfg, *args, **kwargs
-        )
-    return coordinator.result(
-        "common_inputs",
-        "load_line_items",
-        _selected_read("load_line_items", cfg),
-        spark,
-        cfg,
-        *args,
-        **kwargs,
+    return _parallel_result(
+        "common_inputs", "load_line_items", spark, cfg, *args, **kwargs
     )
 
 
@@ -465,18 +380,13 @@ def _lookthrough_wrapper(spark, cfg, *args, **kwargs):
         coordinator.submit_group(
             "lookthrough_metadata",
             tuple(
-                (name, _selected_read(name, cfg), (spark, cfg), {})
+                (name, _PARALLEL_ORIGINALS[name], (spark, cfg), {})
                 for name in names
             ),
         )
-    if coordinator is None:
-        return _selected_read("build_lookthrough_input_modes14", cfg)(
-            spark, cfg, *args, **kwargs
-        )
-    return coordinator.result(
+    return _parallel_result(
         "lookthrough_metadata",
         "build_lookthrough_input_modes14",
-        _selected_read("build_lookthrough_input_modes14", cfg),
         spark,
         cfg,
         *args,
@@ -493,13 +403,11 @@ for _name, _group in (
     ("build_entity_partners", "common_dimensions"),
     ("build_asset_class_relationship", "common_dimensions"),
     ("load_book_effective_data", "common_inputs"),
+    ("load_quarters", "common_inputs"),
     ("load_yearly_data", "common_inputs"),
     ("build_footnote_lines", "lookthrough_metadata"),
 ):
     setattr(_base, _name, functools.partial(_parallel_result, _group, _name))
-_base.load_quarters = functools.partial(
-    _selected_read_result, "common_inputs", "load_quarters"
-)
 _base.load_line_items = _line_items_wrapper
 _base.build_lookthrough_input_modes14 = _lookthrough_wrapper
 
@@ -613,9 +521,6 @@ def _performance_summary(wall, cfg, events, parallel_events):
         "checkpoint_action_seconds": checkpoint_seconds,
         "explicit_action_seconds": action_seconds,
         "checkpoint_count": len(checkpoint_rows),
-        "checkpoint_bypass_count": sum(
-            row.get("actual_backend") == "bypass" for row in checkpoint_rows
-        ),
         "explicit_action_count": len(action_events),
         "parallel_group_critical_seconds": parallel_critical,
     }
@@ -640,20 +545,6 @@ def _run_profiled(fn, *args, **kwargs):
             "PlanCheckpointThreshold",
             kwargs.pop("plan_checkpoint_threshold", 30),
         )
-    )
-    optimization_name, optimization_options = resolve_optimization_profile(
-        kwargs.pop(
-            "OptimizationProfile",
-            kwargs.pop("optimization_profile", "baseline"),
-        ),
-        output_materialization=kwargs.pop(
-            "OutputMaterialization",
-            kwargs.pop("output_materialization", None),
-        ),
-        candidate_claim_cpbt=kwargs.pop(
-            "CandidateClaimCPBT",
-            kwargs.pop("candidate_claim_cpbt", None),
-        ),
     )
     call_arguments = inspect.signature(fn).bind_partial(
         *args, **kwargs
@@ -696,9 +587,6 @@ def _run_profiled(fn, *args, **kwargs):
     mode_token = _ACTIVE_CHECKPOINT_MODE.set(checkpoint_mode)
     profile_token = _ACTIVE_PROFILE_PLAN.set(profile_plan)
     threshold_token = _ACTIVE_PLAN_THRESHOLD.set(plan_threshold)
-    optimization_token = _ACTIVE_OPTIMIZATION.set(
-        (optimization_name, optimization_options)
-    )
     coordinator = _Coordinator(max_threads, requested_groups)
     coordinator_token = _ACTIVE_COORDINATOR.set(coordinator)
     cfg_token = _ACTIVE_RUN_CFG.set(None)
@@ -765,13 +653,6 @@ def _run_profiled(fn, *args, **kwargs):
                 "checkpoint_mode": checkpoint_mode,
                 "profile_plan": profile_plan,
                 "plan_checkpoint_threshold": plan_threshold,
-                "optimization_profile": optimization_name,
-                "optimization_options": {
-                    key: (
-                        sorted(value) if isinstance(value, set) else value
-                    )
-                    for key, value in optimization_options.items()
-                },
                 "effective_max_threads": max_threads,
                 "enabled_parallel_groups": sorted(requested_groups),
                 "execution_strategy": (
@@ -830,11 +711,9 @@ def _run_profiled(fn, *args, **kwargs):
         _ACTIVE_PROFILE_PLAN.reset(profile_token)
         _ACTIVE_CHECKPOINT_MODE.reset(mode_token)
         _ACTIVE_PLAN_THRESHOLD.reset(threshold_token)
-        _ACTIVE_OPTIMIZATION.reset(optimization_token)
     print(
         f"[outputV3 timing] wall={wall:.3f}s "
         f"checkpoint_mode={checkpoint_mode} profile_plan={profile_plan} "
-        f"optimization={optimization_name} "
         f"threads={max_threads} "
         f"groups={','.join(sorted(requested_groups)) or 'none'}"
     )

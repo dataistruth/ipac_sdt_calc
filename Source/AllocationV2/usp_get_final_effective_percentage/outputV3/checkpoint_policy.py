@@ -29,10 +29,7 @@ _DURABLE_RULES = (
         "with_lt_or_no_lt_branch",
     ),
     (
-        re.compile(
-            r"^(all_und_final|fn_input_lines|nde_pre_cpbt|de_pre_cpbt)_m\d+$"
-            r"|^(nde_pre_cpbt|de_pre_cpbt)_fused$"
-        ),
+        re.compile(r"^(all_und_final|fn_input_lines|nde_pre_cpbt|de_pre_cpbt)_m\d+$"),
         "mode-prep branch join or reused input",
         "mode_prep",
     ),
@@ -62,11 +59,6 @@ _DURABLE_RULES = (
         ),
         "alias-sensitive or reused effective seam",
         "fused_effective",
-    ),
-    (
-        re.compile(r"^(eff_(dt|nd)_post_type_fused|final_output_m\d+)$"),
-        "pre-write shared-lineage barrier",
-        "output_build",
     ),
 )
 
@@ -111,23 +103,6 @@ def initialize_named_checkpoint_policy(
 def named_checkpoint(spark, df, name: str, cfg: dict):
     """Materialize with the configured Common_V2 checkpoint mode."""
     decision = decide_checkpoint(name)
-    bypasses = set(cfg.get("_output_v3_checkpoint_bypasses", ()))
-    if name in bypasses:
-        cfg.setdefault("_checkpoint_policy_activity", []).append(
-            {
-                "name": name,
-                "stage": decision.stage,
-                "checkpoint_mode": int(
-                    cfg.get("_output_v3_checkpoint_mode", 1)
-                ),
-                "policy_backend": "bypass",
-                "actual_backend": "bypass",
-                "reason": "optimization profile: low-value lineage break",
-                "elapsed_seconds": 0.0,
-            }
-        )
-        print(f"[CHECKPOINT_V3] bypass name={name}", flush=True)
-        return df.toDF(*df.columns)
     activity = cfg.setdefault("_checkpoint_v2_activity", [])
     before = len(activity)
     started = time.time()
