@@ -698,37 +698,66 @@ def run_modes_parallel(
             _, min_quarter, fused_dated = business.compute_minimum_quarter(
                 spark, cfg, final_cost, fused_dated
             )
-            eff_dated, pickup, fused_dated = (
-                business.compute_effective_percentage_dated(
+            def compute_dated_effective():
+                eff_dated, pickup, dated_entities = (
+                    business.compute_effective_percentage_dated(
+                        spark,
+                        cfg,
+                        fused_dated,
+                        final_cost,
+                        min_quarter,
+                        fused_transfers,
+                        entity_partners,
+                        line_items,
+                        checkpoint_fn=checkpoint,
+                    )
+                )
+                if eff_dated is None:
+                    raise RuntimeError(
+                        "compute_effective_percentage_dated returned None"
+                    )
+                return (
+                    checkpoint(spark, eff_dated, "eff_dt_fused", cfg),
+                    pickup,
+                    dated_entities,
+                )
+
+            def compute_non_dated_effective():
+                effective = business.compute_effective_percentage_non_dated(
                     spark,
                     cfg,
-                    fused_dated,
+                    fused_non_dated,
                     final_cost,
                     min_quarter,
                     fused_transfers,
-                    entity_partners,
-                    line_items,
-                    checkpoint_fn=checkpoint,
                 )
-            )
-            if eff_dated is None:
-                raise RuntimeError(
-                    "compute_effective_percentage_dated returned None"
+                return checkpoint(
+                    spark, effective, "eff_nd_fused", cfg
                 )
-            eff_dated = checkpoint(
-                spark, eff_dated, "eff_dt_fused", cfg
-            )
-            eff_non_dated = business.compute_effective_percentage_non_dated(
-                spark,
-                cfg,
-                fused_non_dated,
-                final_cost,
-                min_quarter,
-                fused_transfers,
-            )
-            eff_non_dated = checkpoint(
-                spark, eff_non_dated, "eff_nd_fused", cfg
-            )
+
+            if cfg.get("_output_v3_parallel_effective", True):
+                effective = run_group(
+                    "fused_effective",
+                    [
+                        (
+                            "dated",
+                            compute_dated_effective,
+                            (),
+                            {},
+                        ),
+                        (
+                            "non_dated",
+                            compute_non_dated_effective,
+                            (),
+                            {},
+                        ),
+                    ],
+                )
+                eff_dated, pickup, fused_dated = effective["dated"]
+                eff_non_dated = effective["non_dated"]
+            else:
+                eff_dated, pickup, fused_dated = compute_dated_effective()
+                eff_non_dated = compute_non_dated_effective()
             eff_dated, eff_non_dated = business.apply_plugging(
                 spark, cfg, eff_dated, eff_non_dated, dar_setup
             )

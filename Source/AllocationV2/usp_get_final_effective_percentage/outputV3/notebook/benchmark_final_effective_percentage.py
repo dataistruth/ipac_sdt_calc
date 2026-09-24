@@ -78,6 +78,9 @@ import sys
 import time
 
 PARALLEL_GROUPS = "all"
+CPBT_INPUT_BREAK = "both"
+PARALLEL_EFFECTIVE = True
+BUSINESS_OPTIMIZATION = "broadcast_entity_partners"
 
 settings = {
     "source_path": source_path,
@@ -96,6 +99,9 @@ settings = {
         "local/deferred" if checkpoint_mode == 5 else "configured by mode"
     ),
     "missing_entity_identity": missing_entity_identity,
+    "cpbt_input_break": CPBT_INPUT_BREAK,
+    "parallel_effective": PARALLEL_EFFECTIVE,
+    "business_optimization": BUSINESS_OPTIMIZATION,
     "passes": passes,
 }
 display(
@@ -176,6 +182,9 @@ def _run(variant):
                 "CheckpointMode": checkpoint_mode,
                 "SqlShufflePartitions": shuffle_partitions,
                 "MissingEntityIdentity": missing_entity_identity,
+                "CpbtInputBreak": CPBT_INPUT_BREAK,
+                "ParallelEffective": PARALLEL_EFFECTIVE,
+                "BusinessOptimization": BUSINESS_OPTIMIZATION,
             }
         )
     started = time.time()

@@ -78,6 +78,7 @@ _ALL_PARALLEL_GROUPS = frozenset(
         "lookthrough_metadata",
         "lt_nolt_branches",
         "mode_prep",
+        "fused_effective",
         "output_build",
         "output_writes",
     }
@@ -348,6 +349,7 @@ class _Coordinator:
             "common_inputs": StageName.COMMON_READS.value,
             "lookthrough_metadata": StageName.COMMON_READS.value,
             "mode_prep": StageName.MODE_PREP.value,
+            "fused_effective": StageName.FUSED_EFFECTIVE.value,
             "output_build": StageName.OUTPUT_BUILD.value,
             "output_writes": StageName.OUTPUT_WRITE.value,
         }.get(group)
@@ -962,9 +964,15 @@ def _run_profiled(fn, *args, **kwargs):
         "_output_v3_cpbt_input_break": str(
             kwargs.pop(
                 "CpbtInputBreak",
-                kwargs.pop("cpbt_input_break", "off"),
+                kwargs.pop("cpbt_input_break", "both"),
             )
         ).strip().lower(),
+        "_output_v3_parallel_effective": _as_bool(
+            kwargs.pop(
+                "ParallelEffective",
+                kwargs.pop("parallel_effective", True),
+            )
+        ),
         "_output_v3_target_checkpoint": str(
             kwargs.pop(
                 "TargetCheckpoint",
@@ -996,7 +1004,10 @@ def _run_profiled(fn, *args, **kwargs):
         "_output_v3_business_optimization": str(
             kwargs.pop(
                 "BusinessOptimization",
-                kwargs.pop("business_optimization", "off"),
+                kwargs.pop(
+                    "business_optimization",
+                    "broadcast_entity_partners",
+                ),
             )
         ).strip().lower(),
     }

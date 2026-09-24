@@ -204,9 +204,18 @@ class OutputV3StructureTests(unittest.TestCase):
         # Experiment-only widgets were removed from the simple benchmark.
         self.assertNotIn('"ProfilePlan"', text)
         self.assertNotIn('"WarningProbeRemoval"', text)
-        self.assertNotIn('"CpbtInputBreak"', text)
         self.assertNotIn('"TargetCheckpoint"', text)
-        self.assertNotIn('"BusinessOptimization"', text)
+        self.assertNotIn(
+            'dbutils.widgets.dropdown(\n    "CpbtInputBreak"', text
+        )
+        self.assertNotIn(
+            'dbutils.widgets.dropdown(\n    "BusinessOptimization"', text
+        )
+        self.assertIn('"CpbtInputBreak": CPBT_INPUT_BREAK', text)
+        self.assertIn('"ParallelEffective": PARALLEL_EFFECTIVE', text)
+        self.assertIn(
+            '"BusinessOptimization": BUSINESS_OPTIMIZATION', text
+        )
         # No stdout logging helpers remain in the run cell.
         self.assertNotIn("def _log(", text)
         self.assertNotIn("def _clock(", text)
@@ -270,9 +279,18 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("checkpoint_mode\", 4", orchestrator)
         self.assertIn("sql_shuffle_partitions\", 32", orchestrator)
         self.assertIn("missing_entity_identity\", True", orchestrator)
+        self.assertIn('kwargs.pop("cpbt_input_break", "both")', orchestrator)
+        self.assertIn('"parallel_effective", True', orchestrator)
+        self.assertIn('"broadcast_entity_partners"', orchestrator)
+        self.assertIn('"fused_effective"', orchestrator)
         self.assertNotIn("checkpoint_mode != 5", checkpoint)
         self.assertIn("checkpoint_mode=checkpoint_mode", checkpoint)
         self.assertIn('f"state_lines_m{mode}"', pipeline)
+        self.assertIn('"cpbt_input_non_dated_fused"', pipeline)
+        self.assertIn('"cpbt_input_dated_fused"', pipeline)
+        self.assertIn('run_group(\n                    "fused_effective"', pipeline)
+        self.assertIn("compute_dated_effective", pipeline)
+        self.assertIn("compute_non_dated_effective", pipeline)
         self.assertIn("frozenset({1, 2, 3, 4, 5})", checkpoint_v2)
         self.assertIn("local_checkpoint_eager = mode != 5", checkpoint_v2)
         self.assertIn(
