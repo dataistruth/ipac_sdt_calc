@@ -239,10 +239,10 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"promotion_eligible"', notebook)
 
     def test_warning_probe_experiments_are_output_v3_local(self):
-        text = source("safe_experiments.py")
-        self.assertIn("load_line_items_without_warning_probe", text)
-        self.assertIn("load_quarters_without_warning_probe", text)
-        self.assertIn("build_lookthrough_without_warning_probe", text)
+        text = source("orchestrator.py")
+        self.assertIn("_line_items_without_warning_probe", text)
+        self.assertIn("_quarters_without_warning_probe", text)
+        self.assertIn("_lookthrough_without_warning_probe", text)
         self.assertNotIn(".output.updated", text)
 
     def test_python_files_parse_without_importing_pyspark(self):

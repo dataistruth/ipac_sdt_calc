@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Callable
 
+import pyspark.sql.functions as F
 from pyspark.sql import DataFrame
 
 from .checkpoint_policy import (
@@ -32,10 +33,10 @@ from .plan_profiler import (
     start_plan_profile,
     track_plan,
 )
-from .safe_experiments import WARNING_PROBE_BUILDERS
 from .stages import FUNCTION_STAGE, StageName, stage_contracts
 
 _base = isolated_output_module("orchestrator")
+_book_effective = isolated_output_module("book_effective")
 _PRODUCTION_RUN_MODES = _base.run_modes
 _PRODUCTION_RUN_FINAL = _base.run_final_effective_percentages
 _PRODUCTION_RESULT_STORER = _base.GenericResultStorer
@@ -80,6 +81,92 @@ _ALL_PARALLEL_GROUPS = frozenset(
         "output_writes",
     }
 )
+
+
+def _table(spark, cfg, name):
+    return spark.table(f"{cfg['catalog']}.{cfg['schema']}.{name}")
+
+
+def _line_items_without_warning_probe(spark, cfg):
+    k1 = _table(spark, cfg, "K1LineItem").select(
+        "LineID",
+        "AllocationTypeRuleId",
+        F.lit(cfg["k1_line_type_id"]).cast("int").alias("LineTypeID"),
+        "TransactionDate",
+        "IsTransactionDate",
+        "IsTransfersAdjusted",
+    )
+    box_jkl = _table(spark, cfg, "BoxjklLineItem").select(
+        "LineID",
+        F.lit(cfg["yearly_allocation_type_id"])
+        .cast("int")
+        .alias("AllocationTypeRuleId"),
+        F.lit(cfg["box_jkl_line_type_id"]).cast("int").alias("LineTypeID"),
+        F.lit(None).cast("timestamp").alias("TransactionDate"),
+        F.lit(False).alias("IsTransactionDate"),
+        F.lit(True).alias("IsTransfersAdjusted"),
+    )
+    return k1.unionByName(box_jkl)
+
+
+def _quarters_without_warning_probe(spark, cfg):
+    if (
+        cfg.get("allocation_type_name", "") == "PE Book Allocation"
+        and cfg.get("is_dated_transfers_configured", "") == "C"
+    ):
+        return _table(spark, cfg, "QuarterDates").select("Quarter")
+    return (
+        _table(spark, cfg, "ENU_DF_DataList")
+        .filter(F.col("Category") == "Quarters")
+        .select(F.col("LookUpData").alias("Quarter"))
+    )
+
+
+def _lookthrough_without_warning_probe(spark, cfg):
+    k1_id = cfg["k1_line_type_id"]
+    adjustment_id = cfg["adjustment_line_type_id"]
+    box_jkl_id = cfg["box_jkl_line_type_id"]
+    return (
+        _table(spark, cfg, "LookThroughAllocationInput")
+        .filter(
+            (F.col("RunID") == cfg["run_id"])
+            & (F.col("ClientID") == cfg["client_id"])
+            & F.col("LineTypeID").isin(
+                [k1_id, adjustment_id, box_jkl_id]
+            )
+            & (
+                (F.col("LineTypeID") == box_jkl_id)
+                | (
+                    F.col("LineTypeID").isin([k1_id, adjustment_id])
+                    & (
+                        _book_effective._sql_round(
+                            F.coalesce(F.col("Amount"), F.lit(0.0)), 0
+                        )
+                        != 0
+                    )
+                )
+            )
+        )
+        .select(
+            "RunID",
+            "ClientID",
+            "EntityID",
+            "LineTypeID",
+            "LineID",
+            "Amount",
+            "QuicklinkID",
+            "Amount704b",
+            "TrackingKey",
+            "Tag",
+        )
+    )
+
+
+WARNING_PROBE_BUILDERS = {
+    "line_items": _line_items_without_warning_probe,
+    "quarters": _quarters_without_warning_probe,
+    "lookthrough": _lookthrough_without_warning_probe,
+}
 
 
 def _workers(value: Any) -> int:

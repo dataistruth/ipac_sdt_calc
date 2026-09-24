@@ -5,9 +5,9 @@ modules. It executes the production orchestrator in a private namespace and
 forks only its `run_modes` control flow in `pipeline.py`. Checkpointing, timing,
 bounded scheduling, and result-table storage are infrastructure seams. Every
 DataFrame transformation, validation, and output builder remains a production
-business function by default. `safe_experiments.py` contains three
-default-off copies of simple source relations whose only removed behavior is a
-warning-only `isEmpty` action.
+business function by default. `orchestrator.py` contains three default-off
+copies of simple source relations whose only removed behavior is a warning-only
+`isEmpty` action.
 
 ## Named stage contracts
 
@@ -147,7 +147,7 @@ partitions in `finally`.
 The package imports only Python standard-library modules, production modules,
 PySpark, and `Common_V2`. It does not import `outputV2` or `output/updated`.
 The copied orchestration is confined to `pipeline.py`; the three optional
-source relations in `safe_experiments.py` are the only copied helper logic.
+source relations in `orchestrator.py` are the only copied helper logic.
 
 Public APIs:
 
