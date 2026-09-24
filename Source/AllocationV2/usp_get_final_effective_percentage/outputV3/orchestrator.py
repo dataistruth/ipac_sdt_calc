@@ -225,7 +225,10 @@ def _print_process(
     if elapsed is not None:
         details.append(f"elapsed={elapsed:.3f}s")
     with _PROCESS_PRINT_LOCK:
-        print(" ".join(details), flush=True)
+        # Databricks can drop stdout from imported modules and worker threads,
+        # while the production orchestrator's configured logger is consistently
+        # rendered in the notebook cell output.
+        _base.logger.info(" ".join(details))
 
 
 def _relation_metrics(df, enabled: bool) -> dict:

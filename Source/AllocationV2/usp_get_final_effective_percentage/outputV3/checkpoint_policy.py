@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
@@ -15,6 +16,8 @@ from Common_V2.core.checkpoint_V2 import (
 )
 
 from .cfg_isolation import ensure_thread_safe_checkpoint_collections
+
+logger = logging.getLogger(__name__)
 
 
 def _incoming_plan_metrics(df, enabled: bool) -> dict:
@@ -168,11 +171,10 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
     started_at = datetime.now().isoformat()
     thread_name = threading.current_thread().name
     checkpoint_mode = int(cfg.get("_output_v3_checkpoint_mode", 1))
-    print(
+    logger.info(
         f"[outputV3 checkpoint] START name={name} "
         f"stage={decision.stage} mode={checkpoint_mode} "
-        f"thread={thread_name} at={started_at}",
-        flush=True,
+        f"thread={thread_name} at={started_at}"
     )
     try:
         result = checkpoint_V2(
@@ -180,11 +182,10 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
         )
     except Exception as exc:
         elapsed = time.time() - started
-        print(
+        logger.error(
             f"[outputV3 checkpoint] FAIL name={name} "
             f"stage={decision.stage} mode={checkpoint_mode} "
-            f"elapsed={elapsed:.3f}s error={type(exc).__name__}: {exc}",
-            flush=True,
+            f"elapsed={elapsed:.3f}s error={type(exc).__name__}: {exc}"
         )
         raise
     own_activity = next(
@@ -252,13 +253,12 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
         }
     )
     elapsed = time.time() - started
-    print(
+    logger.info(
         f"[outputV3 checkpoint] DONE name={name} "
         f"stage={decision.stage} mode={checkpoint_mode} "
         f"backend={actual_backend} "
         f"materialization={materialization} "
-        f"thread={thread_name} at={ended_at} elapsed={elapsed:.3f}s",
-        flush=True,
+        f"thread={thread_name} at={ended_at} elapsed={elapsed:.3f}s"
     )
     return result
 
