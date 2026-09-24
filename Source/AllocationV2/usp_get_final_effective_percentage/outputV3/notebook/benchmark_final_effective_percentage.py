@@ -176,6 +176,21 @@ def _emit_rows(section, rows, **common):
         _emit(section, index=index, **common, **dict(row))
 
 
+def _banner(title, mapping):
+    """Print an aligned, human-readable key/value block on the main thread."""
+    width = max((len(str(key)) for key in mapping), default=0)
+    lines = [
+        "",
+        "#" * 96,
+        f"# {title}",
+        "#" * 96,
+    ]
+    for key, value in mapping.items():
+        lines.append(f"#   {str(key).ljust(width)} : {value}")
+    lines.append("#" * 96)
+    print("\n".join(lines), flush=True)
+
+
 _emit(
     "SETTINGS",
     timestamp=datetime.now().isoformat(),
@@ -434,6 +449,26 @@ def _run(variant):
         ),
         arguments=kwargs,
     )
+    _banner(
+        f"ABOUT TO RUN variant={variant}",
+        {
+            "timestamp": datetime.now().isoformat(),
+            "module": runner.__file__,
+            "requested_shuffle_partitions": variant_shuffle,
+            "session_shuffle_partitions": spark.conf.get(
+                "spark.sql.shuffle.partitions"
+            ),
+            "aqe_enabled": spark.conf.get("spark.sql.adaptive.enabled"),
+            "advisory_partition_bytes": spark.conf.get(
+                "spark.sql.adaptive.advisoryPartitionSizeInBytes"
+            ),
+            "checkpoint_mode": checkpoint_mode if not is_production else "n/a",
+            "max_threads": max_threads if not is_production else "n/a",
+            "parallel_groups": parallel_groups if not is_production else "n/a",
+            "experiment_id": experiment_id if not is_production else "n/a",
+            "arguments": kwargs,
+        },
+    )
     started = time.time()
     result = runner.run_final_effective_percentages(spark, **kwargs)
     wall = round(time.time() - started, 3)
@@ -562,6 +597,37 @@ def _run(variant):
     return record
 
 
+_banner(
+    "FEP BENCHMARK CONFIGURATION (one production vs one outputV3 run)",
+    {
+        "timestamp": datetime.now().isoformat(),
+        "run_id": run_id,
+        "entity_id": entity_id,
+        "client_id": client_id,
+        "tax_period_id": tax_period_id,
+        "catalog": catalog,
+        "schema": schema,
+        "order": "production -> outputV3",
+        "checkpoint_mode": checkpoint_mode,
+        "max_threads": max_threads,
+        "parallel_groups": parallel_groups,
+        "sql_shuffle_partitions (outputV3)": shuffle_partitions,
+        "production_shuffle_partitions": 4,
+        "profile_plan": profile_plan,
+        "experiment_id": experiment_id,
+        "active_experiments": active_experiments or ["none"],
+        "warning_probe_removal": warning_probe_removal,
+        "missing_entity_identity": missing_entity_identity,
+        "cpbt_input_break": cpbt_input_break,
+        "target_checkpoint": target_checkpoint or "none",
+        "target_partition_strategy": target_partition_strategy,
+        "business_optimization": business_optimization,
+        "baseline_wall_seconds": BASELINE["wall_seconds"],
+        "session_shuffle_at_start": ORIGINAL_SPARK_CONFIG[
+            "spark.sql.shuffle.partitions"
+        ],
+    },
+)
 _emit(
     "BENCHMARK_START",
     timestamp=datetime.now().isoformat(),
@@ -631,6 +697,7 @@ try:
         "tables": optimized["tables"],
     }
     _emit("FINAL_COMPARISON", **final_comparison)
+    _banner("FEP BENCHMARK FINAL COMPARISON", final_comparison)
 finally:
     try:
         restore_run_snapshots(spark, catalog, schema, run_id, snapshots)
