@@ -13,8 +13,6 @@ from Common_V2.core.checkpoint_V2 import (
 )
 
 from .cfg_isolation import ensure_thread_safe_checkpoint_collections
-
-
 @dataclass(frozen=True)
 class CheckpointDecision:
     backend: str
@@ -89,25 +87,26 @@ def decide_checkpoint(name: str) -> CheckpointDecision:
     return CheckpointDecision("local", "safe cheap lineage break", "mode_prep")
 
 
-def initialize_named_checkpoint_policy(cfg: dict) -> None:
-    """Initialize shared V2 state while disabling sequence-based selection."""
-    initialize_checkpoint_V2(cfg, checkpoint_mode=1)
+def initialize_named_checkpoint_policy(
+    cfg: dict, checkpoint_mode: int = 1
+) -> None:
+    """Initialize shared V2 state for one of its existing modes 1..4."""
+    initialize_checkpoint_V2(cfg, checkpoint_mode=checkpoint_mode)
+    cfg["_output_v3_checkpoint_mode"] = int(checkpoint_mode)
     cfg["_checkpoint_v2_activity"] = []
     cfg["_checkpoint_policy_activity"] = []
     ensure_thread_safe_checkpoint_collections(cfg)
 
 
 def named_checkpoint(spark, df, name: str, cfg: dict):
-    """Materialize with a backend chosen by checkpoint name, never sequence."""
+    """Materialize with the configured Common_V2 checkpoint mode."""
     decision = decide_checkpoint(name)
     activity = cfg.setdefault("_checkpoint_v2_activity", [])
     before = len(activity)
     started = time.time()
-    # V2 mode 1 is always Delta; mode 4 is always local. The semantic policy
-    # chooses between those primitives and never uses the V2 odd/even modes.
-    primitive_mode = 1 if decision.backend == "delta" else 4
+    checkpoint_mode = int(cfg.get("_output_v3_checkpoint_mode", 1))
     result = checkpoint_V2(
-        spark, df, name, cfg, checkpoint_mode=primitive_mode
+        spark, df, name, cfg, checkpoint_mode=checkpoint_mode
     )
     own_activity = next(
         (
@@ -120,6 +119,11 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
     actual_backend = (
         own_activity.get("backend") if own_activity else decision.backend
     )
+    requested_backend = (
+        own_activity.get("requested_backend")
+        if own_activity
+        else decision.backend
+    )
     if actual_backend == "local":
         # Match the qualifier reset of a fresh spark.table relation.
         result = result.toDF(*result.columns)
@@ -127,9 +131,10 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
         {
             "name": name,
             "stage": decision.stage,
-            "policy_backend": decision.backend,
+            "checkpoint_mode": checkpoint_mode,
+            "policy_backend": requested_backend,
             "actual_backend": actual_backend,
-            "reason": decision.reason,
+            "reason": f"checkpoint_V2 mode {checkpoint_mode}; {decision.reason}",
             "elapsed_seconds": round(time.time() - started, 3),
         }
     )

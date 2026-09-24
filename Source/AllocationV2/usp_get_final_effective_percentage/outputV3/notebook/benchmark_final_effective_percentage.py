@@ -34,6 +34,16 @@ dbutils.widgets.text(
     "all",
     "12. Parallel groups (all, none, or comma-separated)",
 )
+dbutils.widgets.dropdown(
+    "CheckpointMode", "1", ["1", "2", "3", "4"], "13. Checkpoint mode"
+)
+dbutils.widgets.dropdown(
+    "ProfilePlan", "off", ["off", "on"], "14. Profile Spark plans"
+)
+dbutils.widgets.text(
+    "PlanCheckpointThreshold", "30", "15. Plan checkpoint threshold"
+)
+dbutils.widgets.text("VolumePath", "", "16. Volume path (required for mode 3)")
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(dbutils.widgets.get("number_of_runs"))
@@ -47,11 +57,21 @@ schema = dbutils.widgets.get("SchemaName").strip()
 max_threads = int(dbutils.widgets.get("MaxThreads"))
 shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
 parallel_groups = dbutils.widgets.get("ParallelGroups").strip() or "all"
+checkpoint_mode = int(dbutils.widgets.get("CheckpointMode"))
+profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+plan_checkpoint_threshold = int(
+    dbutils.widgets.get("PlanCheckpointThreshold")
+)
+volume_path = dbutils.widgets.get("VolumePath").strip()
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
 if not 1 <= max_threads <= 4:
     raise ValueError("MaxThreads must be between 1 and 4")
+if checkpoint_mode not in {1, 2, 3, 4}:
+    raise ValueError("CheckpointMode must be one of 1, 2, 3, 4")
+if checkpoint_mode == 3 and not volume_path:
+    raise ValueError("VolumePath is required when CheckpointMode=3")
 if shuffle_partitions:
     spark.conf.set("spark.sql.shuffle.partitions", shuffle_partitions)
 
@@ -103,6 +123,9 @@ drop_run_snapshots = reconcile.drop_run_snapshots
 purge_run = reconcile.purge_run
 restore_run_snapshots = reconcile.restore_run_snapshots
 summarize_outputs = reconcile.summarize_outputs
+build_plan_profile_display = importlib.import_module(
+    "AllocationV2.plan_profiler"
+).build_plan_profile_display
 
 # COMMAND ----------
 
@@ -124,6 +147,11 @@ def _run(variant, pass_number):
     if variant == "outputV3":
         kwargs["MaxThreads"] = max_threads
         kwargs["ParallelGroups"] = parallel_groups
+        kwargs["CheckpointMode"] = checkpoint_mode
+        kwargs["ProfilePlan"] = profile_plan
+        kwargs["PlanCheckpointThreshold"] = plan_checkpoint_threshold
+        if volume_path:
+            kwargs["VolumePath"] = volume_path
     started = time.time()
     result = runner.run_final_effective_percentages(spark, **kwargs)
     wall = round(time.time() - started, 3)
@@ -339,6 +367,7 @@ if checkpoint_rows:
             pass INT,
             name STRING,
             stage STRING,
+            checkpoint_mode INT,
             policy_backend STRING,
             actual_backend STRING,
             reason STRING,
@@ -389,3 +418,23 @@ if artifact_rows:
             """,
         ).orderBy("pass", "artifact")
     )
+
+for row in records:
+    if row["variant"] != "outputV3":
+        continue
+    for label, key, kind in (
+        ("builder", "plan_profile", "builder"),
+        ("checkpoint", "checkpoint_plan_profile", "checkpoint"),
+        ("action", "action_profile", "action"),
+    ):
+        plan_rows = row["profile"].get(key, [])
+        if plan_rows:
+            print(f"[plan profile] pass={row['pass']} kind={label}")
+            display(
+                build_plan_profile_display(
+                    spark,
+                    plan_rows,
+                    threshold=plan_checkpoint_threshold,
+                    kind=kind,
+                )
+            )

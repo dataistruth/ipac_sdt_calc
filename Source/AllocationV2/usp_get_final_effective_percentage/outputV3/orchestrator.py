@@ -19,6 +19,17 @@ from .checkpoint_policy import (
 )
 from .parent import isolated_output_module
 from .pipeline import run_modes_parallel
+from .plan_profiler import (
+    finish_action_profile,
+    finish_checkpoint_plan_profile,
+    finish_plan_profile,
+    plan_profile_report,
+    profile_action,
+    start_action_profile,
+    start_checkpoint_plan_profile,
+    start_plan_profile,
+    track_plan,
+)
 from .stages import FUNCTION_STAGE, StageName, stage_contracts
 
 _base = isolated_output_module("orchestrator")
@@ -37,6 +48,15 @@ _ACTIVE_RUN_CFG: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
 )
 _ACTIVE_STAGE_OVERRIDE: contextvars.ContextVar[str | None] = (
     contextvars.ContextVar("fep_output_v3_stage_override", default=None)
+)
+_ACTIVE_CHECKPOINT_MODE: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "fep_output_v3_checkpoint_mode", default=1
+)
+_ACTIVE_PROFILE_PLAN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "fep_output_v3_profile_plan", default=False
+)
+_ACTIVE_PLAN_THRESHOLD: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "fep_output_v3_plan_threshold", default=30
 )
 _EVENT_LOCK = threading.Lock()
 _LAST_RUN_PROFILE: dict[str, Any] = {}
@@ -58,6 +78,12 @@ def _workers(value: Any) -> int:
         return max(1, min(int(value), 4))
     except (TypeError, ValueError):
         return 4
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "on", "true", "yes"}
+    return bool(value)
 
 
 def _record(stage: str, operation: str, elapsed: float) -> None:
@@ -227,7 +253,14 @@ def _delegated_run_modes(*args, **kwargs):
     bound.apply_defaults()
     cfg = _build_cfg(bound)
     cfg.pop("_checkpoint_v2_state", None)
-    initialize_named_checkpoint_policy(cfg)
+    cfg["profile_plan"] = _ACTIVE_PROFILE_PLAN.get()
+    cfg["plan_checkpoint_threshold"] = _ACTIVE_PLAN_THRESHOLD.get()
+    cfg.setdefault("result_type", bound.arguments.get("ResultType"))
+    if bound.arguments.get("VolumePath") is not None:
+        cfg["volume_path"] = bound.arguments["VolumePath"]
+    if bound.arguments.get("ExecutionID") is not None:
+        cfg["execution_id"] = bound.arguments["ExecutionID"]
+    initialize_named_checkpoint_policy(cfg, _ACTIVE_CHECKPOINT_MODE.get())
     _ACTIVE_RUN_CFG.set(cfg)
     coordinator = _ACTIVE_COORDINATOR.get()
     if coordinator is None:
@@ -252,7 +285,7 @@ for _function_name, _stage_name in FUNCTION_STAGE.items():
         setattr(
             _base,
             _function_name,
-            _timed(_stage_name, _function_name, _function),
+            track_plan(_timed(_stage_name, _function_name, _function)),
         )
 
 
@@ -377,8 +410,13 @@ class _ParallelResultStorer(_PRODUCTION_RESULT_STORER):
     def _write(self, df, catalog, database, table, run_id):
         started = time.time()
         try:
-            return self.store_output_to_delta_table(
-                df, catalog, database, table, run_id
+            return profile_action(
+                f"write:{table}",
+                df,
+                lambda: self.store_output_to_delta_table(
+                    df, catalog, database, table, run_id
+                ),
+                _ACTIVE_RUN_CFG.get(),
             )
         finally:
             _record(
@@ -447,13 +485,37 @@ def _run_profiled(fn, *args, **kwargs):
         "ParallelGroups",
         kwargs.pop("parallel_groups", ",".join(sorted(_ALL_PARALLEL_GROUPS))),
     )
-    # Accepted for schedule compatibility; backend selection is always named.
-    kwargs.pop("CheckpointMode", None)
-    kwargs.pop("checkpoint_mode", None)
-    kwargs.pop("ProfilePlan", None)
-    kwargs.pop("profile_plan", None)
-    kwargs.pop("PlanCheckpointThreshold", None)
-    kwargs.pop("plan_checkpoint_threshold", None)
+    checkpoint_mode = int(
+        kwargs.pop("CheckpointMode", kwargs.pop("checkpoint_mode", 1))
+    )
+    if checkpoint_mode not in {1, 2, 3, 4}:
+        raise ValueError("CheckpointMode must be one of 1, 2, 3, 4")
+    profile_plan = _as_bool(
+        kwargs.pop("ProfilePlan", kwargs.pop("profile_plan", False))
+    )
+    plan_threshold = int(
+        kwargs.pop(
+            "PlanCheckpointThreshold",
+            kwargs.pop("plan_checkpoint_threshold", 30),
+        )
+    )
+    call_arguments = inspect.signature(fn).bind_partial(
+        *args, **kwargs
+    ).arguments
+    supplied_cfg = call_arguments.get("cfg")
+    volume_path = call_arguments.get("VolumePath")
+    if checkpoint_mode == 3 and not (
+        volume_path
+        or (
+            isinstance(supplied_cfg, dict)
+            and (
+                supplied_cfg.get("checkpoint_volume_path")
+                or supplied_cfg.get("volume_path")
+                or supplied_cfg.get("VolumePath")
+            )
+        )
+    ):
+        raise ValueError("CheckpointMode 3 requires VolumePath")
     max_threads = _workers(raw_threads)
     if raw_groups is None:
         requested_groups = set(_ALL_PARALLEL_GROUPS)
@@ -475,9 +537,22 @@ def _run_profiled(fn, *args, **kwargs):
         )
     events = []
     event_token = _ACTIVE_EVENTS.set(events)
+    mode_token = _ACTIVE_CHECKPOINT_MODE.set(checkpoint_mode)
+    profile_token = _ACTIVE_PROFILE_PLAN.set(profile_plan)
+    threshold_token = _ACTIVE_PLAN_THRESHOLD.set(plan_threshold)
     coordinator = _Coordinator(max_threads, requested_groups)
     coordinator_token = _ACTIVE_COORDINATOR.set(coordinator)
     cfg_token = _ACTIVE_RUN_CFG.set(None)
+    plan_token = checkpoint_plan_token = action_token = None
+    builder_records = []
+    checkpoint_records = []
+    action_records = []
+    if profile_plan:
+        plan_token, builder_records = start_plan_profile()
+        checkpoint_plan_token, checkpoint_records = (
+            start_checkpoint_plan_profile()
+        )
+        action_token, action_records = start_action_profile()
     started = time.time()
     succeeded = False
     try:
@@ -485,6 +560,12 @@ def _run_profiled(fn, *args, **kwargs):
         succeeded = True
     finally:
         coordinator.close()
+        if action_token is not None:
+            finish_action_profile(action_token)
+        if checkpoint_plan_token is not None:
+            finish_checkpoint_plan_profile(checkpoint_plan_token)
+        if plan_token is not None:
+            finish_plan_profile(plan_token)
         cfg = _ACTIVE_RUN_CFG.get()
         if not succeeded and isinstance(cfg, dict):
             try:
@@ -505,10 +586,23 @@ def _run_profiled(fn, *args, **kwargs):
         uses_parallel_pipeline = (
             pipeline_strategy == "parallel_modes_123_control_flow"
         )
+        reports = {"builder": [], "checkpoint": [], "action": []}
+        if profile_plan:
+            for label, records, key in (
+                ("BUILDER", builder_records, "builder"),
+                ("CHECKPOINT", checkpoint_records, "checkpoint"),
+                ("ACTION", action_records, "action"),
+            ):
+                reports[key] = plan_profile_report(
+                    records, plan_threshold, label=label
+                )
         _LAST_RUN_PROFILE.clear()
         _LAST_RUN_PROFILE.update(
             {
                 "updated_wall_seconds": wall,
+                "checkpoint_mode": checkpoint_mode,
+                "profile_plan": profile_plan,
+                "plan_checkpoint_threshold": plan_threshold,
                 "effective_max_threads": max_threads,
                 "enabled_parallel_groups": sorted(requested_groups),
                 "execution_strategy": (
@@ -544,7 +638,7 @@ def _run_profiled(fn, *args, **kwargs):
                     )
                 ),
                 "pipeline_strategy": pipeline_strategy,
-                "checkpoint_policy": "named_semantic_v1",
+                "checkpoint_policy": f"checkpoint_v2_mode_{checkpoint_mode}",
                 "checkpoint_activity": list(
                     cfg.get("_checkpoint_policy_activity", ())
                 ) if isinstance(cfg, dict) else [],
@@ -555,13 +649,20 @@ def _run_profiled(fn, *args, **kwargs):
                 "artifact_merges": list(
                     cfg.get("_output_v3_artifact_merges", ())
                 ) if isinstance(cfg, dict) else [],
+                "plan_profile": reports["builder"],
+                "checkpoint_plan_profile": reports["checkpoint"],
+                "action_profile": reports["action"],
             }
         )
         _ACTIVE_RUN_CFG.reset(cfg_token)
         _ACTIVE_COORDINATOR.reset(coordinator_token)
         _ACTIVE_EVENTS.reset(event_token)
+        _ACTIVE_PROFILE_PLAN.reset(profile_token)
+        _ACTIVE_CHECKPOINT_MODE.reset(mode_token)
+        _ACTIVE_PLAN_THRESHOLD.reset(threshold_token)
     print(
         f"[outputV3 timing] wall={wall:.3f}s "
+        f"checkpoint_mode={checkpoint_mode} profile_plan={profile_plan} "
         f"threads={max_threads} "
         f"groups={','.join(sorted(requested_groups)) or 'none'}"
     )
@@ -594,6 +695,9 @@ def get_last_run_profile() -> dict[str, Any]:
                 "operation_timings",
                 "stage_contracts",
                 "artifact_merges",
+                "plan_profile",
+                "checkpoint_plan_profile",
+                "action_profile",
             )
         },
         "enabled_parallel_groups": list(

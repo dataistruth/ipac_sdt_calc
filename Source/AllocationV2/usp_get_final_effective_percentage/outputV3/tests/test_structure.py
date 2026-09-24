@@ -67,7 +67,7 @@ class OutputV3StructureTests(unittest.TestCase):
         ):
             self.assertIn(name, text)
 
-    def test_checkpoint_policy_is_name_based(self):
+    def test_checkpoint_policy_uses_existing_v2_modes(self):
         text = source("checkpoint_policy.py")
         self.assertIn("def decide_checkpoint(name:", text)
         self.assertIn("alias-sensitive transfer seam", text)
@@ -76,8 +76,9 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("all_ent_pre_tag", text)
         self.assertIn("tcp_post_tag", text)
         self.assertIn("safe cheap lineage break", text)
-        self.assertIn("checkpoint_mode=primitive_mode", text)
-        self.assertNotIn("sequence %", text)
+        self.assertIn("checkpoint_mode=checkpoint_mode", text)
+        self.assertIn('cfg["_output_v3_checkpoint_mode"]', text)
+        self.assertIn('"checkpoint_mode": checkpoint_mode', text)
         self.assertIn("drop_failed_run_checkpoints", text)
         self.assertIn("drop_checkpoints_V2", text)
 
@@ -187,6 +188,12 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"pipeline_strategy"', text)
         self.assertIn('"artifact_merges"', text)
         self.assertIn('"ParallelGroups"', text)
+        self.assertIn('"CheckpointMode"', text)
+        self.assertIn('["1", "2", "3", "4"]', text)
+        self.assertIn('"ProfilePlan"', text)
+        self.assertIn('"PlanCheckpointThreshold"', text)
+        self.assertIn('"VolumePath"', text)
+        self.assertIn("checkpoint_mode INT", text)
         self.assertIn("SUMMARY_SCHEMA", text)
         self.assertIn("[benchmark] pass=", text)
         self.assertIn("[reconcile] PASS", text)
@@ -195,6 +202,14 @@ class OutputV3StructureTests(unittest.TestCase):
         text = source("orchestrator.py")
         self.assertIn("[outputV3 timing] wall=", text)
         self.assertIn("[outputV3 timing] stage=", text)
+        self.assertIn("start_plan_profile()", text)
+        self.assertIn("start_checkpoint_plan_profile()", text)
+        self.assertIn("start_action_profile()", text)
+        self.assertIn('"plan_profile": reports["builder"]', text)
+        self.assertIn(
+            '"checkpoint_plan_profile": reports["checkpoint"]', text
+        )
+        self.assertIn('"action_profile": reports["action"]', text)
 
     def test_python_files_parse_without_importing_pyspark(self):
         for path in ROOT.rglob("*.py"):

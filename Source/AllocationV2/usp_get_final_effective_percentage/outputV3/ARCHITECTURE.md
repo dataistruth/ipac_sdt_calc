@@ -61,23 +61,37 @@ Mode 4 retains the complete production control flow. Its optional 704c path
 can perform catalog metadata writes, and it has no independent sibling branch
 that would justify parallel execution.
 
-## Named checkpoint policy
+## Checkpoint modes and semantic reporting
 
-`checkpoint_policy.py` selects a backend from the semantic checkpoint name,
-never odd/even call position:
+`CheckpointMode` is passed directly to the existing
+`Common_V2.core.checkpoint_V2` implementation:
 
-- durable Delta: common reused relations, LT/no-LT branch joins, reused fused
-  CPBT outputs, transfer seams, and alias-sensitive/reused effective seams;
-- local checkpoint: safe cheap lineage breaks only.
+- `1`: all Delta
+- `2`: odd local / even Delta
+- `3`: odd local / even Volume Parquet
+- `4`: all local
 
-The implementation uses `Common_V2.core.checkpoint_V2` mode 1 as the Delta
-primitive and mode 4 as the local primitive. Every decision records name,
-stage, requested policy backend, actual backend, reason, and elapsed time.
-Delta names remain sequence- and UUID-qualified. Cleanup is not performed in
-the hot path.
+Mode 3 requires `VolumePath`. Because branches run concurrently, modes 2 and 3
+assign their alternating backends by the shared checkpoint call sequence; a
+particular name is not guaranteed the same backend on every run.
+
+`checkpoint_policy.py` still classifies semantic checkpoint names so the run
+profile identifies the stage and rationale for each lineage break. Backend
+selection, however, comes from the selected Common V2 mode. Every activity row
+records checkpoint mode, semantic stage, requested backend, actual backend,
+reason, and elapsed time. Delta names remain sequence- and UUID-qualified.
+Cleanup is not performed in the hot path.
 
 An actual local checkpoint is returned through `toDF(*columns)`, preserving
 the qualifier reset supplied by a fresh Delta table relation.
+
+## Plan profiling
+
+`ProfilePlan=on` enables the shared AllocationV2 logical-plan profiler.
+`PlanCheckpointThreshold` controls its recommendation threshold. Builder plan
+growth, plans entering checkpoints, and instrumented output-write action plans
+are returned separately by `get_last_run_profile` and displayed by the
+benchmark notebook. Profiling is off by default to avoid measurement overhead.
 
 ## Failure, retry, and cleanup behavior
 
