@@ -69,6 +69,7 @@ _NAMED_ACTION_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
     "fep_output_v3_named_action_depth", default=0
 )
 _EVENT_LOCK = threading.Lock()
+_PROCESS_PRINT_LOCK = threading.Lock()
 _LAST_RUN_PROFILE: dict[str, Any] = {}
 _ALL_PARALLEL_GROUPS = frozenset(
     {
@@ -198,6 +199,35 @@ def _record(
             )
 
 
+def _print_process(
+    event: str,
+    kind: str,
+    name: str,
+    stage: str | None,
+    *,
+    elapsed: float | None = None,
+    status: str | None = None,
+) -> None:
+    """Print one compact, thread-safe live process event."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    thread_name = threading.current_thread().name
+    details = [
+        f"[{timestamp}]",
+        "[outputV3 process]",
+        event,
+        f"kind={kind}",
+        f"name={name}",
+        f"stage={stage or 'n/a'}",
+        f"thread={thread_name}",
+    ]
+    if status is not None:
+        details.append(f"status={status}")
+    if elapsed is not None:
+        details.append(f"elapsed={elapsed:.3f}s")
+    with _PROCESS_PRINT_LOCK:
+        print(" ".join(details), flush=True)
+
+
 def _relation_metrics(df, enabled: bool) -> dict:
     if df is None or not enabled:
         return {
@@ -237,14 +267,29 @@ def _relation_metrics(df, enabled: bool) -> dict:
 def _timed(stage: str, operation: str, fn: Callable) -> Callable:
     @functools.wraps(fn)
     def wrapped(*args, **kwargs):
+        active_stage = _ACTIVE_STAGE_OVERRIDE.get() or stage
         started = time.time()
+        status = "PASS"
+        _print_process("START", "helper", operation, active_stage)
         try:
             return fn(*args, **kwargs)
+        except Exception:
+            status = "FAIL"
+            raise
         finally:
+            elapsed = time.time() - started
             _record(
-                _ACTIVE_STAGE_OVERRIDE.get() or stage,
+                active_stage,
                 operation,
-                time.time() - started,
+                elapsed,
+            )
+            _print_process(
+                "DONE",
+                "helper",
+                operation,
+                active_stage,
+                elapsed=elapsed,
+                status=status,
             )
 
     return wrapped
@@ -310,12 +355,14 @@ class _Coordinator:
                 else StageName.WITH_LT_BRANCH.value
             )
         stage_token = _ACTIVE_STAGE_OVERRIDE.set(stage)
+        _print_process("START", "task", f"{group}.{name}", stage)
         try:
             return fn(*args, **kwargs)
         except Exception:
             status = "FAIL"
             raise
         finally:
+            elapsed = time.time() - started
             _ACTIVE_STAGE_OVERRIDE.reset(stage_token)
             with self._lock:
                 self._events.append(
@@ -324,10 +371,18 @@ class _Coordinator:
                         "wave": wave,
                         "task": name,
                         "status": status,
-                        "elapsed_seconds": round(time.time() - started, 3),
+                        "elapsed_seconds": round(elapsed, 3),
                         "thread": threading.current_thread().name,
                     }
                 )
+            _print_process(
+                "DONE",
+                "task",
+                f"{group}.{name}",
+                stage,
+                elapsed=elapsed,
+                status=status,
+            )
 
     def result(self, group, name, fn, *args, **kwargs):
         if self._executor is None or group not in self.enabled_groups:
@@ -381,19 +436,33 @@ def _checkpoint(spark, df, name, cfg):
 
 def _profile_pipeline_action(name, stage, df, action, cfg):
     started = time.time()
+    status = "PASS"
+    _print_process("START", "action", name, stage)
     metrics = _relation_metrics(
         df, bool(isinstance(cfg, dict) and cfg.get("profile_plan"))
     )
     depth_token = _NAMED_ACTION_DEPTH.set(_NAMED_ACTION_DEPTH.get() + 1)
     try:
         return profile_action(name, df, action, cfg)
+    except Exception:
+        status = "FAIL"
+        raise
     finally:
+        elapsed = time.time() - started
         _NAMED_ACTION_DEPTH.reset(depth_token)
         _record(
             stage,
             f"action:{name}",
-            time.time() - started,
+            elapsed,
             **metrics,
+        )
+        _print_process(
+            "DONE",
+            "action",
+            name,
+            stage,
+            elapsed=elapsed,
+            status=status,
         )
 
 
@@ -664,6 +733,9 @@ class _ParallelResultStorer(_PRODUCTION_RESULT_STORER):
 
     def _write(self, df, catalog, database, table, run_id):
         started = time.time()
+        status = "PASS"
+        stage = StageName.OUTPUT_WRITE.value
+        _print_process("START", "write", table, stage)
         try:
             return profile_action(
                 f"write:{table}",
@@ -673,11 +745,23 @@ class _ParallelResultStorer(_PRODUCTION_RESULT_STORER):
                 ),
                 _ACTIVE_RUN_CFG.get(),
             )
+        except Exception:
+            status = "FAIL"
+            raise
         finally:
+            elapsed = time.time() - started
             _record(
-                StageName.OUTPUT_WRITE.value,
+                stage,
                 f"write:{table}",
-                time.time() - started,
+                elapsed,
+            )
+            _print_process(
+                "DONE",
+                "write",
+                table,
+                stage,
+                elapsed=elapsed,
+                status=status,
             )
 
     def store_output_to_delta_lake(
@@ -693,7 +777,6 @@ class _ParallelResultStorer(_PRODUCTION_RESULT_STORER):
             return super().store_output_to_delta_lake(
                 result, catalog_name, database_name, run_id
             )
-        print(f"Storing distinct FEP tables in parallel: {datetime.now()}")
         tasks = tuple(
             (
                 table,
@@ -1025,6 +1108,8 @@ def _run_profiled(fn, *args, **kwargs):
         action_token, action_records = start_action_profile()
     started = time.time()
     succeeded = False
+    run_name = getattr(fn, "__name__", "outputV3")
+    _print_process("START", "run", run_name, "pipeline")
     previous_is_empty = DataFrame.isEmpty
     if profile_plan:
         DataFrame.isEmpty = _profiled_dataframe_is_empty
@@ -1145,6 +1230,14 @@ def _run_profiled(fn, *args, **kwargs):
                 "action_profile": reports["action"],
                 "performance_summary": performance,
             }
+        )
+        _print_process(
+            "DONE",
+            "run",
+            run_name,
+            "pipeline",
+            elapsed=wall,
+            status="PASS" if succeeded else "FAIL",
         )
         _ACTIVE_RUN_CFG.reset(cfg_token)
         _ACTIVE_COORDINATOR.reset(coordinator_token)

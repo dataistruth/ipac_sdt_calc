@@ -28,6 +28,7 @@ dbutils.widgets.dropdown(
 dbutils.widgets.dropdown(
     "MissingEntityIdentity", "on", ["off", "on"], "11. Missing identity"
 )
+dbutils.widgets.text("Passes", "1", "12. Passes")
 
 source_path = dbutils.widgets.get("source_path").strip()
 entity_id = int(dbutils.widgets.get("EntityID"))
@@ -42,6 +43,7 @@ checkpoint_mode = int(dbutils.widgets.get("CheckpointMode"))
 missing_entity_identity = (
     dbutils.widgets.get("MissingEntityIdentity").strip().lower() == "on"
 )
+passes = int(dbutils.widgets.get("Passes"))
 
 if not 1 <= max_threads <= 4:
     raise ValueError("MaxThreads must be between 1 and 4")
@@ -49,6 +51,8 @@ if checkpoint_mode not in {1, 2, 4, 5}:
     raise ValueError("CheckpointMode must be one of 1, 2, 4, 5")
 if shuffle_partitions < 1:
     raise ValueError("SqlShufflePartitions must be >= 1")
+if passes < 1:
+    raise ValueError("Passes must be >= 1")
 
 BASELINE = {
     "run_id": 17376,
@@ -72,16 +76,6 @@ ORIGINAL_SPARK_CONFIG = {
 import importlib
 import sys
 import time
-from datetime import datetime
-
-
-def _clock():
-    return datetime.now().strftime("%H:%M:%S")
-
-
-def _log(message):
-    print(f"[{_clock()}] {message}", flush=True)
-
 
 PARALLEL_GROUPS = "all"
 
@@ -102,6 +96,7 @@ settings = {
         "local/deferred" if checkpoint_mode == 5 else "configured by mode"
     ),
     "missing_entity_identity": missing_entity_identity,
+    "passes": passes,
 }
 display(
     spark.createDataFrame(
@@ -183,16 +178,9 @@ def _run(variant):
                 "MissingEntityIdentity": missing_entity_identity,
             }
         )
-    _log(
-        f"RUN START   variant={variant} "
-        f"shuffle={variant_shuffle} "
-        f"checkpoint_mode={'n/a' if is_production else checkpoint_mode} "
-        f"module={runner.__file__}"
-    )
     started = time.time()
     result = runner.run_final_effective_percentages(spark, **kwargs)
     wall = round(time.time() - started, 3)
-    _log(f"RUN DONE    variant={variant} wall={wall:.3f}s")
     fingerprints = capture_outputs(spark, catalog, schema, run_id)
     summary = summarize_outputs(fingerprints)
     profile = runner.get_last_run_profile() if not is_production else {}
@@ -266,101 +254,108 @@ def _run(variant):
         "fingerprints": fingerprints,
         "profile": profile,
     }
-    _log(
-        f"SUMMARY     variant={variant} wall={wall:.3f}s "
-        f"reported={reported} rows={record['rows']} "
-        f"tables={record['tables']} "
-        f"shuffle={profile_effective_shuffle} status={shuffle_status}"
-    )
-    if not is_production:
-        # Checkpoints run in worker threads whose stdout Databricks can drop,
-        # so replay each one from the main thread in chronological order.
-        checkpoints = sorted(
-            profile.get("checkpoint_activity", []),
-            key=lambda row: str(row.get("started_at") or ""),
-        )
-        if checkpoints:
-            _log(f"CHECKPOINTS variant={variant} count={len(checkpoints)}")
-            for row in checkpoints:
-                started_clock = str(row.get("started_at") or "")[11:19]
-                ended_clock = str(row.get("ended_at") or "")[11:19]
-                print(
-                    f"    - {row.get('name'):<28} "
-                    f"stage={row.get('stage'):<16} "
-                    f"backend={row.get('actual_backend'):<6} "
-                    f"materialization={row.get('materialization'):<9} "
-                    f"start={started_clock} end={ended_clock} "
-                    f"elapsed={row.get('elapsed_seconds')}s",
-                    flush=True,
-                )
     return record
 
 
 # COMMAND ----------
 
-# Run exactly one production/outputV3 pair. Detailed results are displayed in
-# the cells below rather than replayed as JSON or checkpoint messages.
+# Run production then outputV3 for each pass. Results are shown in the tables
+# below; per-pass runtime rows are collected here.
 production = None
 optimized = None
 mismatches = []
 final_comparison = None
+runtime_rows = []
 snapshots = create_run_snapshots(spark, catalog, schema, run_id)
 try:
-    production = _run("production")
-    optimized = _run("outputV3")
+    for pass_index in range(1, passes + 1):
+        production = _run("production")
+        optimized = _run("outputV3")
 
-    if production["rows"] != BASELINE["rows"]:
-        raise AssertionError(
-            f"Production rows changed: expected 79, got {production['rows']}"
+        if production["rows"] != BASELINE["rows"]:
+            raise AssertionError(
+                f"pass {pass_index}: production rows changed: "
+                f"expected 79, got {production['rows']}"
+            )
+        if production["tables"] != BASELINE["tables"]:
+            raise AssertionError(
+                f"pass {pass_index}: production must write three tables"
+            )
+        mismatches = compare_outputs(
+            production["fingerprints"], optimized["fingerprints"]
         )
-    if production["tables"] != BASELINE["tables"]:
-        raise AssertionError(
-            "Production must write exactly three output tables"
-        )
-    mismatches = compare_outputs(
-        production["fingerprints"], optimized["fingerprints"]
-    )
-    if mismatches:
-        raise AssertionError(f"Exact fingerprint mismatch: {mismatches[0]}")
+        if mismatches:
+            raise AssertionError(
+                f"pass {pass_index}: exact fingerprint mismatch: "
+                f"{mismatches[0]}"
+            )
 
-    wall_delta = (
-        production["wall_seconds"] - optimized["wall_seconds"]
-    )
-    improvement = (
-        100.0 * wall_delta / production["wall_seconds"]
-        if production["wall_seconds"]
-        else 0.0
-    )
-    final_comparison = {
-        "parity": "PASS",
-        "production_wall_seconds": production["wall_seconds"],
-        "production_reported_seconds": production["reported_seconds"],
-        "optimized_wall_seconds": optimized["wall_seconds"],
-        "optimized_reported_seconds": optimized["reported_seconds"],
-        "improvement_seconds": round(wall_delta, 3),
-        "improvement_percent": round(improvement, 2),
-        "optimized_under_50_seconds": optimized["wall_seconds"] < 50.0,
-        "optimized_under_55_seconds": optimized["wall_seconds"] <= 55.0,
-        "optimized_under_80_seconds": optimized["wall_seconds"] <= 80.0,
-        "requested_shuffle_partitions": optimized[
-            "requested_shuffle_partitions"
-        ],
-        "effective_shuffle_partitions": optimized[
-            "profile_effective_shuffle"
-        ],
-        "shuffle_verified": optimized["shuffle_verified"],
-        "rows": optimized["rows"],
-        "tables": optimized["tables"],
-    }
-    _log(
-        "FINAL       parity=PASS "
-        f"production={final_comparison['production_wall_seconds']:.3f}s "
-        f"outputV3={final_comparison['optimized_wall_seconds']:.3f}s "
-        f"improvement={final_comparison['improvement_seconds']:.3f}s "
-        f"({final_comparison['improvement_percent']:.2f}%) "
-        f"under_50s={final_comparison['optimized_under_50_seconds']} "
-        f"rows={final_comparison['rows']} tables={final_comparison['tables']}"
-    )
+        wall_delta = (
+            production["wall_seconds"] - optimized["wall_seconds"]
+        )
+        improvement = (
+            100.0 * wall_delta / production["wall_seconds"]
+            if production["wall_seconds"]
+            else 0.0
+        )
+        final_comparison = {
+            "parity": "PASS",
+            "production_wall_seconds": production["wall_seconds"],
+            "production_reported_seconds": production["reported_seconds"],
+            "optimized_wall_seconds": optimized["wall_seconds"],
+            "optimized_reported_seconds": optimized["reported_seconds"],
+            "improvement_seconds": round(wall_delta, 3),
+            "improvement_percent": round(improvement, 2),
+            "optimized_under_50_seconds": optimized["wall_seconds"] < 50.0,
+            "optimized_under_55_seconds": optimized["wall_seconds"] <= 55.0,
+            "optimized_under_80_seconds": optimized["wall_seconds"] <= 80.0,
+            "requested_shuffle_partitions": optimized[
+                "requested_shuffle_partitions"
+            ],
+            "effective_shuffle_partitions": optimized[
+                "profile_effective_shuffle"
+            ],
+            "shuffle_verified": optimized["shuffle_verified"],
+            "rows": optimized["rows"],
+            "tables": optimized["tables"],
+        }
+        for record in (production, optimized):
+            runtime_rows.append(
+                {
+                    "pass": pass_index,
+                    "variant": record["variant"],
+                    "wall_seconds": record["wall_seconds"],
+                    "reported_seconds": record["reported_seconds"],
+                    "rows": record["rows"],
+                    "tables": record["tables"],
+                    "effective_shuffle_partitions": str(
+                        record["profile_effective_shuffle"]
+                    ),
+                    "shuffle_verified": record["shuffle_verified"],
+                    "baseline_wall_seconds": BASELINE["wall_seconds"],
+                    "wall_vs_baseline_seconds": round(
+                        record["wall_seconds"] - BASELINE["wall_seconds"], 3
+                    ),
+                }
+            )
+        runtime_rows.append(
+            {
+                "pass": pass_index,
+                "variant": "improvement (production - outputV3)",
+                "wall_seconds": final_comparison["improvement_seconds"],
+                "reported_seconds": final_comparison["improvement_percent"],
+                "rows": final_comparison["rows"],
+                "tables": final_comparison["tables"],
+                "effective_shuffle_partitions": str(
+                    optimized["profile_effective_shuffle"]
+                ),
+                "shuffle_verified": optimized["shuffle_verified"],
+                "baseline_wall_seconds": BASELINE["wall_seconds"],
+                "wall_vs_baseline_seconds": round(
+                    optimized["wall_seconds"] - BASELINE["wall_seconds"], 3
+                ),
+            }
+        )
 finally:
     try:
         restore_run_snapshots(spark, catalog, schema, run_id, snapshots)
@@ -382,47 +377,8 @@ finally:
 
 # COMMAND ----------
 
-runtime_rows = []
-for record in (production, optimized):
-    if record is None:
-        continue
-    runtime_rows.append(
-        {
-            "variant": record["variant"],
-            "wall_seconds": record["wall_seconds"],
-            "reported_seconds": record["reported_seconds"],
-            "rows": record["rows"],
-            "tables": record["tables"],
-            "effective_shuffle_partitions": str(
-                record["profile_effective_shuffle"]
-            ),
-            "shuffle_verified": record["shuffle_verified"],
-            "baseline_wall_seconds": BASELINE["wall_seconds"],
-            "wall_vs_baseline_seconds": round(
-                record["wall_seconds"] - BASELINE["wall_seconds"], 3
-            ),
-        }
-    )
-if final_comparison is not None:
-    runtime_rows.append(
-        {
-            "variant": "improvement (production - outputV3)",
-            "wall_seconds": final_comparison["improvement_seconds"],
-            "reported_seconds": final_comparison["improvement_percent"],
-            "rows": final_comparison["rows"],
-            "tables": final_comparison["tables"],
-            "effective_shuffle_partitions": str(
-                optimized["profile_effective_shuffle"]
-            ),
-            "shuffle_verified": optimized["shuffle_verified"],
-            "baseline_wall_seconds": BASELINE["wall_seconds"],
-            "wall_vs_baseline_seconds": round(
-                optimized["wall_seconds"] - BASELINE["wall_seconds"], 3
-            ),
-        }
-    )
-
 RUNTIME_SCHEMA = """
+    pass INT,
     variant STRING,
     wall_seconds DOUBLE,
     reported_seconds DOUBLE,
@@ -434,7 +390,11 @@ RUNTIME_SCHEMA = """
     wall_vs_baseline_seconds DOUBLE
 """
 if runtime_rows:
-    display(spark.createDataFrame(runtime_rows, RUNTIME_SCHEMA))
+    display(
+        spark.createDataFrame(runtime_rows, RUNTIME_SCHEMA).orderBy(
+            "pass", "variant"
+        )
+    )
 
 # COMMAND ----------
 

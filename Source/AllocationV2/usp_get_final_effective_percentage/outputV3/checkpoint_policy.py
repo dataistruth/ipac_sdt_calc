@@ -168,27 +168,24 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
     started_at = datetime.now().isoformat()
     thread_name = threading.current_thread().name
     checkpoint_mode = int(cfg.get("_output_v3_checkpoint_mode", 1))
-    emit_progress = checkpoint_mode != 5
-    if emit_progress:
-        print(
-            f"[outputV3 checkpoint] START name={name} "
-            f"stage={decision.stage} mode={checkpoint_mode} "
-            f"thread={thread_name} at={started_at}",
-            flush=True,
-        )
+    print(
+        f"[outputV3 checkpoint] START name={name} "
+        f"stage={decision.stage} mode={checkpoint_mode} "
+        f"thread={thread_name} at={started_at}",
+        flush=True,
+    )
     try:
         result = checkpoint_V2(
             spark, df, name, cfg, checkpoint_mode=checkpoint_mode
         )
     except Exception as exc:
         elapsed = time.time() - started
-        if emit_progress:
-            print(
-                f"[outputV3 checkpoint] FAIL name={name} "
-                f"stage={decision.stage} mode={checkpoint_mode} "
-                f"elapsed={elapsed:.3f}s error={type(exc).__name__}: {exc}",
-                flush=True,
-            )
+        print(
+            f"[outputV3 checkpoint] FAIL name={name} "
+            f"stage={decision.stage} mode={checkpoint_mode} "
+            f"elapsed={elapsed:.3f}s error={type(exc).__name__}: {exc}",
+            flush=True,
+        )
         raise
     own_activity = next(
         (
@@ -215,6 +212,13 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
         # Match the qualifier reset of a fresh spark.table relation.
         result = result.toDF(*result.columns)
     ended_at = datetime.now().isoformat()
+    materialization = (
+        "eager"
+        if local_checkpoint_eager
+        else "deferred"
+        if local_checkpoint_eager is False
+        else "durable"
+    )
     cfg.setdefault("_checkpoint_policy_activity", []).append(
         {
             "name": name,
@@ -222,13 +226,7 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
             "checkpoint_mode": checkpoint_mode,
             "policy_backend": requested_backend,
             "actual_backend": actual_backend,
-            "materialization": (
-                "eager"
-                if local_checkpoint_eager
-                else "deferred"
-                if local_checkpoint_eager is False
-                else "durable"
-            ),
+            "materialization": materialization,
             "reason": f"checkpoint_V2 mode {checkpoint_mode}; {decision.reason}",
             "thread": thread_name,
             "started_at": started_at,
@@ -254,14 +252,14 @@ def named_checkpoint(spark, df, name: str, cfg: dict):
         }
     )
     elapsed = time.time() - started
-    if emit_progress:
-        print(
-            f"[outputV3 checkpoint] DONE name={name} "
-            f"stage={decision.stage} mode={checkpoint_mode} "
-            f"backend={actual_backend} thread={thread_name} "
-            f"at={ended_at} elapsed={elapsed:.3f}s",
-            flush=True,
-        )
+    print(
+        f"[outputV3 checkpoint] DONE name={name} "
+        f"stage={decision.stage} mode={checkpoint_mode} "
+        f"backend={actual_backend} "
+        f"materialization={materialization} "
+        f"thread={thread_name} at={ended_at} elapsed={elapsed:.3f}s",
+        flush=True,
+    )
     return result
 
 
