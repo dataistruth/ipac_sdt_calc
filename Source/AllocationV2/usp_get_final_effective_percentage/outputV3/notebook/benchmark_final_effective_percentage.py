@@ -3,8 +3,8 @@
 # MAGIC # Final Effective Percentage: one side-by-side run
 # MAGIC
 # MAGIC Runs production once and outputV3 once, verifies exact output parity,
-# MAGIC restores the RunID snapshots, and prints all diagnostics to stdout as
-# MAGIC copyable JSON lines. No table output is produced.
+# MAGIC restores the RunID snapshots, and displays runtime, parity, and
+# MAGIC checkpoint timing tables. Progress is logged with wall-clock times.
 
 # COMMAND ----------
 
@@ -22,53 +22,11 @@ dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
 dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.text("MaxThreads", "4", "8. Max threads")
 dbutils.widgets.text("SqlShufflePartitions", "8", "9. Shuffle partitions")
-dbutils.widgets.text(
-    "ParallelGroups",
-    "all",
-    "10. Parallel groups (all, none, or comma-separated)",
+dbutils.widgets.dropdown(
+    "CheckpointMode", "5", ["1", "2", "4", "5"], "10. Checkpoint mode"
 )
 dbutils.widgets.dropdown(
-    "CheckpointMode", "5", ["1", "2", "3", "4", "5"], "11. Checkpoint mode"
-)
-dbutils.widgets.dropdown(
-    "ProfilePlan", "off", ["off", "on"], "12. Profile Spark plans"
-)
-dbutils.widgets.text(
-    "PlanCheckpointThreshold", "30", "13. Plan checkpoint threshold"
-)
-dbutils.widgets.text("VolumePath", "", "14. Volume path (mode 3 only)")
-dbutils.widgets.text("ExperimentID", "baseline", "15. Experiment identifier")
-dbutils.widgets.dropdown(
-    "WarningProbeRemoval",
-    "off",
-    ["off", "line_items", "quarters", "lookthrough"],
-    "16. Remove one warning-only probe",
-)
-dbutils.widgets.dropdown(
-    "MissingEntityIdentity", "on", ["off", "on"], "17. Missing identity"
-)
-dbutils.widgets.dropdown(
-    "CpbtInputBreak",
-    "off",
-    ["off", "non_dated", "dated", "both"],
-    "18. CPBT input break",
-)
-dbutils.widgets.text("TargetCheckpoint", "", "19. Target checkpoint")
-dbutils.widgets.dropdown(
-    "TargetPartitionStrategy",
-    "off",
-    ["off", "coalesce", "repartition"],
-    "20. Target partition strategy",
-)
-dbutils.widgets.text("TargetPartitions", "0", "21. Target partitions")
-dbutils.widgets.text(
-    "TargetPartitionKeys", "", "22. Repartition keys (comma-separated)"
-)
-dbutils.widgets.dropdown(
-    "BusinessOptimization",
-    "off",
-    ["off", "broadcast_entity_partners"],
-    "23. Isolated business optimization",
+    "MissingEntityIdentity", "on", ["off", "on"], "11. Missing identity"
 )
 
 source_path = dbutils.widgets.get("source_path").strip()
@@ -80,62 +38,17 @@ catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
 max_threads = int(dbutils.widgets.get("MaxThreads"))
 shuffle_partitions = int(dbutils.widgets.get("SqlShufflePartitions"))
-parallel_groups = dbutils.widgets.get("ParallelGroups").strip() or "all"
 checkpoint_mode = int(dbutils.widgets.get("CheckpointMode"))
-profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
-plan_checkpoint_threshold = int(
-    dbutils.widgets.get("PlanCheckpointThreshold")
-)
-volume_path = dbutils.widgets.get("VolumePath").strip()
-experiment_id = dbutils.widgets.get("ExperimentID").strip() or "baseline"
-warning_probe_removal = dbutils.widgets.get("WarningProbeRemoval").strip()
 missing_entity_identity = (
     dbutils.widgets.get("MissingEntityIdentity").strip().lower() == "on"
 )
-cpbt_input_break = dbutils.widgets.get("CpbtInputBreak").strip()
-target_checkpoint = dbutils.widgets.get("TargetCheckpoint").strip()
-target_partition_strategy = dbutils.widgets.get(
-    "TargetPartitionStrategy"
-).strip()
-target_partitions = int(dbutils.widgets.get("TargetPartitions"))
-target_partition_keys = dbutils.widgets.get("TargetPartitionKeys").strip()
-business_optimization = dbutils.widgets.get(
-    "BusinessOptimization"
-).strip()
 
 if not 1 <= max_threads <= 4:
     raise ValueError("MaxThreads must be between 1 and 4")
-if checkpoint_mode not in {1, 2, 3, 4, 5}:
-    raise ValueError("CheckpointMode must be one of 1, 2, 3, 4, 5")
-if checkpoint_mode == 3 and not volume_path:
-    raise ValueError("VolumePath is required when CheckpointMode=3")
+if checkpoint_mode not in {1, 2, 4, 5}:
+    raise ValueError("CheckpointMode must be one of 1, 2, 4, 5")
 if shuffle_partitions < 1:
     raise ValueError("SqlShufflePartitions must be >= 1")
-
-active_experiments = [
-    name
-    for name, enabled in (
-        ("shuffle_partitions", shuffle_partitions != 8),
-        ("warning_probe", warning_probe_removal != "off"),
-        ("missing_entity_identity_off", not missing_entity_identity),
-        ("cpbt_input_break", cpbt_input_break != "off"),
-        ("target_partition", target_partition_strategy != "off"),
-        ("business_optimization", business_optimization != "off"),
-    )
-    if enabled
-]
-if len(active_experiments) > 1:
-    raise ValueError(
-        f"Run one experiment at a time; active={active_experiments}"
-    )
-if experiment_id == "baseline" and active_experiments:
-    raise ValueError(
-        "Set a non-baseline ExperimentID for an experimental run"
-    )
-if experiment_id != "baseline" and len(active_experiments) != 1:
-    raise ValueError(
-        "A non-baseline ExperimentID must select exactly one experiment"
-    )
 
 BASELINE = {
     "run_id": 17376,
@@ -159,6 +72,18 @@ ORIGINAL_SPARK_CONFIG = {
 import importlib
 import sys
 import time
+from datetime import datetime
+
+
+def _clock():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def _log(message):
+    print(f"[{_clock()}] {message}", flush=True)
+
+
+PARALLEL_GROUPS = "all"
 
 settings = {
     "source_path": source_path,
@@ -171,13 +96,11 @@ settings = {
     "business_modes": [1, 2, 3],
     "max_threads": max_threads,
     "sql_shuffle_partitions": shuffle_partitions,
-    "parallel_groups": parallel_groups,
+    "parallel_groups": PARALLEL_GROUPS,
     "checkpoint_mode": checkpoint_mode,
     "checkpoint_materialization": (
         "local/deferred" if checkpoint_mode == 5 else "configured by mode"
     ),
-    "profile_plan": profile_plan,
-    "experiment_id": experiment_id,
     "missing_entity_identity": missing_entity_identity,
 }
 display(
@@ -254,27 +177,22 @@ def _run(variant):
         kwargs.update(
             {
                 "MaxThreads": max_threads,
-                "ParallelGroups": parallel_groups,
+                "ParallelGroups": PARALLEL_GROUPS,
                 "CheckpointMode": checkpoint_mode,
-                "ProfilePlan": profile_plan,
-                "PlanCheckpointThreshold": plan_checkpoint_threshold,
-                "ExperimentID": experiment_id,
                 "SqlShufflePartitions": shuffle_partitions,
-                "WarningProbeRemoval": warning_probe_removal,
                 "MissingEntityIdentity": missing_entity_identity,
-                "CpbtInputBreak": cpbt_input_break,
-                "TargetCheckpoint": target_checkpoint,
-                "TargetPartitionStrategy": target_partition_strategy,
-                "TargetPartitions": target_partitions,
-                "TargetPartitionKeys": target_partition_keys,
-                "BusinessOptimization": business_optimization,
             }
         )
-        if volume_path:
-            kwargs["VolumePath"] = volume_path
+    _log(
+        f"RUN START   variant={variant} "
+        f"shuffle={variant_shuffle} "
+        f"checkpoint_mode={'n/a' if is_production else checkpoint_mode} "
+        f"module={runner.__file__}"
+    )
     started = time.time()
     result = runner.run_final_effective_percentages(spark, **kwargs)
     wall = round(time.time() - started, 3)
+    _log(f"RUN DONE    variant={variant} wall={wall:.3f}s")
     fingerprints = capture_outputs(spark, catalog, schema, run_id)
     summary = summarize_outputs(fingerprints)
     profile = runner.get_last_run_profile() if not is_production else {}
@@ -348,6 +266,33 @@ def _run(variant):
         "fingerprints": fingerprints,
         "profile": profile,
     }
+    _log(
+        f"SUMMARY     variant={variant} wall={wall:.3f}s "
+        f"reported={reported} rows={record['rows']} "
+        f"tables={record['tables']} "
+        f"shuffle={profile_effective_shuffle} status={shuffle_status}"
+    )
+    if not is_production:
+        # Checkpoints run in worker threads whose stdout Databricks can drop,
+        # so replay each one from the main thread in chronological order.
+        checkpoints = sorted(
+            profile.get("checkpoint_activity", []),
+            key=lambda row: str(row.get("started_at") or ""),
+        )
+        if checkpoints:
+            _log(f"CHECKPOINTS variant={variant} count={len(checkpoints)}")
+            for row in checkpoints:
+                started_clock = str(row.get("started_at") or "")[11:19]
+                ended_clock = str(row.get("ended_at") or "")[11:19]
+                print(
+                    f"    - {row.get('name'):<28} "
+                    f"stage={row.get('stage'):<16} "
+                    f"backend={row.get('actual_backend'):<6} "
+                    f"materialization={row.get('materialization'):<9} "
+                    f"start={started_clock} end={ended_clock} "
+                    f"elapsed={row.get('elapsed_seconds')}s",
+                    flush=True,
+                )
     return record
 
 
@@ -407,6 +352,15 @@ try:
         "rows": optimized["rows"],
         "tables": optimized["tables"],
     }
+    _log(
+        "FINAL       parity=PASS "
+        f"production={final_comparison['production_wall_seconds']:.3f}s "
+        f"outputV3={final_comparison['optimized_wall_seconds']:.3f}s "
+        f"improvement={final_comparison['improvement_seconds']:.3f}s "
+        f"({final_comparison['improvement_percent']:.2f}%) "
+        f"under_50s={final_comparison['optimized_under_50_seconds']} "
+        f"rows={final_comparison['rows']} tables={final_comparison['tables']}"
+    )
 finally:
     try:
         restore_run_snapshots(spark, catalog, schema, run_id, snapshots)
@@ -439,21 +393,10 @@ for record in (production, optimized):
             "reported_seconds": record["reported_seconds"],
             "rows": record["rows"],
             "tables": record["tables"],
-            "requested_shuffle_partitions": record[
-                "requested_shuffle_partitions"
-            ],
-            "session_shuffle_after": record["session_shuffle_after"],
-            "profile_requested_shuffle": str(
-                record["profile_requested_shuffle"]
-            ),
-            "profile_effective_shuffle": str(
+            "effective_shuffle_partitions": str(
                 record["profile_effective_shuffle"]
             ),
             "shuffle_verified": record["shuffle_verified"],
-            "shuffle_verification_required": record[
-                "shuffle_verification_required"
-            ],
-            "shuffle_status": record["shuffle_status"],
             "baseline_wall_seconds": BASELINE["wall_seconds"],
             "wall_vs_baseline_seconds": round(
                 record["wall_seconds"] - BASELINE["wall_seconds"], 3
@@ -468,27 +411,14 @@ if final_comparison is not None:
             "reported_seconds": final_comparison["improvement_percent"],
             "rows": final_comparison["rows"],
             "tables": final_comparison["tables"],
-            "requested_shuffle_partitions": optimized[
-                "requested_shuffle_partitions"
-            ],
-            "session_shuffle_after": optimized["session_shuffle_after"],
-            "profile_requested_shuffle": str(
-                optimized["profile_requested_shuffle"]
-            ),
-            "profile_effective_shuffle": str(
+            "effective_shuffle_partitions": str(
                 optimized["profile_effective_shuffle"]
             ),
             "shuffle_verified": optimized["shuffle_verified"],
-            "shuffle_verification_required": optimized[
-                "shuffle_verification_required"
-            ],
-            "shuffle_status": optimized["shuffle_status"],
             "baseline_wall_seconds": BASELINE["wall_seconds"],
             "wall_vs_baseline_seconds": round(
                 optimized["wall_seconds"] - BASELINE["wall_seconds"], 3
-            )
-            if optimized is not None
-            else None,
+            ),
         }
     )
 
@@ -498,13 +428,8 @@ RUNTIME_SCHEMA = """
     reported_seconds DOUBLE,
     rows LONG,
     tables LONG,
-    requested_shuffle_partitions INT,
-    session_shuffle_after STRING,
-    profile_requested_shuffle STRING,
-    profile_effective_shuffle STRING,
+    effective_shuffle_partitions STRING,
     shuffle_verified BOOLEAN,
-    shuffle_verification_required BOOLEAN,
-    shuffle_status STRING,
     baseline_wall_seconds DOUBLE,
     wall_vs_baseline_seconds DOUBLE
 """

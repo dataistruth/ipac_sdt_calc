@@ -131,7 +131,7 @@ def decide_checkpoint(name: str) -> CheckpointDecision:
 def initialize_named_checkpoint_policy(
     cfg: dict, checkpoint_mode: int = 1
 ) -> None:
-    """Initialize shared V2 state for one of its existing modes 1..4."""
+    """Initialize shared V2 state for modes 1..5."""
     initialize_checkpoint_V2(cfg, checkpoint_mode=checkpoint_mode)
     cfg["_output_v3_checkpoint_mode"] = int(checkpoint_mode)
     cfg["_checkpoint_v2_activity"] = []

@@ -188,10 +188,7 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"rows": 79', text)
         self.assertIn('"ParallelGroups"', text)
         self.assertIn('"CheckpointMode"', text)
-        self.assertIn('["1", "2", "3", "4", "5"]', text)
-        self.assertIn('"ProfilePlan"', text)
-        self.assertIn('"PlanCheckpointThreshold"', text)
-        self.assertIn('"VolumePath"', text)
+        self.assertIn('["1", "2", "4", "5"]', text)
         self.assertNotIn("[FEP_BENCHMARK]", text)
         self.assertNotIn("def _banner(", text)
         self.assertIn('"local/deferred"', text)
@@ -200,6 +197,12 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("CHECKPOINT_TIMING_SCHEMA", text)
         self.assertIn("display(spark.createDataFrame(runtime_rows", text)
         self.assertIn("display(spark.createDataFrame(compare_rows", text)
+        # Experiment-only widgets were removed from the simple benchmark.
+        self.assertNotIn('"ProfilePlan"', text)
+        self.assertNotIn('"WarningProbeRemoval"', text)
+        self.assertNotIn('"CpbtInputBreak"', text)
+        self.assertNotIn('"TargetCheckpoint"', text)
+        self.assertNotIn('"BusinessOptimization"', text)
 
     def test_runtime_logging_is_present(self):
         text = source("orchestrator.py")
@@ -240,7 +243,6 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("shuffle_verified", notebook)
         self.assertIn('"parallel_wave_critical_path"', orchestrator)
         self.assertIn('"critical_actions"', orchestrator)
-        self.assertIn("Run one experiment at a time", notebook)
         self.assertNotIn("_emit(", notebook)
 
     def test_mode_five_and_shared_state_boundary_are_enabled(self):
@@ -254,6 +256,7 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("sql_shuffle_partitions\", 8", orchestrator)
         self.assertIn("missing_entity_identity\", True", orchestrator)
         self.assertIn("checkpoint_mode != 5", checkpoint)
+        self.assertIn("checkpoint_mode=checkpoint_mode", checkpoint)
         self.assertIn('f"state_lines_m{mode}"', pipeline)
         self.assertIn("frozenset({1, 2, 3, 4, 5})", checkpoint_v2)
         self.assertIn("local_checkpoint_eager = mode != 5", checkpoint_v2)
