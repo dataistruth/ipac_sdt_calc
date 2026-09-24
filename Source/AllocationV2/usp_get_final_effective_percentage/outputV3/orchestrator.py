@@ -17,7 +17,6 @@ from .checkpoint_policy import (
     initialize_named_checkpoint_policy,
     named_checkpoint,
 )
-from .candidate_claim_cpbt import load_candidate_claim_builder
 from .parent import isolated_output_module
 from .pipeline import run_modes_parallel
 from .optimization import PROFILES, resolve_optimization_profile
@@ -279,6 +278,8 @@ def _delegated_run_modes(*args, **kwargs):
         optimization_options.get("checkpoint_bypasses", ())
     )
     if optimization_options.get("candidate_claim_cpbt"):
+        from .candidate_claim_cpbt import load_candidate_claim_builder
+
         cfg["_output_v3_cpbt_builder"] = track_plan(
             _timed(
                 StageName.FUSED_CPBT.value,
