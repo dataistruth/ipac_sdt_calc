@@ -560,6 +560,17 @@ def _run_profiled(fn, *args, **kwargs):
         _ACTIVE_RUN_CFG.reset(cfg_token)
         _ACTIVE_COORDINATOR.reset(coordinator_token)
         _ACTIVE_EVENTS.reset(event_token)
+    print(
+        f"[outputV3 timing] wall={wall:.3f}s "
+        f"threads={max_threads} "
+        f"groups={','.join(sorted(requested_groups)) or 'none'}"
+    )
+    for stage in _LAST_RUN_PROFILE.get("stage_timings", ()):
+        print(
+            f"[outputV3 timing] stage={stage['stage']} "
+            f"elapsed={stage['elapsed_seconds']:.3f}s "
+            f"calls={stage['calls']}"
+        )
     return result
 
 

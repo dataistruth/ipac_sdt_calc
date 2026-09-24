@@ -139,6 +139,13 @@ def _run(variant, pass_number):
         if isinstance(result, dict) and result.get("elapsed_seconds") is not None
         else None
     )
+    if reported is None and profile.get("updated_wall_seconds") is not None:
+        reported = float(profile["updated_wall_seconds"])
+    print(
+        f"[benchmark] pass={pass_number} variant={variant} "
+        f"wall={wall:.3f}s reported={reported} "
+        f"rows={summary['total_rows']} tables={summary['tables_present']}"
+    )
     return {
         "pass": pass_number,
         "variant": variant,
@@ -205,6 +212,18 @@ try:
             )
         if mismatches:
             raise AssertionError(f"Exact fingerprint mismatch: {mismatches[0]}")
+        wall_delta = production["wall_seconds"] - candidate["wall_seconds"]
+        improvement = (
+            100.0 * wall_delta / production["wall_seconds"]
+            if production["wall_seconds"]
+            else 0.0
+        )
+        print(
+            f"[reconcile] PASS {pass_number}: exact fingerprints match; "
+            f"production={production['wall_seconds']:.3f}s "
+            f"outputV3={candidate['wall_seconds']:.3f}s "
+            f"delta={wall_delta:.3f}s improvement={improvement:.2f}%"
+        )
 finally:
     try:
         restore_run_snapshots(spark, catalog, schema, run_id, snapshots)
@@ -232,8 +251,34 @@ summary_rows = [
     }
     for row in records
 ]
-display(spark.createDataFrame(summary_rows).orderBy("pass", "variant"))
-display(spark.createDataFrame(fingerprint_rows).orderBy("pass", "table"))
+SUMMARY_SCHEMA = """
+    pass INT,
+    variant STRING,
+    wall_seconds DOUBLE,
+    reported_seconds DOUBLE,
+    rows LONG,
+    tables LONG,
+    baseline_wall_seconds DOUBLE,
+    baseline_reported_seconds DOUBLE,
+    wall_vs_baseline_seconds DOUBLE
+"""
+FINGERPRINT_SCHEMA = """
+    pass INT,
+    table STRING,
+    exact_match BOOLEAN,
+    production_fingerprint STRING,
+    outputV3_fingerprint STRING
+"""
+display(
+    spark.createDataFrame(summary_rows, SUMMARY_SCHEMA).orderBy(
+        "pass", "variant"
+    )
+)
+display(
+    spark.createDataFrame(fingerprint_rows, FINGERPRINT_SCHEMA).orderBy(
+        "pass", "table"
+    )
+)
 
 stage_rows = [
     {"pass": row["pass"], **item}
@@ -280,16 +325,67 @@ artifact_rows = [
     for item in row["profile"].get("artifact_merges", [])
 ]
 if stage_rows:
-    display(spark.createDataFrame(stage_rows).orderBy("pass", "stage"))
+    display(
+        spark.createDataFrame(
+            stage_rows,
+            "pass INT, stage STRING, calls LONG, elapsed_seconds DOUBLE",
+        ).orderBy("pass", "stage")
+    )
 if checkpoint_rows:
-    display(spark.createDataFrame(checkpoint_rows).orderBy("pass", "name"))
+    display(
+        spark.createDataFrame(
+            checkpoint_rows,
+            """
+            pass INT,
+            name STRING,
+            stage STRING,
+            policy_backend STRING,
+            actual_backend STRING,
+            reason STRING,
+            elapsed_seconds DOUBLE
+            """,
+        ).orderBy("pass", "name")
+    )
 if parallel_rows:
     display(
-        spark.createDataFrame(parallel_rows).orderBy("pass", "group", "task")
+        spark.createDataFrame(
+            parallel_rows,
+            """
+            pass INT,
+            group STRING,
+            task STRING,
+            status STRING,
+            elapsed_seconds DOUBLE,
+            thread STRING
+            """,
+        ).orderBy("pass", "group", "task")
     )
 if strategy_rows:
-    display(spark.createDataFrame(strategy_rows).orderBy("pass"))
+    display(
+        spark.createDataFrame(
+            strategy_rows,
+            """
+            pass INT,
+            execution_strategy STRING,
+            pipeline_strategy STRING,
+            branch_strategy STRING,
+            pass_a_strategy STRING,
+            output_build_strategy STRING,
+            effective_max_threads INT,
+            enabled_parallel_groups STRING
+            """,
+        ).orderBy("pass")
+    )
 if artifact_rows:
     display(
-        spark.createDataFrame(artifact_rows).orderBy("pass", "artifact")
+        spark.createDataFrame(
+            artifact_rows,
+            """
+            pass INT,
+            artifact STRING,
+            producers ARRAY<INT>,
+            winner_mode INT,
+            conflict_check STRING
+            """,
+        ).orderBy("pass", "artifact")
     )

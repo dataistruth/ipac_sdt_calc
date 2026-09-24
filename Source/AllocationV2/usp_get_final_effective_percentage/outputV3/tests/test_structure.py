@@ -187,6 +187,14 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"pipeline_strategy"', text)
         self.assertIn('"artifact_merges"', text)
         self.assertIn('"ParallelGroups"', text)
+        self.assertIn("SUMMARY_SCHEMA", text)
+        self.assertIn("[benchmark] pass=", text)
+        self.assertIn("[reconcile] PASS", text)
+
+    def test_runtime_logging_is_present(self):
+        text = source("orchestrator.py")
+        self.assertIn("[outputV3 timing] wall=", text)
+        self.assertIn("[outputV3 timing] stage=", text)
 
     def test_python_files_parse_without_importing_pyspark(self):
         for path in ROOT.rglob("*.py"):
