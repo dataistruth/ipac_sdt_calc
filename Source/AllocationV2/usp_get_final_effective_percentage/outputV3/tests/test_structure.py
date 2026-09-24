@@ -181,25 +181,21 @@ class OutputV3StructureTests(unittest.TestCase):
             "result.toDF(*result.columns)", source("checkpoint_policy.py")
         )
 
-    def test_benchmark_defaults_to_two_alternating_passes(self):
+    def test_benchmark_runs_one_side_by_side_stdout_report(self):
         text = source("notebook/benchmark_final_effective_percentage.py")
-        self.assertIn('"number_of_runs", "2"', text)
-        self.assertIn('"alternate"', text)
         self.assertIn('"wall_seconds": 181.893', text)
         self.assertIn('"reported_seconds": 172.0', text)
         self.assertIn('"rows": 79', text)
-        self.assertIn('"pipeline_strategy"', text)
-        self.assertIn('"artifact_merges"', text)
         self.assertIn('"ParallelGroups"', text)
         self.assertIn('"CheckpointMode"', text)
         self.assertIn('["1", "2", "3", "4"]', text)
         self.assertIn('"ProfilePlan"', text)
         self.assertIn('"PlanCheckpointThreshold"', text)
         self.assertIn('"VolumePath"', text)
-        self.assertIn("checkpoint_mode INT", text)
-        self.assertIn("SUMMARY_SCHEMA", text)
-        self.assertIn("[benchmark] pass=", text)
-        self.assertIn("[reconcile] PASS", text)
+        self.assertIn('order=["production", "outputV3"]', text)
+        self.assertIn("[FEP_BENCHMARK]", text)
+        self.assertIn('"FINAL_COMPARISON"', text)
+        self.assertNotIn("display(", text)
 
     def test_runtime_logging_is_present(self):
         text = source("orchestrator.py")
@@ -235,8 +231,8 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"parallel_wave_critical_path"', orchestrator)
         self.assertIn('"critical_actions"', orchestrator)
         self.assertIn("Run one experiment at a time", notebook)
-        self.assertIn('"outputV3_control"', notebook)
-        self.assertIn('"promotion_eligible"', notebook)
+        self.assertIn('"OUTPUTV3_PROFILE"', notebook)
+        self.assertIn('"CRITICAL_ACTION"', notebook)
 
     def test_warning_probe_experiments_are_output_v3_local(self):
         text = source("orchestrator.py")

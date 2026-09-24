@@ -1,10 +1,10 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Final Effective Percentage: production vs outputV3
+# MAGIC # Final Effective Percentage: one side-by-side run
 # MAGIC
-# MAGIC Alternating two-pass correctness benchmark. The recorded production
-# MAGIC contract is 181.893s wall, 172.0s reported, 79 rows, and three tables.
-# MAGIC Runtime acceptance must be based on this notebook, not local tests.
+# MAGIC Runs production once and outputV3 once, verifies exact output parity,
+# MAGIC restores the RunID snapshots, and prints all diagnostics to stdout as
+# MAGIC copyable JSON lines. No table output is produced.
 
 # COMMAND ----------
 
@@ -14,73 +14,64 @@ dbutils.widgets.text(
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
     "1. Source root",
 )
-dbutils.widgets.text("number_of_runs", "2", "2. Number of passes")
-dbutils.widgets.dropdown(
-    "ExecutionOrder",
-    "alternate",
-    ["alternate", "production_first", "outputV3_first"],
-    "3. Execution order",
-)
-dbutils.widgets.text("EntityID", "4137", "4. EntityID")
-dbutils.widgets.text("ClientID", "15348", "5. ClientID")
-dbutils.widgets.text("TaxPeriodID", "1", "6. TaxPeriodID")
-dbutils.widgets.text("RunID", "17376", "7. RunID")
-dbutils.widgets.text("CatalogName", "QA7", "8. Catalog")
-dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "9. Schema")
-dbutils.widgets.text("MaxThreads", "4", "10. Max threads")
-dbutils.widgets.text("SqlShufflePartitions", "32", "11. Shuffle partitions")
+dbutils.widgets.text("EntityID", "4137", "2. EntityID")
+dbutils.widgets.text("ClientID", "15348", "3. ClientID")
+dbutils.widgets.text("TaxPeriodID", "1", "4. TaxPeriodID")
+dbutils.widgets.text("RunID", "17376", "5. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
+dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
+dbutils.widgets.text("MaxThreads", "4", "8. Max threads")
+dbutils.widgets.text("SqlShufflePartitions", "32", "9. Shuffle partitions")
 dbutils.widgets.text(
     "ParallelGroups",
     "all",
-    "12. Parallel groups (all, none, or comma-separated)",
+    "10. Parallel groups (all, none, or comma-separated)",
 )
 dbutils.widgets.dropdown(
-    "CheckpointMode", "4", ["1", "2", "3", "4"], "13. Checkpoint mode"
+    "CheckpointMode", "4", ["1", "2", "3", "4"], "11. Checkpoint mode"
 )
 dbutils.widgets.dropdown(
-    "ProfilePlan", "off", ["off", "on"], "14. Profile Spark plans"
+    "ProfilePlan", "off", ["off", "on"], "12. Profile Spark plans"
 )
 dbutils.widgets.text(
-    "PlanCheckpointThreshold", "30", "15. Plan checkpoint threshold"
+    "PlanCheckpointThreshold", "30", "13. Plan checkpoint threshold"
 )
-dbutils.widgets.text("VolumePath", "", "16. Volume path (required for mode 3)")
-dbutils.widgets.text("ExperimentID", "baseline", "17. Experiment identifier")
+dbutils.widgets.text("VolumePath", "", "14. Volume path (mode 3 only)")
+dbutils.widgets.text("ExperimentID", "baseline", "15. Experiment identifier")
 dbutils.widgets.dropdown(
     "WarningProbeRemoval",
     "off",
     ["off", "line_items", "quarters", "lookthrough"],
-    "18. Remove one warning-only probe",
+    "16. Remove one warning-only probe",
 )
 dbutils.widgets.dropdown(
-    "MissingEntityIdentity", "off", ["off", "on"], "19. Missing identity"
+    "MissingEntityIdentity", "off", ["off", "on"], "17. Missing identity"
 )
 dbutils.widgets.dropdown(
     "CpbtInputBreak",
     "off",
     ["off", "non_dated", "dated", "both"],
-    "20. CPBT input break",
+    "18. CPBT input break",
 )
-dbutils.widgets.text("TargetCheckpoint", "", "21. Target checkpoint")
+dbutils.widgets.text("TargetCheckpoint", "", "19. Target checkpoint")
 dbutils.widgets.dropdown(
     "TargetPartitionStrategy",
     "off",
     ["off", "coalesce", "repartition"],
-    "22. Target partition strategy",
+    "20. Target partition strategy",
 )
-dbutils.widgets.text("TargetPartitions", "0", "23. Target partitions")
+dbutils.widgets.text("TargetPartitions", "0", "21. Target partitions")
 dbutils.widgets.text(
-    "TargetPartitionKeys", "", "24. Repartition keys (comma-separated)"
+    "TargetPartitionKeys", "", "22. Repartition keys (comma-separated)"
 )
 dbutils.widgets.dropdown(
     "BusinessOptimization",
     "off",
     ["off", "broadcast_entity_partners"],
-    "25. Isolated business optimization",
+    "23. Isolated business optimization",
 )
 
 source_path = dbutils.widgets.get("source_path").strip()
-number_of_runs = int(dbutils.widgets.get("number_of_runs"))
-execution_order = dbutils.widgets.get("ExecutionOrder").strip()
 entity_id = int(dbutils.widgets.get("EntityID"))
 client_id = int(dbutils.widgets.get("ClientID"))
 tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
@@ -88,7 +79,7 @@ run_id = int(dbutils.widgets.get("RunID"))
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
 max_threads = int(dbutils.widgets.get("MaxThreads"))
-shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
+shuffle_partitions = int(dbutils.widgets.get("SqlShufflePartitions"))
 parallel_groups = dbutils.widgets.get("ParallelGroups").strip() or "all"
 checkpoint_mode = int(dbutils.widgets.get("CheckpointMode"))
 profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
@@ -112,24 +103,19 @@ business_optimization = dbutils.widgets.get(
     "BusinessOptimization"
 ).strip()
 
-if number_of_runs < 1:
-    raise ValueError("number_of_runs must be >= 1")
 if not 1 <= max_threads <= 4:
     raise ValueError("MaxThreads must be between 1 and 4")
 if checkpoint_mode not in {1, 2, 3, 4}:
     raise ValueError("CheckpointMode must be one of 1, 2, 3, 4")
-if checkpoint_mode != 4:
-    raise ValueError("Deep baseline experiments require CheckpointMode=4")
 if checkpoint_mode == 3 and not volume_path:
     raise ValueError("VolumePath is required when CheckpointMode=3")
-if max_threads != 4 or parallel_groups != "all":
-    raise ValueError(
-        "Deep baseline experiments require MaxThreads=4 and ParallelGroups=all"
-    )
+if shuffle_partitions < 1:
+    raise ValueError("SqlShufflePartitions must be >= 1")
+
 active_experiments = [
     name
     for name, enabled in (
-        ("shuffle_partitions", int(shuffle_partitions or "32") != 32),
+        ("shuffle_partitions", shuffle_partitions != 32),
         ("warning_probe", warning_probe_removal != "off"),
         ("missing_entity_identity", missing_entity_identity),
         ("cpbt_input_break", cpbt_input_break != "off"),
@@ -171,9 +157,56 @@ ORIGINAL_SPARK_CONFIG = {
 # COMMAND ----------
 
 import importlib
-import statistics
+import json
 import sys
 import time
+from datetime import datetime
+
+
+def _emit(section, **values):
+    print(
+        f"[FEP_BENCHMARK][{section}] "
+        + json.dumps(values, default=str, sort_keys=True),
+        flush=True,
+    )
+
+
+def _emit_rows(section, rows, **common):
+    for index, row in enumerate(rows, start=1):
+        _emit(section, index=index, **common, **dict(row))
+
+
+_emit(
+    "SETTINGS",
+    timestamp=datetime.now().isoformat(),
+    source_path=source_path,
+    entity_id=entity_id,
+    client_id=client_id,
+    tax_period_id=tax_period_id,
+    run_id=run_id,
+    catalog=catalog,
+    schema=schema,
+    mode=0,
+    business_modes=[1, 2, 3],
+    max_threads=max_threads,
+    sql_shuffle_partitions=shuffle_partitions,
+    parallel_groups=parallel_groups,
+    checkpoint_mode=checkpoint_mode,
+    profile_plan=profile_plan,
+    plan_checkpoint_threshold=plan_checkpoint_threshold,
+    volume_path=volume_path or None,
+    experiment_id=experiment_id,
+    active_experiments=active_experiments,
+    warning_probe_removal=warning_probe_removal,
+    missing_entity_identity=missing_entity_identity,
+    cpbt_input_break=cpbt_input_break,
+    target_checkpoint=target_checkpoint or None,
+    target_partition_strategy=target_partition_strategy,
+    target_partitions=target_partitions,
+    target_partition_keys=target_partition_keys or None,
+    business_optimization=business_optimization,
+    original_spark_config=ORIGINAL_SPARK_CONFIG,
+)
 
 sys.path[:] = [entry for entry in sys.path if entry != source_path]
 sys.path.insert(0, source_path)
@@ -194,7 +227,7 @@ def _evict():
 def _fresh(module_name):
     _evict()
     module = importlib.import_module(module_name)
-    print(f"[import] {module.__file__}")
+    _emit("IMPORT", module=module_name, path=module.__file__)
     return module
 
 
@@ -207,32 +240,78 @@ drop_run_snapshots = reconcile.drop_run_snapshots
 purge_run = reconcile.purge_run
 restore_run_snapshots = reconcile.restore_run_snapshots
 summarize_outputs = reconcile.summarize_outputs
-build_plan_profile_display = importlib.import_module(
-    "AllocationV2.plan_profiler"
-).build_plan_profile_display
 
 # COMMAND ----------
 
 
-def _run(variant, pass_number):
-    variant_shuffle = (
-        4
-        if variant == "production"
-        else (
-            32
-            if variant == "outputV3_control"
-            else int(shuffle_partitions or "32")
-        )
+def _print_output_v3_profile(profile):
+    effective_config = profile.get("effective_spark_config", {})
+    performance = profile.get("performance_summary", {})
+    _emit(
+        "OUTPUTV3_PROFILE",
+        updated_wall_seconds=profile.get("updated_wall_seconds"),
+        experiment_id=profile.get("experiment_id"),
+        experiment_settings=profile.get("experiment_settings"),
+        checkpoint_mode=profile.get("checkpoint_mode"),
+        checkpoint_policy=profile.get("checkpoint_policy"),
+        profile_plan=profile.get("profile_plan"),
+        plan_checkpoint_threshold=profile.get("plan_checkpoint_threshold"),
+        requested_shuffle_partitions=profile.get(
+            "requested_shuffle_partitions"
+        ),
+        effective_spark_config=effective_config,
+        effective_max_threads=profile.get("effective_max_threads"),
+        enabled_parallel_groups=profile.get("enabled_parallel_groups"),
+        execution_strategy=profile.get("execution_strategy"),
+        pipeline_strategy=profile.get("pipeline_strategy"),
+        branch_strategy=profile.get("branch_strategy"),
+        pass_a_strategy=profile.get("pass_a_strategy"),
+        output_build_strategy=profile.get("output_build_strategy"),
     )
-    spark.conf.set("spark.sql.shuffle.partitions", str(variant_shuffle))
-    if variant == "production":
+    _emit_rows("STAGE", profile.get("stage_timings", []))
+    _emit_rows("OPERATION", profile.get("operation_timings", []))
+    _emit_rows("CHECKPOINT", profile.get("checkpoint_activity", []))
+    _emit_rows("PARALLEL_TASK", profile.get("parallel_activity", []))
+    _emit_rows("ARTIFACT_MERGE", profile.get("artifact_merges", []))
+    _emit(
+        "PERFORMANCE",
+        **{
+            key: value
+            for key, value in performance.items()
+            if key not in {
+                "critical_actions",
+                "parallel_wave_critical_path",
+            }
+        },
+    )
+    _emit_rows(
+        "CRITICAL_ACTION", performance.get("critical_actions", [])
+    )
+    _emit_rows(
+        "PARALLEL_WAVE",
+        performance.get("parallel_wave_critical_path", []),
+    )
+    _emit_rows("PLAN_BUILDER", profile.get("plan_profile", []))
+    _emit_rows(
+        "PLAN_CHECKPOINT", profile.get("checkpoint_plan_profile", [])
+    )
+    _emit_rows("PLAN_ACTION", profile.get("action_profile", []))
+
+
+def _run(variant):
+    is_production = variant == "production"
+    variant_shuffle = 4 if is_production else shuffle_partitions
+    spark.conf.set(
+        "spark.sql.shuffle.partitions", str(variant_shuffle)
+    )
+    if is_production:
         spark.conf.set(
             "spark.sql.adaptive.advisoryPartitionSizeInBytes",
             ORIGINAL_SPARK_CONFIG[
                 "spark.sql.adaptive.advisoryPartitionSizeInBytes"
             ],
         )
-    runner = _fresh(PRODUCTION if variant == "production" else OUTPUT_V3)
+    runner = _fresh(PRODUCTION if is_production else OUTPUT_V3)
     purge_run(spark, catalog, schema, run_id)
     kwargs = {
         "Mode": 0,
@@ -243,59 +322,58 @@ def _run(variant, pass_number):
         "CatalogName": catalog,
         "SchemaName": schema,
         "ResultType": "deltalake",
-        "ExecutionID": (
-            f"fep-v3-ab-{pass_number}-"
-            f"{variant.replace(':', '-')}"
-        ),
+        "ExecutionID": f"fep-v3-side-by-side-{variant}",
     }
-    if variant != "production":
-        kwargs["MaxThreads"] = max_threads
-        kwargs["ParallelGroups"] = parallel_groups
-        kwargs["CheckpointMode"] = checkpoint_mode
-        kwargs["ProfilePlan"] = profile_plan
-        kwargs["PlanCheckpointThreshold"] = plan_checkpoint_threshold
-        if variant == "outputV3_control":
-            kwargs["ExperimentID"] = "baseline-control"
-            kwargs["SqlShufflePartitions"] = 32
-        else:
-            kwargs["ExperimentID"] = experiment_id
-            kwargs["SqlShufflePartitions"] = int(
-                shuffle_partitions or "32"
-            )
-            kwargs["WarningProbeRemoval"] = warning_probe_removal
-            kwargs["MissingEntityIdentity"] = missing_entity_identity
-            kwargs["CpbtInputBreak"] = cpbt_input_break
-            kwargs["TargetCheckpoint"] = target_checkpoint
-            kwargs["TargetPartitionStrategy"] = target_partition_strategy
-            kwargs["TargetPartitions"] = target_partitions
-            kwargs["TargetPartitionKeys"] = target_partition_keys
-            kwargs["BusinessOptimization"] = business_optimization
+    if not is_production:
+        kwargs.update(
+            {
+                "MaxThreads": max_threads,
+                "ParallelGroups": parallel_groups,
+                "CheckpointMode": checkpoint_mode,
+                "ProfilePlan": profile_plan,
+                "PlanCheckpointThreshold": plan_checkpoint_threshold,
+                "ExperimentID": experiment_id,
+                "SqlShufflePartitions": shuffle_partitions,
+                "WarningProbeRemoval": warning_probe_removal,
+                "MissingEntityIdentity": missing_entity_identity,
+                "CpbtInputBreak": cpbt_input_break,
+                "TargetCheckpoint": target_checkpoint,
+                "TargetPartitionStrategy": target_partition_strategy,
+                "TargetPartitions": target_partitions,
+                "TargetPartitionKeys": target_partition_keys,
+                "BusinessOptimization": business_optimization,
+            }
+        )
         if volume_path:
             kwargs["VolumePath"] = volume_path
+    _emit(
+        "RUN_START",
+        timestamp=datetime.now().isoformat(),
+        variant=variant,
+        spark_shuffle_partitions=spark.conf.get(
+            "spark.sql.shuffle.partitions"
+        ),
+        spark_aqe_enabled=spark.conf.get("spark.sql.adaptive.enabled"),
+        spark_advisory_partition_bytes=spark.conf.get(
+            "spark.sql.adaptive.advisoryPartitionSizeInBytes"
+        ),
+        arguments=kwargs,
+    )
     started = time.time()
     result = runner.run_final_effective_percentages(spark, **kwargs)
     wall = round(time.time() - started, 3)
     fingerprints = capture_outputs(spark, catalog, schema, run_id)
     summary = summarize_outputs(fingerprints)
-    profile = (
-        runner.get_last_run_profile()
-        if variant != "production"
-        else {}
-    )
+    profile = runner.get_last_run_profile() if not is_production else {}
     reported = (
         float(result["elapsed_seconds"])
-        if isinstance(result, dict) and result.get("elapsed_seconds") is not None
+        if isinstance(result, dict)
+        and result.get("elapsed_seconds") is not None
         else None
     )
     if reported is None and profile.get("updated_wall_seconds") is not None:
         reported = float(profile["updated_wall_seconds"])
-    print(
-        f"[benchmark] pass={pass_number} variant={variant} "
-        f"wall={wall:.3f}s reported={reported} "
-        f"rows={summary['total_rows']} tables={summary['tables_present']}"
-    )
-    return {
-        "pass": pass_number,
+    record = {
         "variant": variant,
         "wall_seconds": wall,
         "reported_seconds": reported,
@@ -304,447 +382,104 @@ def _run(variant, pass_number):
         "fingerprints": fingerprints,
         "profile": profile,
     }
-
-
-def _order(pass_number):
-    variants = (
-        ("production", "outputV3")
-        if experiment_id == "baseline"
-        else ("production", "outputV3_control", "outputV3_candidate")
+    _emit(
+        "RUN_DONE",
+        timestamp=datetime.now().isoformat(),
+        variant=variant,
+        wall_seconds=wall,
+        reported_seconds=reported,
+        rows=record["rows"],
+        tables=record["tables"],
     )
-    if execution_order == "production_first":
-        return variants
-    if execution_order == "outputV3_first":
-        return tuple(reversed(variants))
-    return variants if pass_number % 2 else tuple(reversed(variants))
+    for table, fingerprint in sorted(fingerprints.items()):
+        _emit(
+            "FINGERPRINT",
+            variant=variant,
+            table=table,
+            fingerprint=fingerprint,
+        )
+    if not is_production:
+        _print_output_v3_profile(profile)
+    return record
 
 
-records = []
-fingerprint_rows = []
+_emit(
+    "BENCHMARK_START",
+    timestamp=datetime.now().isoformat(),
+    order=["production", "outputV3"],
+)
 snapshots = create_run_snapshots(spark, catalog, schema, run_id)
+_emit("SNAPSHOT_CREATED", snapshots=snapshots)
 try:
-    for pass_number in range(1, number_of_runs + 1):
-        order = _order(pass_number)
-        print(f"[benchmark] pass={pass_number} order={' -> '.join(order)}")
-        by_variant = {
-            variant: _run(variant, pass_number) for variant in order
-        }
-        records.extend(by_variant.values())
-        production = by_variant["production"]
-        if production["rows"] != BASELINE["rows"]:
-            raise AssertionError(
-                f"Production rows changed: expected 79, got {production['rows']}"
-            )
-        if production["tables"] != BASELINE["tables"]:
-            raise AssertionError(
-                "Production must write exactly three output tables"
-            )
-        for candidate_name, candidate in by_variant.items():
-            if candidate_name == "production":
-                continue
-            mismatches = compare_outputs(
-                production["fingerprints"], candidate["fingerprints"]
-            )
-            for table in reconcile.OUTPUT_TABLES:
-                fingerprint_rows.append(
-                    {
-                        "pass": pass_number,
-                        "variant": candidate_name,
-                        "table": table,
-                        "exact_match": not any(
-                            item["table"] == table for item in mismatches
-                        ),
-                        "production_fingerprint": str(
-                            production["fingerprints"].get(table)
-                        ),
-                        "outputV3_fingerprint": str(
-                            candidate["fingerprints"].get(table)
-                        ),
-                    }
-                )
-            if mismatches:
-                raise AssertionError(
-                    f"{candidate_name} exact fingerprint mismatch: "
-                    f"{mismatches[0]}"
-                )
-            wall_delta = (
-                production["wall_seconds"] - candidate["wall_seconds"]
-            )
-            improvement = (
-                100.0 * wall_delta / production["wall_seconds"]
-                if production["wall_seconds"]
-                else 0.0
-            )
-            print(
-                f"[reconcile] PASS {pass_number}: {candidate_name} exact "
-                f"fingerprints match; "
-                f"production={production['wall_seconds']:.3f}s "
-                f"candidate={candidate['wall_seconds']:.3f}s "
-                f"delta={wall_delta:.3f}s improvement={improvement:.2f}%"
-            )
+    production = _run("production")
+    optimized = _run("outputV3")
+
+    if production["rows"] != BASELINE["rows"]:
+        raise AssertionError(
+            f"Production rows changed: expected 79, got {production['rows']}"
+        )
+    if production["tables"] != BASELINE["tables"]:
+        raise AssertionError(
+            "Production must write exactly three output tables"
+        )
+    mismatches = compare_outputs(
+        production["fingerprints"], optimized["fingerprints"]
+    )
+    for table in reconcile.OUTPUT_TABLES:
+        table_mismatches = [
+            item for item in mismatches if item["table"] == table
+        ]
+        _emit(
+            "RECONCILE_TABLE",
+            table=table,
+            exact_match=not table_mismatches,
+            mismatches=table_mismatches,
+        )
+    if mismatches:
+        raise AssertionError(f"Exact fingerprint mismatch: {mismatches[0]}")
+
+    wall_delta = (
+        production["wall_seconds"] - optimized["wall_seconds"]
+    )
+    improvement = (
+        100.0 * wall_delta / production["wall_seconds"]
+        if production["wall_seconds"]
+        else 0.0
+    )
+    _emit(
+        "FINAL_COMPARISON",
+        parity="PASS",
+        production_wall_seconds=production["wall_seconds"],
+        production_reported_seconds=production["reported_seconds"],
+        optimized_wall_seconds=optimized["wall_seconds"],
+        optimized_reported_seconds=optimized["reported_seconds"],
+        improvement_seconds=round(wall_delta, 3),
+        improvement_percent=round(improvement, 2),
+        optimized_under_50_seconds=optimized["wall_seconds"] < 50.0,
+        optimized_under_55_seconds=optimized["wall_seconds"] <= 55.0,
+        optimized_under_80_seconds=optimized["wall_seconds"] <= 80.0,
+        rows=optimized["rows"],
+        tables=optimized["tables"],
+    )
 finally:
     try:
         restore_run_snapshots(spark, catalog, schema, run_id, snapshots)
-    except Exception:
-        print(f"[restore] failed; retained snapshots={snapshots}")
+        _emit("SNAPSHOT_RESTORED", snapshots=snapshots)
+    except Exception as exc:
+        _emit(
+            "SNAPSHOT_RESTORE_FAILED",
+            snapshots=snapshots,
+            error=f"{type(exc).__name__}: {exc}",
+        )
         raise
     else:
         drop_run_snapshots(spark, catalog, schema, snapshots)
+        _emit("SNAPSHOT_DROPPED", snapshots=snapshots)
     finally:
         for key, value in ORIGINAL_SPARK_CONFIG.items():
             spark.conf.set(key, value)
-
-# COMMAND ----------
-
-acceptance = None
-if experiment_id != "baseline":
-    control_by_pass = {
-        row["pass"]: row
-        for row in records
-        if row["variant"] == "outputV3_control"
-    }
-    candidates = [
-        row for row in records
-        if row["variant"] == "outputV3_candidate"
-    ]
-    paired_improvements = [
-        control_by_pass[row["pass"]]["wall_seconds"] - row["wall_seconds"]
-        for row in candidates
-    ]
-    candidate_walls = [row["wall_seconds"] for row in candidates]
-    control_walls = [
-        control_by_pass[row["pass"]]["wall_seconds"] for row in candidates
-    ]
-    fused_cpbt = [
-        next(
-            (
-                item["elapsed_seconds"]
-                for item in row["profile"].get("stage_timings", [])
-                if item["stage"] == "fused_cpbt"
-            ),
-            0.0,
+        _emit(
+            "BENCHMARK_DONE",
+            timestamp=datetime.now().isoformat(),
+            restored_spark_config=ORIGINAL_SPARK_CONFIG,
         )
-        for row in candidates
-    ]
-    median_candidate = statistics.median(candidate_walls)
-    median_control = statistics.median(control_walls)
-    median_gain = statistics.median(paired_improvements)
-    paired_gate = (
-        not profile_plan
-        and len(candidates) >= 2
-        and median_gain >= 3.0
-        and median_control > 0
-        and median_gain / median_control >= 0.05
-        and max(candidate_walls) <= 80.0
-        and max(fused_cpbt) <= 20.0
-    )
-    final_gate = (
-        len(candidates) >= 5
-        and median_candidate < 50.0
-        and max(candidate_walls) <= 55.0
-    )
-    acceptance = {
-        "experiment_id": experiment_id,
-        "paired_runs": len(candidates),
-        "median_control_seconds": round(median_control, 3),
-        "median_candidate_seconds": round(median_candidate, 3),
-        "median_gain_seconds": round(median_gain, 3),
-        "profile_plan": profile_plan,
-        "paired_improvement_gate": paired_gate,
-        "final_sub_50_gate": final_gate,
-        "promotion_eligible": paired_gate and final_gate,
-    }
-    print(f"[acceptance] {acceptance}")
-
-summary_rows = [
-    {
-        "pass": row["pass"],
-        "variant": row["variant"],
-        "wall_seconds": row["wall_seconds"],
-        "reported_seconds": row["reported_seconds"],
-        "rows": row["rows"],
-        "tables": row["tables"],
-        "baseline_wall_seconds": BASELINE["wall_seconds"],
-        "baseline_reported_seconds": BASELINE["reported_seconds"],
-        "wall_vs_baseline_seconds": round(
-            row["wall_seconds"] - BASELINE["wall_seconds"], 3
-        ),
-    }
-    for row in records
-]
-SUMMARY_SCHEMA = """
-    pass INT,
-    variant STRING,
-    wall_seconds DOUBLE,
-    reported_seconds DOUBLE,
-    rows LONG,
-    tables LONG,
-    baseline_wall_seconds DOUBLE,
-    baseline_reported_seconds DOUBLE,
-    wall_vs_baseline_seconds DOUBLE
-"""
-FINGERPRINT_SCHEMA = """
-    pass INT,
-    variant STRING,
-    table STRING,
-    exact_match BOOLEAN,
-    production_fingerprint STRING,
-    outputV3_fingerprint STRING
-"""
-display(
-    spark.createDataFrame(summary_rows, SUMMARY_SCHEMA).orderBy(
-        "pass", "variant"
-    )
-)
-display(
-    spark.createDataFrame(fingerprint_rows, FINGERPRINT_SCHEMA).orderBy(
-        "pass", "variant", "table"
-    )
-)
-
-stage_rows = [
-    {"pass": row["pass"], "variant": row["variant"], **item}
-    for row in records
-    if row["variant"] != "production"
-    for item in row["profile"].get("stage_timings", [])
-]
-checkpoint_rows = [
-    {"pass": row["pass"], "variant": row["variant"], **item}
-    for row in records
-    if row["variant"] != "production"
-    for item in row["profile"].get("checkpoint_activity", [])
-]
-parallel_rows = [
-    {"pass": row["pass"], "variant": row["variant"], **item}
-    for row in records
-    if row["variant"] != "production"
-    for item in row["profile"].get("parallel_activity", [])
-]
-strategy_rows = [
-    {
-        "pass": row["pass"],
-        "variant": row["variant"],
-        "execution_strategy": row["profile"].get("execution_strategy"),
-        "pipeline_strategy": row["profile"].get("pipeline_strategy"),
-        "branch_strategy": row["profile"].get("branch_strategy"),
-        "pass_a_strategy": row["profile"].get("pass_a_strategy"),
-        "output_build_strategy": row["profile"].get(
-            "output_build_strategy"
-        ),
-        "effective_max_threads": row["profile"].get(
-            "effective_max_threads"
-        ),
-        "enabled_parallel_groups": ",".join(
-            row["profile"].get("enabled_parallel_groups", [])
-        ),
-    }
-    for row in records
-    if row["variant"] != "production"
-]
-artifact_rows = [
-    {"pass": row["pass"], "variant": row["variant"], **item}
-    for row in records
-    if row["variant"] != "production"
-    for item in row["profile"].get("artifact_merges", [])
-]
-performance_rows = [
-    {
-        "pass": row["pass"],
-        "variant": row["variant"],
-        **{
-            key: value
-            for key, value in row["profile"].get(
-                "performance_summary", {}
-            ).items()
-            if key not in {
-                "parallel_group_critical_seconds",
-                "parallel_wave_critical_path",
-                "critical_actions",
-            }
-        },
-    }
-    for row in records
-    if row["variant"] != "production"
-]
-critical_rows = [
-    {"pass": row["pass"], "variant": row["variant"], **item}
-    for row in records
-    if row["variant"] != "production"
-    for item in row["profile"].get("performance_summary", {}).get(
-        "critical_actions", []
-    )
-]
-wave_rows = [
-    {
-        "pass": row["pass"],
-        "variant": row["variant"],
-        **item,
-        "groups": ",".join(item.get("groups", [])),
-        "tasks": ",".join(item.get("tasks", [])),
-    }
-    for row in records
-    if row["variant"] != "production"
-    for item in row["profile"].get("performance_summary", {}).get(
-        "parallel_wave_critical_path", []
-    )
-]
-config_rows = [
-    {
-        "pass": row["pass"],
-        "variant": row["variant"],
-        "experiment_id": row["profile"].get("experiment_id"),
-        "shuffle_partitions": row["profile"].get(
-            "effective_spark_config", {}
-        ).get("spark.sql.shuffle.partitions"),
-        "aqe_enabled": row["profile"].get(
-            "effective_spark_config", {}
-        ).get("spark.sql.adaptive.enabled"),
-        "advisory_partition_bytes": row["profile"].get(
-            "effective_spark_config", {}
-        ).get("spark.sql.adaptive.advisoryPartitionSizeInBytes"),
-    }
-    for row in records
-    if row["variant"] != "production"
-]
-if stage_rows:
-    display(
-        spark.createDataFrame(
-            stage_rows,
-            "pass INT, variant STRING, stage STRING, calls LONG, elapsed_seconds DOUBLE",
-        ).orderBy("pass", "variant", "stage")
-    )
-if checkpoint_rows:
-    display(
-        spark.createDataFrame(
-            checkpoint_rows,
-            """
-            pass INT,
-            variant STRING,
-            name STRING,
-            stage STRING,
-            checkpoint_mode INT,
-            policy_backend STRING,
-            actual_backend STRING,
-            reason STRING,
-            elapsed_seconds DOUBLE,
-            target_partition_applied BOOLEAN,
-            target_partition_strategy STRING,
-            target_partitions INT,
-            target_partition_keys ARRAY<STRING>,
-            incoming_plan_nodes INT,
-            incoming_plan_depth INT,
-            incoming_partitions INT
-            """,
-        ).orderBy("pass", "variant", "name")
-    )
-if parallel_rows:
-    display(
-        spark.createDataFrame(
-            parallel_rows,
-            """
-            pass INT,
-            variant STRING,
-            wave INT,
-            group STRING,
-            task STRING,
-            status STRING,
-            elapsed_seconds DOUBLE,
-            thread STRING
-            """,
-        ).orderBy("pass", "variant", "group", "task")
-    )
-if strategy_rows:
-    display(
-        spark.createDataFrame(
-            strategy_rows,
-            """
-            pass INT,
-            variant STRING,
-            execution_strategy STRING,
-            pipeline_strategy STRING,
-            branch_strategy STRING,
-            pass_a_strategy STRING,
-            output_build_strategy STRING,
-            effective_max_threads INT,
-            enabled_parallel_groups STRING
-            """,
-        ).orderBy("pass", "variant")
-    )
-if artifact_rows:
-    display(
-        spark.createDataFrame(
-            artifact_rows,
-            """
-            pass INT,
-            variant STRING,
-            artifact STRING,
-            producers ARRAY<INT>,
-            winner_mode INT,
-            conflict_check STRING
-            """,
-        ).orderBy("pass", "variant", "artifact")
-    )
-if performance_rows:
-    display(
-        spark.createDataFrame(
-            performance_rows,
-            """
-            pass INT,
-            variant STRING,
-            target_wall_seconds DOUBLE,
-            wall_seconds DOUBLE,
-            seconds_over_target DOUBLE,
-            checkpoint_action_seconds DOUBLE,
-            explicit_action_seconds DOUBLE,
-            checkpoint_count LONG,
-            explicit_action_count LONG,
-            parallel_wave_total_seconds DOUBLE
-            """,
-        ).orderBy("pass", "variant")
-    )
-if critical_rows:
-    display(
-        spark.createDataFrame(
-            critical_rows,
-            """
-            pass INT, variant STRING, kind STRING, name STRING,
-            stage STRING, elapsed_seconds DOUBLE,
-            incoming_plan_nodes INT, incoming_plan_depth INT,
-            incoming_partitions INT
-            """,
-        ).orderBy("pass", "variant", "elapsed_seconds", ascending=False)
-    )
-if wave_rows:
-    display(
-        spark.createDataFrame(
-            wave_rows,
-            """
-            pass INT, variant STRING, wave INT, elapsed_seconds DOUBLE,
-            groups STRING, tasks STRING
-            """,
-        ).orderBy("pass", "variant", "wave")
-    )
-if config_rows:
-    display(spark.createDataFrame(config_rows).orderBy("pass", "variant"))
-if acceptance is not None:
-    display(spark.createDataFrame([acceptance]))
-
-for row in records:
-    if row["variant"] == "production":
-        continue
-    for label, key, kind in (
-        ("builder", "plan_profile", "builder"),
-        ("checkpoint", "checkpoint_plan_profile", "checkpoint"),
-        ("action", "action_profile", "action"),
-    ):
-        plan_rows = row["profile"].get(key, [])
-        if plan_rows:
-            print(f"[plan profile] pass={row['pass']} kind={label}")
-            display(
-                build_plan_profile_display(
-                    spark,
-                    plan_rows,
-                    threshold=plan_checkpoint_threshold,
-                    kind=kind,
-                )
-            )
