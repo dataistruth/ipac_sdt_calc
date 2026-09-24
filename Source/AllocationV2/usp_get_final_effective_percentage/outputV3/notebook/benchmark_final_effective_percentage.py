@@ -21,9 +21,9 @@ dbutils.widgets.text("RunID", "17376", "5. RunID")
 dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
 dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.text("MaxThreads", "4", "8. Max threads")
-dbutils.widgets.text("SqlShufflePartitions", "8", "9. Shuffle partitions")
+dbutils.widgets.text("SqlShufflePartitions", "32", "9. Shuffle partitions")
 dbutils.widgets.dropdown(
-    "CheckpointMode", "5", ["1", "2", "4", "5"], "10. Checkpoint mode"
+    "CheckpointMode", "4", ["1", "2", "4", "5"], "10. Checkpoint mode"
 )
 dbutils.widgets.dropdown(
     "MissingEntityIdentity", "on", ["off", "on"], "11. Missing identity"

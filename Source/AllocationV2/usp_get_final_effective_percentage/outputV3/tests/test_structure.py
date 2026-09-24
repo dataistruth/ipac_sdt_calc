@@ -260,15 +260,15 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"critical_actions"', orchestrator)
         self.assertNotIn("_emit(", notebook)
 
-    def test_mode_five_and_shared_state_boundary_are_enabled(self):
+    def test_promoted_baseline_and_shared_state_boundary_are_enabled(self):
         orchestrator = source("orchestrator.py")
         pipeline = source("pipeline.py")
         checkpoint = source("checkpoint_policy.py")
         checkpoint_v2 = (
             ROOT.parents[2] / "Common_V2/core/checkpoint_V2.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("checkpoint_mode\", 5", orchestrator)
-        self.assertIn("sql_shuffle_partitions\", 8", orchestrator)
+        self.assertIn("checkpoint_mode\", 4", orchestrator)
+        self.assertIn("sql_shuffle_partitions\", 32", orchestrator)
         self.assertIn("missing_entity_identity\", True", orchestrator)
         self.assertNotIn("checkpoint_mode != 5", checkpoint)
         self.assertIn("checkpoint_mode=checkpoint_mode", checkpoint)

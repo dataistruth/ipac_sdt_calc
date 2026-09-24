@@ -921,7 +921,7 @@ def _run_profiled(fn, *args, **kwargs):
         kwargs.pop("parallel_groups", ",".join(sorted(_ALL_PARALLEL_GROUPS))),
     )
     checkpoint_mode = int(
-        kwargs.pop("CheckpointMode", kwargs.pop("checkpoint_mode", 5))
+        kwargs.pop("CheckpointMode", kwargs.pop("checkpoint_mode", 4))
     )
     if checkpoint_mode not in {1, 2, 3, 4, 5}:
         raise ValueError("CheckpointMode must be one of 1, 2, 3, 4, 5")
@@ -944,7 +944,7 @@ def _run_profiled(fn, *args, **kwargs):
         "_output_v3_shuffle_partitions": int(
             kwargs.pop(
                 "SqlShufflePartitions",
-                kwargs.pop("sql_shuffle_partitions", 8),
+                kwargs.pop("sql_shuffle_partitions", 32),
             )
         ),
         "_output_v3_warning_probe_removal": str(
