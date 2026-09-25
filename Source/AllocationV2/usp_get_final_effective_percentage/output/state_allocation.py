@@ -55,6 +55,8 @@ def build_state_allocation_input(
     map_dar: DataFrame,
     dar_setup: DataFrame,
     entity_partners: DataFrame,
+    collapse_state_passes: bool = False,
+    batch_state_workflow_lookup: bool = False,
 ) -> tuple:
     """Mode 3 state allocation: build state book effective, state underlyings,
     state entity amounts, and state input lines.
@@ -83,67 +85,162 @@ def build_state_allocation_input(
     enu_ut = F.broadcast(_tbl(spark, "ENU_UnderlyingType", cfg))
 
     # --- SM_TempBookEffective: Load from SM_StateLineAllocationRule_Snapshot ---
-    # Get state allocation workflow
-    sm_event_row = (
-        _tbl(spark, "ENU_Event", cfg)
-        .filter(F.col("EventName") == "Import_StateAllocationRule")
-        .select("EventTypeID")
-        .first()
-    )
-    sm_event_type_id = sm_event_row["EventTypeID"] if sm_event_row else None
+    # Get state allocation workflow.  outputV3 resolves the event, workflow
+    # threshold, excluded statuses, and approved workflow in one Spark action.
+    # The production-compatible branch retains the original scalar sequence.
+    phase_id = cfg.get("phase_id")
+    sm_workflow_id = 0
+    if batch_state_workflow_lookup:
+        event_meta = (
+            _tbl(spark, "ENU_Event", cfg)
+            .filter(F.col("EventName") == "Import_StateAllocationRule")
+            .select(F.col("EventTypeID").alias("_event_type_id"))
+            .limit(1)
+            .agg(F.first("_event_type_id").alias("_event_type_id"))
+        )
+        workflow_step_meta = (
+            _tbl(spark, "WorkFlowChain", cfg)
+            .filter(
+                (F.col("ClientID") == client_id)
+                & (F.col("TaxPeriodID") == tax_period_id)
+                & (F.col("IncludeInCalc") == True)
+            )
+            .select(
+                F.col("WorkflowStatusID").alias("_include_in_calc_step")
+            )
+            .limit(1)
+            .agg(
+                F.first("_include_in_calc_step").alias(
+                    "_include_in_calc_step"
+                )
+            )
+        )
+        workflow_meta = event_meta.crossJoin(workflow_step_meta).alias("M")
+        excluded_statuses = (
+            _tbl(spark, "WORKFLOWSTATUS", cfg)
+            .filter(
+                F.col("EnumerationName").isin(
+                    ["Rejected", "Err_Critical", "Err_NonCritical"]
+                )
+            )
+            .select(F.col("StatusID").alias("_excluded_status_id"))
+            .distinct()
+        )
+        allowed_transactions = (
+            _tbl(spark, "TransactionLog", cfg).alias("TL")
+            .join(
+                F.broadcast(excluded_statuses).alias("EX"),
+                F.col("TL.StatusID") == F.col("EX._excluded_status_id"),
+                "left_anti",
+            )
+        )
+        workflow_candidates = (
+            _tbl(spark, "WorkFlow", cfg).alias("WF")
+            .join(
+                allowed_transactions.alias("TL"),
+                (F.col("TL.TransactionID") == F.col("WF.TransactionID"))
+                & (F.col("TL.PhaseID") == F.col("WF.PhaseID")),
+            )
+            .select(
+                F.col("TL.EventTypeID").alias("EventTypeID"),
+                F.col("TL.ClientID").alias("ClientID"),
+                F.col("TL.TaxPeriodID").alias("TaxPeriodID"),
+                F.col("TL.EntityID").alias("EntityID"),
+                F.col("TL.StatusID").alias("StatusID"),
+                F.col("TL.PhaseID").alias("PhaseID"),
+                F.col("WF.WorkflowID").alias("WorkflowID"),
+            )
+        )
+        workflow_row = (
+            workflow_meta
+            .join(
+                workflow_candidates.alias("X"),
+                (F.col("X.EventTypeID") == F.col("M._event_type_id"))
+                & (F.col("X.ClientID") == client_id)
+                & (F.col("X.TaxPeriodID") == tax_period_id)
+                & (F.col("X.EntityID") == entity_id)
+                & (
+                    F.col("X.StatusID")
+                    >= F.col("M._include_in_calc_step")
+                )
+                & (F.col("X.PhaseID") == phase_id),
+                "left",
+            )
+            .agg(
+                F.first("M._event_type_id").alias("_event_type_id"),
+                F.max("X.WorkflowID").alias("_workflow_id"),
+            )
+            .first()
+        )
+        sm_event_type_id = workflow_row["_event_type_id"]
+        if workflow_row["_workflow_id"] is not None:
+            sm_workflow_id = workflow_row["_workflow_id"]
+    else:
+        sm_event_row = (
+            _tbl(spark, "ENU_Event", cfg)
+            .filter(F.col("EventName") == "Import_StateAllocationRule")
+            .select("EventTypeID")
+            .first()
+        )
+        sm_event_type_id = (
+            sm_event_row["EventTypeID"] if sm_event_row else None
+        )
 
     if sm_event_type_id is None:
         logger.warning("Import_StateAllocationRule event not found — skipping state allocation")
         return all_underlyings, None, None
 
-    # Inline udfGetApprovedWorkflow for state event
-    # Original SQL joins Workflow → TransactionLog; EventTypeID/EntityID/StatusID
-    # are on TransactionLog, NOT on Workflow.
-    sm_workflow_id = 0
-    phase_id = cfg.get("phase_id")
-
-    # IncludeInCalc step from WorkFlowChain
-    wfc_row = (
-        _tbl(spark, "WorkFlowChain", cfg)
-        .filter(
-            (F.col("ClientID") == client_id)
-            & (F.col("TaxPeriodID") == tax_period_id)
-            & (F.col("IncludeInCalc") == True)
-        )
-        .select("WorkflowStatusID")
-        .first()
-    )
-    include_in_calc_step = wfc_row["WorkflowStatusID"] if wfc_row else None
-
-    if include_in_calc_step is not None:
-        # Excluded statuses (non-adjustments path)
-        excl_ids = (
-            _tbl(spark, "WORKFLOWSTATUS", cfg)
-            .filter(F.col("EnumerationName").isin(["Rejected", "Err_Critical", "Err_NonCritical"]))
-            .select("StatusID")
-        )
-        excl_list = [r["StatusID"] for r in excl_ids.collect()]
-
-        wf_tl = (
-            _tbl(spark, "WorkFlow", cfg).alias("WF")
-            .join(
-                _tbl(spark, "TransactionLog", cfg).alias("TL"),
-                (F.col("TL.TransactionID") == F.col("WF.TransactionID"))
-                & (F.col("TL.EventTypeID") == sm_event_type_id)
-                & (F.col("TL.PhaseID") == F.col("WF.PhaseID")),
-            )
+    if not batch_state_workflow_lookup:
+        # Inline udfGetApprovedWorkflow for state event. EventTypeID,
+        # EntityID, and StatusID are on TransactionLog, not WorkFlow.
+        wfc_row = (
+            _tbl(spark, "WorkFlowChain", cfg)
             .filter(
-                (F.col("TL.ClientID") == client_id)
-                & (F.col("TL.TaxPeriodID") == tax_period_id)
-                & (F.col("TL.EntityID") == entity_id)
-                & (F.col("TL.StatusID") >= include_in_calc_step)
-                & (F.col("TL.PhaseID") == phase_id)
-                & (~F.col("TL.StatusID").isin(excl_list))
+                (F.col("ClientID") == client_id)
+                & (F.col("TaxPeriodID") == tax_period_id)
+                & (F.col("IncludeInCalc") == True)
             )
+            .select("WorkflowStatusID")
+            .first()
         )
-        wf_row = wf_tl.agg(F.max("WF.WorkflowID").alias("max_wf")).first()
-        if wf_row and wf_row["max_wf"] is not None:
-            sm_workflow_id = wf_row["max_wf"]
+        include_in_calc_step = (
+            wfc_row["WorkflowStatusID"] if wfc_row else None
+        )
+
+        if include_in_calc_step is not None:
+            excl_ids = (
+                _tbl(spark, "WORKFLOWSTATUS", cfg)
+                .filter(
+                    F.col("EnumerationName").isin(
+                        ["Rejected", "Err_Critical", "Err_NonCritical"]
+                    )
+                )
+                .select("StatusID")
+            )
+            excl_list = [r["StatusID"] for r in excl_ids.collect()]
+
+            wf_tl = (
+                _tbl(spark, "WorkFlow", cfg).alias("WF")
+                .join(
+                    _tbl(spark, "TransactionLog", cfg).alias("TL"),
+                    (F.col("TL.TransactionID") == F.col("WF.TransactionID"))
+                    & (F.col("TL.EventTypeID") == sm_event_type_id)
+                    & (F.col("TL.PhaseID") == F.col("WF.PhaseID")),
+                )
+                .filter(
+                    (F.col("TL.ClientID") == client_id)
+                    & (F.col("TL.TaxPeriodID") == tax_period_id)
+                    & (F.col("TL.EntityID") == entity_id)
+                    & (F.col("TL.StatusID") >= include_in_calc_step)
+                    & (F.col("TL.PhaseID") == phase_id)
+                    & (~F.col("TL.StatusID").isin(excl_list))
+                )
+            )
+            wf_row = wf_tl.agg(
+                F.max("WF.WorkflowID").alias("max_wf")
+            ).first()
+            if wf_row and wf_row["max_wf"] is not None:
+                sm_workflow_id = wf_row["max_wf"]
 
     sm_book_eff = (
         _tbl(spark, "SM_StateLineAllocationRule_Snapshot", cfg)
@@ -497,8 +594,12 @@ def build_state_allocation_input(
         .distinct()
     )
 
-    # Remove pass 1 matched from sm_input
-    sm_remaining_1 = sm_input.join(
+    # The legacy shape applies each pass to the rows left by the preceding
+    # pass.  outputV3 can build all four candidates independently and retain
+    # only the first matching priority.  That is equivalent because the
+    # legacy anti-joins remove rows by this same three-column input key, while
+    # avoiding repeated expansion of every earlier pass in the final DAG.
+    sm_remaining_1 = sm_input if collapse_state_passes else sm_input.join(
         pass1,
         (sm_input["EntityID"] == pass1["UnderlyingEntityID"])
         & (sm_input["StateLineID"] == pass1["LineID"])
@@ -533,7 +634,7 @@ def build_state_allocation_input(
         .distinct()
     )
 
-    sm_remaining_2 = sm_remaining_1.join(
+    sm_remaining_2 = sm_input if collapse_state_passes else sm_remaining_1.join(
         pass2,
         (sm_remaining_1["EntityID"] == pass2["UnderlyingEntityID"])
         & (sm_remaining_1["StateLineID"] == pass2["LineID"])
@@ -568,7 +669,7 @@ def build_state_allocation_input(
         .distinct()
     )
 
-    sm_remaining_3 = sm_remaining_2.join(
+    sm_remaining_3 = sm_input if collapse_state_passes else sm_remaining_2.join(
         pass3,
         (sm_remaining_2["EntityID"] == pass3["UnderlyingEntityID"])
         & (sm_remaining_2["StateLineID"] == pass3["LineID"])
@@ -614,13 +715,50 @@ def build_state_allocation_input(
         .distinct()
     )
 
-    # Union all passes
-    state_input_lines = (
-        pass1
-        .unionByName(pass2, allowMissingColumns=True)
-        .unionByName(pass3, allowMissingColumns=True)
-        .unionByName(pass4, allowMissingColumns=True)
-    )
+    # Union all passes.  In the optimized shape, retain every distinct row
+    # from the earliest pass that matched each input key.  This reproduces the
+    # insert/delete precedence of the legacy chain, including multiple rows
+    # emitted by the winning pass.
+    if collapse_state_passes:
+        prioritized = (
+            pass1.withColumn("_pass_priority", F.lit(1))
+            .unionByName(
+                pass2.withColumn("_pass_priority", F.lit(2)),
+                allowMissingColumns=True,
+            )
+            .unionByName(
+                pass3.withColumn("_pass_priority", F.lit(3)),
+                allowMissingColumns=True,
+            )
+            .unionByName(
+                pass4.withColumn("_pass_priority", F.lit(4)),
+                allowMissingColumns=True,
+            )
+        )
+        priority_window = Window.partitionBy(
+            "UnderlyingEntityID", "LineID", "StateId"
+        )
+        state_input_lines = (
+            prioritized
+            .withColumn(
+                "_winning_priority",
+                F.min("_pass_priority").over(priority_window),
+            )
+            .filter(
+                F.col("UnderlyingEntityID").isNull()
+                | F.col("LineID").isNull()
+                | F.col("StateId").isNull()
+                | (F.col("_pass_priority") == F.col("_winning_priority"))
+            )
+            .drop("_pass_priority", "_winning_priority")
+        )
+    else:
+        state_input_lines = (
+            pass1
+            .unionByName(pass2, allowMissingColumns=True)
+            .unionByName(pass3, allowMissingColumns=True)
+            .unionByName(pass4, allowMissingColumns=True)
+        )
 
     _log_timing("build_state_allocation_input", t0)
     return updated_all_underlyings, state_input_lines, sm_eff_amounts

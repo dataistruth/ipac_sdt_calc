@@ -100,6 +100,7 @@ class OutputV3StructureTests(unittest.TestCase):
             "mode_prep",
             "mode_prep_boundaries",
             "cpbt_boundaries",
+            "cpbt_internal_boundaries",
             "effective_inputs",
             "fused_effective",
             "effective_boundaries",
@@ -275,6 +276,8 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"materialization"', notebook)
         self.assertIn('"registration only"', notebook)
         self.assertIn("shuffle_verified", notebook)
+        self.assertIn("_require_current_optimized_sources", notebook)
+        self.assertIn("batch_state_workflow_lookup", notebook)
         self.assertIn('"parallel_wave_critical_path"', orchestrator)
         self.assertIn('"critical_actions"', orchestrator)
         self.assertNotIn("_emit(", notebook)
@@ -291,7 +294,11 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("missing_entity_identity\", True", orchestrator)
         self.assertIn('kwargs.pop("cpbt_input_break", "both")', orchestrator)
         self.assertIn(
-            'kwargs.pop("cpbt_post_tag_entity_break", True)',
+            'kwargs.pop("cpbt_post_tag_entity_break", False)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("parallel_cpbt_post_tag", True)',
             orchestrator,
         )
         self.assertIn(
@@ -319,6 +326,14 @@ class OutputV3StructureTests(unittest.TestCase):
             orchestrator,
         )
         self.assertIn(
+            'kwargs.pop("collapse_state_passes", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("batch_state_workflow_lookup", True)',
+            orchestrator,
+        )
+        self.assertIn(
             'kwargs.pop("single_pickup_antijoin", True)',
             orchestrator,
         )
@@ -337,6 +352,7 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('run_group(\n                    "fused_effective"', pipeline)
         self.assertIn('"mode_prep_boundaries"', pipeline)
         self.assertIn('"cpbt_boundaries"', pipeline)
+        self.assertIn('"cpbt_internal_boundaries"', pipeline)
         self.assertIn('"effective_boundaries"', pipeline)
         self.assertNotIn('"underlyings_common"', pipeline)
         self.assertIn(
@@ -367,6 +383,11 @@ class OutputV3StructureTests(unittest.TestCase):
             '"_output_v3_cpbt_drop_tracking_match"',
             cost_pct_loader,
         )
+        self.assertIn(
+            '"_output_v3_parallel_cpbt_post_tag"',
+            cost_pct_loader,
+        )
+        self.assertIn('"txfr_post_tag_m{mode}"', cost_pct_loader)
         footnotes = (
             ROOT.parent / "output" / "pfic_footnotes.py"
         ).read_text(encoding="utf-8")
@@ -379,6 +400,25 @@ class OutputV3StructureTests(unittest.TestCase):
             footnotes,
         )
         self.assertIn('"fn_alloc_pfic_m{cfg.get(\'mode\', 0)}"', footnotes)
+        state_allocation = (
+            ROOT.parent / "output" / "state_allocation.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("collapse_state_passes: bool = False", state_allocation)
+        self.assertIn(
+            "batch_state_workflow_lookup: bool = False",
+            state_allocation,
+        )
+        self.assertIn('F.lit(1)', state_allocation)
+        self.assertIn('F.min("_pass_priority")', state_allocation)
+        self.assertIn("workflow_meta", state_allocation)
+        self.assertIn(
+            '"_output_v3_collapse_state_passes"',
+            pipeline,
+        )
+        self.assertIn(
+            '"_output_v3_batch_state_workflow_lookup"',
+            pipeline,
+        )
         effective_calc = (
             ROOT.parent / "output" / "effective_calc.py"
         ).read_text(encoding="utf-8")

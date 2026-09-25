@@ -475,6 +475,31 @@ def run_modes_parallel(
             )
             has_state = mode == 3 and sm_input is not None and not sm_empty
             if has_state:
+                state_input_kwargs = {}
+                if (
+                    "collapse_state_passes"
+                    in inspect.signature(
+                        business.build_state_allocation_input
+                    ).parameters
+                ):
+                    state_input_kwargs["collapse_state_passes"] = bool(
+                        mode_cfg.get(
+                            "_output_v3_collapse_state_passes",
+                            True,
+                        )
+                    )
+                if (
+                    "batch_state_workflow_lookup"
+                    in inspect.signature(
+                        business.build_state_allocation_input
+                    ).parameters
+                ):
+                    state_input_kwargs["batch_state_workflow_lookup"] = bool(
+                        mode_cfg.get(
+                            "_output_v3_batch_state_workflow_lookup",
+                            True,
+                        )
+                    )
                 all_underlyings, state_lines, state_amounts = (
                     business.build_state_allocation_input(
                         spark,
@@ -486,6 +511,7 @@ def run_modes_parallel(
                         map_dar,
                         dar_setup,
                         entity_partners,
+                        **state_input_kwargs,
                     )
                 )
                 # Both state entity branches consume the same four-pass union.
@@ -692,19 +718,28 @@ def run_modes_parallel(
                     tagged_non_dated = cpbt_inputs["input_non_dated"]
                 if "input_dated" in cpbt_inputs:
                     tagged_dated = cpbt_inputs["input_dated"]
-            fused_temp, fused_transfers = (
-                business.build_cost_percentage_by_type(
-                    spark,
-                    cfg,
-                    snapshot,
-                    tagged_temp,
-                    tagged_all_underlyings,
-                    tagged_entity_underlyings,
-                    tagged_non_dated,
-                    tagged_dated,
-                    tagged_transfers,
-                    checkpoint_fn=checkpoint,
+            cpbt_builder = business.build_cost_percentage_by_type
+            cpbt_builder_kwargs = {"checkpoint_fn": checkpoint}
+            if (
+                "checkpoint_group_fn"
+                in inspect.signature(cpbt_builder).parameters
+            ):
+                cpbt_builder_kwargs["checkpoint_group_fn"] = (
+                    lambda tasks: run_group(
+                        "cpbt_internal_boundaries", tasks
+                    )
                 )
+            fused_temp, fused_transfers = cpbt_builder(
+                spark,
+                cfg,
+                snapshot,
+                tagged_temp,
+                tagged_all_underlyings,
+                tagged_entity_underlyings,
+                tagged_non_dated,
+                tagged_dated,
+                tagged_transfers,
+                **cpbt_builder_kwargs,
             )
             cpbt_outputs = run_group(
                 "cpbt_boundaries",

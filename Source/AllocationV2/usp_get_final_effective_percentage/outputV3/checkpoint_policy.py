@@ -76,7 +76,9 @@ _DURABLE_RULES = (
         "mode_prep",
     ),
     (
-        re.compile(r"^txfr_(pre_cpbt_m\d+|adj_fused)$"),
+        re.compile(
+            r"^txfr_(pre_cpbt_m\d+|post_tag_m\d+|adj_fused)$"
+        ),
         "alias-sensitive transfer seam",
         "fused_cpbt",
     ),

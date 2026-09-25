@@ -336,6 +336,7 @@ def build_cost_percentage_by_type(
     dated: DataFrame,
     transfers_adj: DataFrame,
     checkpoint_fn=None,
+    checkpoint_group_fn=None,
 ) -> tuple:
     """3-tier cost percentage loading + entity parent matching.
 
@@ -1041,10 +1042,52 @@ def build_cost_percentage_by_type(
     # ── Intermediate checkpoint: break DAG after tag matching ──
     if checkpoint_fn is not None:
         mode = cfg.get("_current_mode", 1)
-        temp_cost_pct = checkpoint_fn(spark, temp_cost_pct, f"tcp_post_tag_m{mode}", cfg)
+        if (
+            checkpoint_group_fn is not None
+            and transfers_adj is not None
+            and cfg.get(
+                "_output_v3_parallel_cpbt_post_tag", False
+            )
+        ):
+            post_tag = checkpoint_group_fn(
+                [
+                    (
+                        "temp_post_tag",
+                        checkpoint_fn,
+                        (
+                            spark,
+                            temp_cost_pct,
+                            f"tcp_post_tag_m{mode}",
+                            cfg,
+                        ),
+                        {},
+                    ),
+                    (
+                        "transfers_post_tag",
+                        checkpoint_fn,
+                        (
+                            spark,
+                            transfers_adj,
+                            f"txfr_post_tag_m{mode}",
+                            cfg,
+                        ),
+                        {},
+                    ),
+                ]
+            )
+            temp_cost_pct = post_tag["temp_post_tag"]
+            transfers_adj = post_tag["transfers_post_tag"]
+        else:
+            temp_cost_pct = checkpoint_fn(
+                spark,
+                temp_cost_pct,
+                f"tcp_post_tag_m{mode}",
+                cfg,
+            )
         logger.info("[CHECKPOINT] temp_cost_pct after tag matching")
-        # transfers_adj: skip checkpoint — caller checkpoints the return
-        # value. Saves ~1.5s Delta I/O.
+        # outputV3 can overlap the transfer lineage break with this existing
+        # temp checkpoint. The final caller checkpoint then materializes only
+        # the shallow nothing-match suffix.
 
     # Recompute remaining all_entities again
     # Phase 2a: include _mode in the anti-join key.
