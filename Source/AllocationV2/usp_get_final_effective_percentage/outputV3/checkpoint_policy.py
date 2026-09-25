@@ -81,14 +81,17 @@ _DURABLE_RULES = (
         "fused_cpbt",
     ),
     (
-        re.compile(r"^(all_ent|all_ent_pre_tag|tcp_post_tag)_m\d+$"),
+        re.compile(
+            r"^(all_ent|all_ent_pre_tag|all_ent_post_tag|tcp_post_tag)_m\d+$"
+        ),
         "expensive reused fused CPBT intermediate",
         "fused_cpbt",
     ),
     (
         re.compile(
             r"^(tcp_by_type_(fused|m4)|nde_post_miss_(fused|m4)|"
-            r"de_post_miss_(fused|m4)|final_cost_pct_(fused|m4))$"
+            r"de_post_miss_(fused|m4)|final_cost_pct_(fused|m4)|"
+            r"cost_pct_min_q_fused|de_post_minq_fused)$"
         ),
         "reused fused output",
         "fused_cpbt",

@@ -436,6 +436,7 @@ def run_modes_parallel(
                     book_effective,
                     all_underlyings,
                     map_dar,
+                    checkpoint_fn=checkpoint,
                 )
                 footnote_input_lines = checkpoint(
                     spark,
@@ -801,6 +802,45 @@ def run_modes_parallel(
             _, min_quarter, fused_dated = business.compute_minimum_quarter(
                 spark, cfg, final_cost, fused_dated
             )
+            if cfg.get(
+                "_output_v3_materialize_effective_inputs", False
+            ):
+                effective_input_tasks = [
+                    (
+                        "dated_after_min_quarter",
+                        checkpoint,
+                        (
+                            spark,
+                            fused_dated,
+                            "de_post_minq_fused",
+                            cfg,
+                        ),
+                        {},
+                    )
+                ]
+                if min_quarter is not None:
+                    effective_input_tasks.append(
+                        (
+                            "minimum_quarter",
+                            checkpoint,
+                            (
+                                spark,
+                                min_quarter,
+                                "cost_pct_min_q_fused",
+                                cfg,
+                            ),
+                            {},
+                        )
+                    )
+                effective_inputs = run_group(
+                    "effective_inputs", effective_input_tasks
+                )
+                fused_dated = effective_inputs[
+                    "dated_after_min_quarter"
+                ]
+                if min_quarter is not None:
+                    min_quarter = effective_inputs["minimum_quarter"]
+
             def compute_dated_effective():
                 eff_dated, pickup, dated_entities = (
                     business.compute_effective_percentage_dated(

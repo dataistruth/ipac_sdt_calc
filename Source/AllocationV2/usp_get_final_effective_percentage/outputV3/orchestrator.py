@@ -80,6 +80,7 @@ _ALL_PARALLEL_GROUPS = frozenset(
         "mode_prep",
         "mode_prep_boundaries",
         "cpbt_boundaries",
+        "effective_inputs",
         "fused_effective",
         "effective_boundaries",
         "output_build",
@@ -354,6 +355,7 @@ class _Coordinator:
             "mode_prep": StageName.MODE_PREP.value,
             "mode_prep_boundaries": StageName.MODE_PREP.value,
             "cpbt_boundaries": StageName.FUSED_CPBT.value,
+            "effective_inputs": StageName.FUSED_EFFECTIVE.value,
             "fused_effective": StageName.FUSED_EFFECTIVE.value,
             "effective_boundaries": StageName.FUSED_EFFECTIVE.value,
             "output_build": StageName.OUTPUT_BUILD.value,
@@ -973,6 +975,60 @@ def _run_profiled(fn, *args, **kwargs):
                 kwargs.pop("cpbt_input_break", "both"),
             )
         ).strip().lower(),
+        "_output_v3_cpbt_post_tag_entity_break": _as_bool(
+            kwargs.pop(
+                "CpbtPostTagEntityBreak",
+                kwargs.pop("cpbt_post_tag_entity_break", True),
+            )
+        ),
+        "_output_v3_compact_all_entities": _as_bool(
+            kwargs.pop(
+                "CompactAllEntities",
+                kwargs.pop("compact_all_entities", True),
+            )
+        ),
+        "_output_v3_cpbt_narrow_anti_keys": _as_bool(
+            kwargs.pop(
+                "CpbtNarrowAntiKeys",
+                kwargs.pop("cpbt_narrow_anti_keys", True),
+            )
+        ),
+        "_output_v3_cpbt_transfer_prefilter": _as_bool(
+            kwargs.pop(
+                "CpbtTransferPrefilter",
+                kwargs.pop("cpbt_transfer_prefilter", True),
+            )
+        ),
+        "_output_v3_cpbt_drop_tracking_match": _as_bool(
+            kwargs.pop(
+                "CpbtDropTrackingMatch",
+                kwargs.pop("cpbt_drop_tracking_match", True),
+            )
+        ),
+        "_output_v3_batch_footnote_line_ids": _as_bool(
+            kwargs.pop(
+                "BatchFootnoteLineIds",
+                kwargs.pop("batch_footnote_line_ids", True),
+            )
+        ),
+        "_output_v3_footnote_shared_lineage": _as_bool(
+            kwargs.pop(
+                "FootnoteSharedLineage",
+                kwargs.pop("footnote_shared_lineage", True),
+            )
+        ),
+        "_output_v3_single_pickup_antijoin": _as_bool(
+            kwargs.pop(
+                "SinglePickupAntiJoin",
+                kwargs.pop("single_pickup_antijoin", True),
+            )
+        ),
+        "_output_v3_materialize_effective_inputs": _as_bool(
+            kwargs.pop(
+                "MaterializeEffectiveInputs",
+                kwargs.pop("materialize_effective_inputs", True),
+            )
+        ),
         "_output_v3_parallel_effective": _as_bool(
             kwargs.pop(
                 "ParallelEffective",

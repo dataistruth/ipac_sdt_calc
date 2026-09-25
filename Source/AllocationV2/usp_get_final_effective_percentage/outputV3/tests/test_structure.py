@@ -74,6 +74,7 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("alias-sensitive or reused effective seam", text)
         self.assertIn("expensive reused fused CPBT intermediate", text)
         self.assertIn("all_ent_pre_tag", text)
+        self.assertIn("all_ent_post_tag", text)
         self.assertIn("tcp_post_tag", text)
         self.assertIn("safe cheap lineage break", text)
         self.assertIn("checkpoint_mode=checkpoint_mode", text)
@@ -99,6 +100,7 @@ class OutputV3StructureTests(unittest.TestCase):
             "mode_prep",
             "mode_prep_boundaries",
             "cpbt_boundaries",
+            "effective_inputs",
             "fused_effective",
             "effective_boundaries",
             "output_build",
@@ -288,6 +290,42 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("sql_shuffle_partitions\", 32", orchestrator)
         self.assertIn("missing_entity_identity\", True", orchestrator)
         self.assertIn('kwargs.pop("cpbt_input_break", "both")', orchestrator)
+        self.assertIn(
+            'kwargs.pop("cpbt_post_tag_entity_break", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("compact_all_entities", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("cpbt_narrow_anti_keys", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("cpbt_transfer_prefilter", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("cpbt_drop_tracking_match", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("batch_footnote_line_ids", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("footnote_shared_lineage", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("single_pickup_antijoin", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("materialize_effective_inputs", True)',
+            orchestrator,
+        )
         self.assertIn('"parallel_effective", True', orchestrator)
         self.assertIn('"broadcast_entity_partners"', orchestrator)
         self.assertIn('"fused_effective"', orchestrator)
@@ -301,6 +339,53 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"cpbt_boundaries"', pipeline)
         self.assertIn('"effective_boundaries"', pipeline)
         self.assertNotIn('"underlyings_common"', pipeline)
+        cost_pct_loader = (
+            ROOT.parent / "output" / "cost_pct_loader.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"_output_v3_cpbt_post_tag_entity_break"',
+            cost_pct_loader,
+        )
+        self.assertIn('"all_ent_post_tag_m{mode}"', cost_pct_loader)
+        self.assertIn(
+            '"_output_v3_compact_all_entities"',
+            cost_pct_loader,
+        )
+        self.assertIn(
+            '"_output_v3_cpbt_narrow_anti_keys"',
+            cost_pct_loader,
+        )
+        self.assertIn(
+            '"_output_v3_cpbt_transfer_prefilter"',
+            cost_pct_loader,
+        )
+        self.assertIn(
+            '"_output_v3_cpbt_drop_tracking_match"',
+            cost_pct_loader,
+        )
+        footnotes = (
+            ROOT.parent / "output" / "pfic_footnotes.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"_output_v3_batch_footnote_line_ids"',
+            footnotes,
+        )
+        self.assertIn(
+            '"_output_v3_footnote_shared_lineage"',
+            footnotes,
+        )
+        self.assertIn('"fn_alloc_pfic_m{cfg.get(\'mode\', 0)}"', footnotes)
+        effective_calc = (
+            ROOT.parent / "output" / "effective_calc.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"_output_v3_single_pickup_antijoin"',
+            effective_calc,
+        )
+        self.assertIn(
+            "F.explode(F.array(F.lit(1), F.lit(2)))",
+            effective_calc,
+        )
         self.assertIn("compute_dated_effective", pipeline)
         self.assertIn("compute_non_dated_effective", pipeline)
         self.assertIn("frozenset({1, 2, 3, 4, 5})", checkpoint_v2)
