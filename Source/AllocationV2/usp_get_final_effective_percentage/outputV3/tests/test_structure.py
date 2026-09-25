@@ -107,7 +107,6 @@ class OutputV3StructureTests(unittest.TestCase):
             "output_build",
         ):
             self.assertIn(f'"{group}"', pipeline)
-        self.assertIn('"output_result_build"', text)
         self.assertIn('"output_writes"', text)
 
     def test_cfg_forks_share_only_checkpoint_coordination(self):
@@ -323,11 +322,7 @@ class OutputV3StructureTests(unittest.TestCase):
             orchestrator,
         )
         self.assertIn(
-            'kwargs.pop("footnote_shared_lineage", False)',
-            orchestrator,
-        )
-        self.assertIn(
-            'kwargs.pop("asset_class_probe_removal", True)',
+            'kwargs.pop("footnote_shared_lineage", True)',
             orchestrator,
         )
         self.assertIn(
@@ -453,21 +448,8 @@ class OutputV3StructureTests(unittest.TestCase):
             "from .business import effective_calc as _opt_effective_calc",
             orchestrator,
         )
-        self.assertIn(
-            "from .business import underlyings as _opt_underlyings",
-            orchestrator,
-        )
         self.assertIn("_OPTIMIZED_BUSINESS_EXPORTS", orchestrator)
         self.assertIn("setattr(_base, _opt_name, _optimized_fn)", orchestrator)
-        self.assertIn("_parallel_build_all_results", orchestrator)
-        optimized_underlyings = (
-            ROOT / "business" / "underlyings.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            '"_output_v3_asset_class_probe_removal"',
-            optimized_underlyings,
-        )
-        self.assertIn("_output_v3_ear_count", optimized_underlyings)
         # Production output/ must stay a pristine SQL conversion with no
         # outputV3 optimization seams.
         for _pristine_name in (
@@ -475,7 +457,6 @@ class OutputV3StructureTests(unittest.TestCase):
             "state_allocation.py",
             "pfic_footnotes.py",
             "effective_calc.py",
-            "underlyings.py",
         ):
             pristine = (
                 ROOT.parent / "output" / _pristine_name

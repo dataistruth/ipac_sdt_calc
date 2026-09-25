@@ -40,7 +40,6 @@ _book_effective = isolated_output_module("book_effective")
 _PRODUCTION_RUN_MODES = _base.run_modes
 _PRODUCTION_RUN_FINAL = _base.run_final_effective_percentages
 _PRODUCTION_RESULT_STORER = _base.GenericResultStorer
-_PRODUCTION_BUILD_ALL_RESULTS = _base.build_all_results
 
 # ---------------------------------------------------------------------------
 # Optimized business helpers (outputV3-owned)
@@ -56,7 +55,6 @@ from .business import cost_pct_loader as _opt_cost_pct_loader
 from .business import state_allocation as _opt_state_allocation
 from .business import pfic_footnotes as _opt_pfic_footnotes
 from .business import effective_calc as _opt_effective_calc
-from .business import underlyings as _opt_underlyings
 
 _OPTIMIZED_BUSINESS_EXPORTS = {
     _opt_cost_pct_loader: (
@@ -84,9 +82,6 @@ _OPTIMIZED_BUSINESS_EXPORTS = {
         "apply_plugging",
         "apply_type_id_update",
         "build_final_output",
-    ),
-    _opt_underlyings: (
-        "filter_asset_class_underlyings",
     ),
 }
 
@@ -140,7 +135,6 @@ _ALL_PARALLEL_GROUPS = frozenset(
         "fused_effective",
         "effective_boundaries",
         "output_build",
-        "output_result_build",
         "output_writes",
     }
 )
@@ -417,7 +411,6 @@ class _Coordinator:
             "fused_effective": StageName.FUSED_EFFECTIVE.value,
             "effective_boundaries": StageName.FUSED_EFFECTIVE.value,
             "output_build": StageName.OUTPUT_BUILD.value,
-            "output_result_build": StageName.OUTPUT_WRITE.value,
             "output_writes": StageName.OUTPUT_WRITE.value,
         }.get(group)
         if group == "lt_nolt_branches":
@@ -800,73 +793,6 @@ _base.load_line_items = _line_items_wrapper
 _base.build_lookthrough_input_modes14 = _lookthrough_wrapper
 
 
-def _build_one_mode_result(spark, cfg, mode, df):
-    return _PRODUCTION_BUILD_ALL_RESULTS(
-        spark,
-        cfg,
-        {mode: df},
-        all_requested_modes=None,
-    )
-
-
-def _parallel_build_all_results(
-    spark, cfg, results, all_requested_modes=None
-):
-    """Build independent mode result-table plans concurrently.
-
-    The production helper already builds each mode independently and merges
-    only after every mode is complete. Parallelizing that plan construction
-    preserves schemas, sentinels, table ordering, and union semantics. Runs
-    with missing-mode sentinel requirements retain the production path.
-    """
-    coordinator = _ACTIVE_COORDINATOR.get()
-    requested = list(all_requested_modes or results)
-    can_parallelize = (
-        coordinator is not None
-        and coordinator.workers > 1
-        and "output_result_build" in coordinator.enabled_groups
-        and len(results) > 1
-        and set(requested) == set(results)
-        and all(df is not None for df in results.values())
-    )
-    if not can_parallelize:
-        return _PRODUCTION_BUILD_ALL_RESULTS(
-            spark,
-            cfg,
-            results,
-            all_requested_modes=all_requested_modes,
-        )
-
-    built_by_mode = coordinator.run_group(
-        "output_result_build",
-        tuple(
-            (
-                f"mode_{mode}",
-                _build_one_mode_result,
-                (spark, cfg, mode, df),
-                {},
-            )
-            for mode, df in results.items()
-        ),
-    )
-    merged = {}
-    for mode in results:
-        for table_name, table_df in built_by_mode[
-            f"mode_{mode}"
-        ].items():
-            if table_name in merged:
-                merged[table_name] = merged[table_name].unionByName(
-                    table_df,
-                    allowMissingColumns=True,
-                )
-            else:
-                merged[table_name] = table_df
-    return merged
-
-
-_base.build_all_results = _parallel_build_all_results
-
-
 class _ParallelResultStorer(_PRODUCTION_RESULT_STORER):
     """Write only distinct output tables concurrently."""
 
@@ -1146,10 +1072,7 @@ def _run_profiled(fn, *args, **kwargs):
         "_output_v3_footnote_shared_lineage": _as_bool(
             kwargs.pop(
                 "FootnoteSharedLineage",
-                # The extra eager fn_alloc_pfic checkpoint did not lower the
-                # final fn_input_lines checkpoint enough to recover its own
-                # materialization cost in the 53.487s benchmark.
-                kwargs.pop("footnote_shared_lineage", False),
+                kwargs.pop("footnote_shared_lineage", True),
             )
         ),
         "_output_v3_collapse_state_passes": _as_bool(
@@ -1162,12 +1085,6 @@ def _run_profiled(fn, *args, **kwargs):
             kwargs.pop(
                 "BatchStateWorkflowLookup",
                 kwargs.pop("batch_state_workflow_lookup", True),
-            )
-        ),
-        "_output_v3_asset_class_probe_removal": _as_bool(
-            kwargs.pop(
-                "AssetClassProbeRemoval",
-                kwargs.pop("asset_class_probe_removal", True),
             )
         ),
         "_output_v3_single_pickup_antijoin": _as_bool(
