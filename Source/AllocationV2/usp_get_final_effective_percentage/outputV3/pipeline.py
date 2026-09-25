@@ -6,6 +6,7 @@ business transformations are called from the isolated production module.
 
 from __future__ import annotations
 
+import inspect
 import time
 from functools import reduce
 
@@ -429,14 +430,25 @@ def run_modes_parallel(
                     f"all_und_final_m{mode}",
                     mode_cfg,
                 )
-                footnote_input_lines = business.build_footnote_input_lines(
+                footnote_input_builder = (
+                    business.build_footnote_input_lines
+                )
+                footnote_input_kwargs = {}
+                if (
+                    "checkpoint_fn"
+                    in inspect.signature(
+                        footnote_input_builder
+                    ).parameters
+                ):
+                    footnote_input_kwargs["checkpoint_fn"] = checkpoint
+                footnote_input_lines = footnote_input_builder(
                     spark,
                     mode_cfg,
                     alloc_input,
                     book_effective,
                     all_underlyings,
                     map_dar,
-                    checkpoint_fn=checkpoint,
+                    **footnote_input_kwargs,
                 )
                 footnote_input_lines = checkpoint(
                     spark,

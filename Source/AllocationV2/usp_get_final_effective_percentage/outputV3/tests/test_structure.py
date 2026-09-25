@@ -339,6 +339,10 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"cpbt_boundaries"', pipeline)
         self.assertIn('"effective_boundaries"', pipeline)
         self.assertNotIn('"underlyings_common"', pipeline)
+        self.assertIn(
+            'in inspect.signature(\n                        footnote_input_builder',
+            pipeline,
+        )
         cost_pct_loader = (
             ROOT.parent / "output" / "cost_pct_loader.py"
         ).read_text(encoding="utf-8")
