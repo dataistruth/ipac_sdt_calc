@@ -172,9 +172,6 @@ def run_modes_parallel(
             entity_hierarchy,
             snapshot,
         )
-        underlyings_combined = checkpoint(
-            spark, underlyings_combined, "underlyings_common", cfg
-        )
         dar_setup, map_dar, entity_alloc_rule = (
             business.load_allocation_rules(spark, cfg)
         )
@@ -502,20 +499,56 @@ def run_modes_parallel(
                         if final_amounts is not None
                         else state_amounts
                     )
-            if mode == 2 or has_state:
-                non_dated = checkpoint(
-                    spark,
-                    non_dated,
-                    f"nde_pre_cpbt_m{mode}",
-                    mode_cfg,
-                )
-                dated = checkpoint(
-                    spark, dated, f"de_pre_cpbt_m{mode}", mode_cfg
-                )
             transfers = business.load_transfers_adj_cost(
                 spark, mode_cfg, all_underlyings, entity_underlyings
             )
-            if transfers is not None:
+            if mode == 2 or has_state:
+                mode_boundary_tasks = [
+                    (
+                        f"non_dated_m{mode}",
+                        checkpoint,
+                        (
+                            spark,
+                            non_dated,
+                            f"nde_pre_cpbt_m{mode}",
+                            mode_cfg,
+                        ),
+                        {},
+                    ),
+                    (
+                        f"dated_m{mode}",
+                        checkpoint,
+                        (
+                            spark,
+                            dated,
+                            f"de_pre_cpbt_m{mode}",
+                            mode_cfg,
+                        ),
+                        {},
+                    ),
+                ]
+                if transfers is not None:
+                    mode_boundary_tasks.append(
+                        (
+                            f"transfers_m{mode}",
+                            checkpoint,
+                            (
+                                spark,
+                                transfers,
+                                f"txfr_pre_cpbt_m{mode}",
+                                mode_cfg,
+                            ),
+                            {},
+                        )
+                    )
+                mode_boundaries = run_group(
+                    "mode_prep_boundaries", mode_boundary_tasks
+                )
+                non_dated = mode_boundaries[f"non_dated_m{mode}"]
+                dated = mode_boundaries[f"dated_m{mode}"]
+                if transfers is not None:
+                    transfers = mode_boundaries[f"transfers_m{mode}"]
+            elif transfers is not None:
                 transfers = checkpoint(
                     spark,
                     transfers,
@@ -609,20 +642,43 @@ def run_modes_parallel(
                 ]
             )
             cpbt_break = cfg.get("_output_v3_cpbt_input_break", "off")
+            cpbt_input_tasks = []
             if cpbt_break in {"non_dated", "both"}:
-                tagged_non_dated = checkpoint(
-                    spark,
-                    tagged_non_dated,
-                    "cpbt_input_non_dated_fused",
-                    cfg,
+                cpbt_input_tasks.append(
+                    (
+                        "input_non_dated",
+                        checkpoint,
+                        (
+                            spark,
+                            tagged_non_dated,
+                            "cpbt_input_non_dated_fused",
+                            cfg,
+                        ),
+                        {},
+                    )
                 )
             if cpbt_break in {"dated", "both"}:
-                tagged_dated = checkpoint(
-                    spark,
-                    tagged_dated,
-                    "cpbt_input_dated_fused",
-                    cfg,
+                cpbt_input_tasks.append(
+                    (
+                        "input_dated",
+                        checkpoint,
+                        (
+                            spark,
+                            tagged_dated,
+                            "cpbt_input_dated_fused",
+                            cfg,
+                        ),
+                        {},
+                    )
                 )
+            if cpbt_input_tasks:
+                cpbt_inputs = run_group(
+                    "cpbt_boundaries", cpbt_input_tasks
+                )
+                if "input_non_dated" in cpbt_inputs:
+                    tagged_non_dated = cpbt_inputs["input_non_dated"]
+                if "input_dated" in cpbt_inputs:
+                    tagged_dated = cpbt_inputs["input_dated"]
             fused_temp, fused_transfers = (
                 business.build_cost_percentage_by_type(
                     spark,
@@ -637,12 +693,25 @@ def run_modes_parallel(
                     checkpoint_fn=checkpoint,
                 )
             )
-            fused_temp = checkpoint(
-                spark, fused_temp, "tcp_by_type_fused", cfg
+            cpbt_outputs = run_group(
+                "cpbt_boundaries",
+                [
+                    (
+                        "temp_output",
+                        checkpoint,
+                        (spark, fused_temp, "tcp_by_type_fused", cfg),
+                        {},
+                    ),
+                    (
+                        "transfer_output",
+                        checkpoint,
+                        (spark, fused_transfers, "txfr_adj_fused", cfg),
+                        {},
+                    ),
+                ],
             )
-            fused_transfers = checkpoint(
-                spark, fused_transfers, "txfr_adj_fused", cfg
-            )
+            fused_temp = cpbt_outputs["temp_output"]
+            fused_transfers = cpbt_outputs["transfer_output"]
             if cfg.get("_output_v3_missing_entity_identity", False):
                 cfg["_non_dated_entities_cost"] = None
                 cfg["_dated_entities_cost"] = None
@@ -656,12 +725,6 @@ def run_modes_parallel(
                         cfg, tagged_non_dated, tagged_dated, fused_temp
                     )
                 )
-            fused_non_dated = checkpoint(
-                spark, fused_non_dated, "nde_post_miss_fused", cfg
-            )
-            fused_dated = checkpoint(
-                spark, fused_dated, "de_post_miss_fused", cfg
-            )
             final_cost = business.build_final_cost_percentage(
                 fused_temp,
                 (
@@ -671,9 +734,49 @@ def run_modes_parallel(
                     else entity_partners
                 ),
             )
-            final_cost = checkpoint(
-                spark, final_cost, "final_cost_pct_fused", cfg
+            cpbt_final_outputs = run_group(
+                "cpbt_boundaries",
+                [
+                    (
+                        "post_missing_non_dated",
+                        checkpoint,
+                        (
+                            spark,
+                            fused_non_dated,
+                            "nde_post_miss_fused",
+                            cfg,
+                        ),
+                        {},
+                    ),
+                    (
+                        "post_missing_dated",
+                        checkpoint,
+                        (
+                            spark,
+                            fused_dated,
+                            "de_post_miss_fused",
+                            cfg,
+                        ),
+                        {},
+                    ),
+                    (
+                        "final_cost",
+                        checkpoint,
+                        (
+                            spark,
+                            final_cost,
+                            "final_cost_pct_fused",
+                            cfg,
+                        ),
+                        {},
+                    ),
+                ],
             )
+            fused_non_dated = cpbt_final_outputs[
+                "post_missing_non_dated"
+            ]
+            fused_dated = cpbt_final_outputs["post_missing_dated"]
+            final_cost = cpbt_final_outputs["final_cost"]
             if 1 in valid_modes:
                 cfg["mode"] = 1
                 validation_cfg = fork_cfg(cfg, mode=1)
@@ -761,12 +864,30 @@ def run_modes_parallel(
             eff_dated, eff_non_dated = business.apply_plugging(
                 spark, cfg, eff_dated, eff_non_dated, dar_setup
             )
-            eff_dated = checkpoint(
-                spark, eff_dated, "eff_dt_plug_fused", cfg
+            plugged_outputs = run_group(
+                "effective_boundaries",
+                [
+                    (
+                        "plugged_dated",
+                        checkpoint,
+                        (spark, eff_dated, "eff_dt_plug_fused", cfg),
+                        {},
+                    ),
+                    (
+                        "plugged_non_dated",
+                        checkpoint,
+                        (
+                            spark,
+                            eff_non_dated,
+                            "eff_nd_plug_fused",
+                            cfg,
+                        ),
+                        {},
+                    ),
+                ],
             )
-            eff_non_dated = checkpoint(
-                spark, eff_non_dated, "eff_nd_plug_fused", cfg
-            )
+            eff_dated = plugged_outputs["plugged_dated"]
+            eff_non_dated = plugged_outputs["plugged_non_dated"]
             eff_dated, eff_non_dated = business.apply_type_id_update(
                 cfg,
                 eff_dated,

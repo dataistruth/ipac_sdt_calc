@@ -94,7 +94,15 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"ParallelGroups"', text)
         self.assertIn("_ALL_PARALLEL_GROUPS", text)
         pipeline = source("pipeline.py")
-        for group in ("lt_nolt_branches", "mode_prep", "output_build"):
+        for group in (
+            "lt_nolt_branches",
+            "mode_prep",
+            "mode_prep_boundaries",
+            "cpbt_boundaries",
+            "fused_effective",
+            "effective_boundaries",
+            "output_build",
+        ):
             self.assertIn(f'"{group}"', pipeline)
         self.assertIn('"output_writes"', text)
 
@@ -289,6 +297,10 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"cpbt_input_non_dated_fused"', pipeline)
         self.assertIn('"cpbt_input_dated_fused"', pipeline)
         self.assertIn('run_group(\n                    "fused_effective"', pipeline)
+        self.assertIn('"mode_prep_boundaries"', pipeline)
+        self.assertIn('"cpbt_boundaries"', pipeline)
+        self.assertIn('"effective_boundaries"', pipeline)
+        self.assertNotIn('"underlyings_common"', pipeline)
         self.assertIn("compute_dated_effective", pipeline)
         self.assertIn("compute_non_dated_effective", pipeline)
         self.assertIn("frozenset({1, 2, 3, 4, 5})", checkpoint_v2)

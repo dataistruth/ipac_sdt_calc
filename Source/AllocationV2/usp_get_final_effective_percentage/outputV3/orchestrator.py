@@ -78,7 +78,10 @@ _ALL_PARALLEL_GROUPS = frozenset(
         "lookthrough_metadata",
         "lt_nolt_branches",
         "mode_prep",
+        "mode_prep_boundaries",
+        "cpbt_boundaries",
         "fused_effective",
+        "effective_boundaries",
         "output_build",
         "output_writes",
     }
@@ -349,7 +352,10 @@ class _Coordinator:
             "common_inputs": StageName.COMMON_READS.value,
             "lookthrough_metadata": StageName.COMMON_READS.value,
             "mode_prep": StageName.MODE_PREP.value,
+            "mode_prep_boundaries": StageName.MODE_PREP.value,
+            "cpbt_boundaries": StageName.FUSED_CPBT.value,
             "fused_effective": StageName.FUSED_EFFECTIVE.value,
+            "effective_boundaries": StageName.FUSED_EFFECTIVE.value,
             "output_build": StageName.OUTPUT_BUILD.value,
             "output_writes": StageName.OUTPUT_WRITE.value,
         }.get(group)
