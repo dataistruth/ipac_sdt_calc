@@ -136,29 +136,33 @@ def _fresh(module_name):
 
 
 def _require_current_optimized_sources():
-    """Fail fast when outputV3 was synced without its shared output helpers."""
+    """Fail fast when outputV3 was synced without its optimized business copies.
+
+    All optimizations live under ``outputV3/business`` now, so only outputV3
+    needs to be synchronized. Production ``output`` stays pristine.
+    """
     cost_pct = importlib.import_module(
-        f"{PACKAGE}.output.cost_pct_loader"
+        f"{PACKAGE}.outputV3.business.cost_pct_loader"
     )
     state = importlib.import_module(
-        f"{PACKAGE}.output.state_allocation"
+        f"{PACKAGE}.outputV3.business.state_allocation"
     )
     footnotes = importlib.import_module(
-        f"{PACKAGE}.output.pfic_footnotes"
+        f"{PACKAGE}.outputV3.business.pfic_footnotes"
     )
     requirements = {
-        "cost_pct_loader.build_cost_percentage_by_type": (
+        "business.cost_pct_loader.build_cost_percentage_by_type": (
             cost_pct.build_cost_percentage_by_type,
             {"checkpoint_group_fn"},
         ),
-        "state_allocation.build_state_allocation_input": (
+        "business.state_allocation.build_state_allocation_input": (
             state.build_state_allocation_input,
             {
                 "collapse_state_passes",
                 "batch_state_workflow_lookup",
             },
         ),
-        "pfic_footnotes.build_footnote_input_lines": (
+        "business.pfic_footnotes.build_footnote_input_lines": (
             footnotes.build_footnote_input_lines,
             {"checkpoint_fn"},
         ),
@@ -171,9 +175,9 @@ def _require_current_optimized_sources():
             missing.append(f"{helper_name}: {', '.join(absent)}")
     if missing:
         raise RuntimeError(
-            "Stale or partially synchronized optimized source. Sync both "
-            "output/ and outputV3/ before benchmarking. Missing seams: "
-            + "; ".join(missing)
+            "Stale or partially synchronized outputV3. Sync outputV3/ "
+            "(including outputV3/business) before benchmarking. Missing "
+            "seams: " + "; ".join(missing)
         )
 
 

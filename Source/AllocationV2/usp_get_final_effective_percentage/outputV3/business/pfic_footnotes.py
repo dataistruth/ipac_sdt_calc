@@ -517,6 +517,7 @@ def build_footnote_input_lines(
     book_effective: DataFrame,
     all_underlyings: DataFrame,
     map_dar: DataFrame,
+    checkpoint_fn=None,
 ) -> tuple:
     """Build #TempInputLines for footnote types.
 
@@ -544,6 +545,47 @@ def build_footnote_input_lines(
 
     def _match_key(col):
         return F.when(F.coalesce(col, F.lit("")) == "", F.lit("-1")).otherwise(col)
+
+    shared_pfic_input = None
+    if cfg.get("_output_v3_footnote_shared_lineage", False):
+        shared_pfic_input = (
+            alloc_input.alias("I")
+            .join(
+                F.broadcast(_tbl(spark, "PFICFootnoteLineItem", cfg)).alias("P"),
+                (F.col("I.LineID") == F.col("P.LineID"))
+                & (F.col("I.LineTypeID") == pfic_lt_id),
+                "left",
+            )
+            .select(
+                "I.*",
+                F.col("P.LineDescription").alias(
+                    "_output_v3_pfic_line_description"
+                ),
+            )
+        )
+        if checkpoint_fn is not None:
+            shared_pfic_input = checkpoint_fn(
+                spark,
+                shared_pfic_input,
+                f"fn_alloc_pfic_m{cfg.get('mode', 0)}",
+                cfg,
+            )
+
+    def _pfic_source():
+        if shared_pfic_input is not None:
+            return (
+                shared_pfic_input.alias("I"),
+                F.col("I._output_v3_pfic_line_description"),
+            )
+        return (
+            alloc_input.alias("I").join(
+                F.broadcast(_tbl(spark, "PFICFootnoteLineItem", cfg)).alias("P"),
+                (F.col("I.LineID") == F.col("P.LineID"))
+                & (F.col("I.LineTypeID") == pfic_lt_id),
+                "left",
+            ),
+            F.col("P.LineDescription"),
+        )
 
     # --- Pass 1: At Risk lines ---
     at_risk_input = (
@@ -614,14 +656,9 @@ def build_footnote_input_lines(
     )
 
     # --- Pass 2: PFIC/other footnotes with FootNoteID + LineID match ---
+    pfic_p2_source, pfic_p2_line_description = _pfic_source()
     pfic_input_p2 = (
-        alloc_input.alias("I")
-        .join(
-            F.broadcast(_tbl(spark, "PFICFootnoteLineItem", cfg)).alias("P"),
-            (F.col("I.LineID") == F.col("P.LineID"))
-            & (F.col("I.LineTypeID") == pfic_lt_id),
-            "left",
-        )
+        pfic_p2_source
         .join(
             book_effective.alias("B"),
             (F.col("I.EntityID") == F.col("B.UnderlyingEntityID"))
@@ -653,7 +690,7 @@ def build_footnote_input_lines(
                 F.col("B.AdjustmentAllocationTypeID"),
                 F.col("AI.AllocationTypeId"),
                 F.col("I.LineTypeID"),
-                F.col("P.LineDescription"),
+                pfic_p2_line_description,
                 cfg,
             ).alias("TypeID"),
             F.coalesce(F.col("B.TrackingKey"), F.coalesce(F.col("I.TrackingKey"), F.lit(""))).alias("TrackingKey"),
@@ -665,14 +702,9 @@ def build_footnote_input_lines(
     )
 
     # --- Pass 3: FootNoteID match, LineID = -1 ---
+    pfic_p3_source, pfic_p3_line_description = _pfic_source()
     pfic_input_p3 = (
-        alloc_input.alias("I")
-        .join(
-            F.broadcast(_tbl(spark, "PFICFootnoteLineItem", cfg)).alias("P"),
-            (F.col("I.LineID") == F.col("P.LineID"))
-            & (F.col("I.LineTypeID") == pfic_lt_id),
-            "left",
-        )
+        pfic_p3_source
         .join(
             book_effective.alias("B"),
             (F.col("I.EntityID") == F.col("B.UnderlyingEntityID"))
@@ -693,7 +725,7 @@ def build_footnote_input_lines(
                 F.col("B.AdjustmentAllocationTypeID"),
                 F.lit(None).cast("int"),
                 F.col("I.LineTypeID"),
-                F.col("P.LineDescription"),
+                pfic_p3_line_description,
                 cfg,
             ).alias("TypeID"),
             F.coalesce(F.col("B.TrackingKey"), F.coalesce(F.col("I.TrackingKey"), F.lit(""))).alias("TrackingKey"),
@@ -707,14 +739,9 @@ def build_footnote_input_lines(
     # --- Pass 4: FootNoteID = -1, LineID match ---
     # SQL: WHERE ISNULL(B.FootNoteID, 0) = -1 AND ISNULL(B.LineID, 0) <> -1
     # B has no specific footnote but DOES have a specific line match.
+    pfic_p4_source, pfic_p4_line_description = _pfic_source()
     pfic_input_p4 = (
-        alloc_input.alias("I")
-        .join(
-            F.broadcast(_tbl(spark, "PFICFootnoteLineItem", cfg)).alias("P"),
-            (F.col("I.LineID") == F.col("P.LineID"))
-            & (F.col("I.LineTypeID") == pfic_lt_id),
-            "left",
-        )
+        pfic_p4_source
         .join(
             book_effective.alias("B"),
             (F.col("I.EntityID") == F.col("B.UnderlyingEntityID"))
@@ -736,7 +763,7 @@ def build_footnote_input_lines(
                 F.col("B.AdjustmentAllocationTypeID"),
                 F.lit(None).cast("int"),
                 F.col("I.LineTypeID"),
-                F.col("P.LineDescription"),
+                pfic_p4_line_description,
                 cfg,
             ).alias("TypeID"),
             F.coalesce(F.col("B.TrackingKey"), F.coalesce(F.col("I.TrackingKey"), F.lit(""))).alias("TrackingKey"),
@@ -749,14 +776,9 @@ def build_footnote_input_lines(
 
     # --- Pass 5: FootNoteID = -1, LineID = -1 (blanket book effective) ---
     # SQL: WHERE ISNULL(B.FootNoteID, 0) = -1 AND ISNULL(B.LineID, 0) = -1
+    pfic_p5_source, pfic_p5_line_description = _pfic_source()
     pfic_input_p5 = (
-        alloc_input.alias("I")
-        .join(
-            F.broadcast(_tbl(spark, "PFICFootnoteLineItem", cfg)).alias("P"),
-            (F.col("I.LineID") == F.col("P.LineID"))
-            & (F.col("I.LineTypeID") == pfic_lt_id),
-            "left",
-        )
+        pfic_p5_source
         .join(
             book_effective.alias("B"),
             (F.col("I.EntityID") == F.col("B.UnderlyingEntityID"))
@@ -778,7 +800,7 @@ def build_footnote_input_lines(
                 F.col("B.AdjustmentAllocationTypeID"),
                 F.lit(None).cast("int"),
                 F.col("I.LineTypeID"),
-                F.col("P.LineDescription"),
+                pfic_p5_line_description,
                 cfg,
             ).alias("TypeID"),
             F.coalesce(F.col("B.TrackingKey"), F.coalesce(F.col("I.TrackingKey"), F.lit(""))).alias("TrackingKey"),
@@ -790,14 +812,9 @@ def build_footnote_input_lines(
     )
 
     # --- Pass 6: Remaining unmatched ---
+    pfic_p6_source, pfic_p6_line_description = _pfic_source()
     pfic_input_p6 = (
-        alloc_input.alias("I")
-        .join(
-            F.broadcast(_tbl(spark, "PFICFootnoteLineItem", cfg)).alias("P"),
-            (F.col("I.LineID") == F.col("P.LineID"))
-            & (F.col("I.LineTypeID") == pfic_lt_id),
-            "left",
-        )
+        pfic_p6_source
         .join(
             book_effective.alias("B"),
             (F.col("I.EntityID") == F.col("B.UnderlyingEntityID"))
@@ -817,7 +834,7 @@ def build_footnote_input_lines(
                 F.col("B.AdjustmentAllocationTypeID"),
                 F.lit(None).cast("int"),
                 F.col("I.LineTypeID"),
-                F.col("P.LineDescription"),
+                pfic_p6_line_description,
                 cfg,
             ).alias("TypeID"),
             F.coalesce(F.col("B.TrackingKey"), F.coalesce(F.col("I.TrackingKey"), F.lit(""))).alias("TrackingKey"),
@@ -926,24 +943,61 @@ def build_footnote_dated_entities(
     enu_lt = F.broadcast(_tbl(spark, "ENU_LineType", cfg))
 
     # --- Lookup quarter line IDs ---
-    def _get_quarter_line_id(table_name, short_name):
-        row = (
-            _tbl(spark, table_name, cfg)
-            .filter(
-                (F.col("ShortName") == short_name)
-                & (F.col("IsActive") == True)
-            )
-            .select("LineID")
-            .first()
-        )
-        return row["LineID"] if row else None
+    line_id_specs = (
+        ("pfic_quarter", "PFICFootnoteLineItem", "QuarterAllocations"),
+        ("form199a_quarter", "Form199ALineItem", "QuarterAllocations"),
+        ("form8886_quarter", "Form8886LineItem", "QuarterAllocations"),
+        ("form926_quarter", "Form926LineItem", "TransferDate"),
+        ("form8865_quarter", "Form8865LineItem", "TransferDate"),
+        ("pfic_dist_date", "PFICFootnoteLineItem", "DatesofDistribution"),
+    )
 
-    pfic_quarter_line_id = _get_quarter_line_id("PFICFootnoteLineItem", "QuarterAllocations")
-    form199a_quarter_line_id = _get_quarter_line_id("Form199ALineItem", "QuarterAllocations")
-    form8886_quarter_line_id = _get_quarter_line_id("Form8886LineItem", "QuarterAllocations")
-    form926_quarter_line_id = _get_quarter_line_id("Form926LineItem", "TransferDate")
-    form8865_quarter_line_id = _get_quarter_line_id("Form8865LineItem", "TransferDate")
-    pfic_dist_date_line_id = _get_quarter_line_id("PFICFootnoteLineItem", "DatesofDistribution")
+    if cfg.get("_output_v3_batch_footnote_line_ids", False):
+        # Preserve each original first() lookup with limit(1), but submit the
+        # six independent table scans as one Spark action.
+        line_id_lookup = None
+        for key, table_name, short_name in line_id_specs:
+            candidate = (
+                _tbl(spark, table_name, cfg)
+                .filter(
+                    (F.col("ShortName") == short_name)
+                    & (F.col("IsActive") == True)
+                )
+                .select(
+                    F.lit(key).alias("_lookup_key"),
+                    F.col("LineID"),
+                )
+                .limit(1)
+            )
+            line_id_lookup = (
+                candidate
+                if line_id_lookup is None
+                else line_id_lookup.unionByName(candidate)
+            )
+        line_ids = {
+            row["_lookup_key"]: row["LineID"]
+            for row in line_id_lookup.collect()
+        }
+    else:
+        line_ids = {}
+        for key, table_name, short_name in line_id_specs:
+            row = (
+                _tbl(spark, table_name, cfg)
+                .filter(
+                    (F.col("ShortName") == short_name)
+                    & (F.col("IsActive") == True)
+                )
+                .select("LineID")
+                .first()
+            )
+            line_ids[key] = row["LineID"] if row else None
+
+    pfic_quarter_line_id = line_ids.get("pfic_quarter")
+    form199a_quarter_line_id = line_ids.get("form199a_quarter")
+    form8886_quarter_line_id = line_ids.get("form8886_quarter")
+    form926_quarter_line_id = line_ids.get("form926_quarter")
+    form8865_quarter_line_id = line_ids.get("form8865_quarter")
+    pfic_dist_date_line_id = line_ids.get("pfic_dist_date")
 
     # Helper: join through Package → K1Package → get LowerTierEntityID
     def _package_entity_join(il, pkg_table, pkg_id_col, ql_col, line_type_filter):

@@ -648,31 +648,71 @@ def compute_effective_percentage_dated(
 
     # Delete ProRata (pickup=3) for these entities from pickup_order
     # Phase 3a-2: add _mode equality to both anti-joins.
-    pickup_order_dated = pickup_order_dated.join(
-        no_transfer_entities.alias("D"),
-        (F.col("D.InvestmentID") == pickup_order_dated["InvestmentID"])
-        & (F.col("D.TypeId") == pickup_order_dated["TypeId"])
-        & (F.col("D.TrackingKey") == pickup_order_dated["TrackingKey"])
-        & (F.col("D.Tag") == pickup_order_dated["Tag"])
-        & (F.coalesce(F.col("D.LineTypeID"), F.lit(-1)) == F.coalesce(pickup_order_dated["LineTypeID"], F.lit(-1)))
-        & (F.col("D.IsExcludefromTransfer") == pickup_order_dated["IsExcludefromTransfer"])
-        & (F.col("D._mode") == pickup_order_dated["_mode"])
-        & (pickup_order_dated["PickUpOrder"] == 3),
-        "left_anti",
-    ).unionByName(
-        pickup_order_dated.join(
-            no_transfer_entities.alias("D2"),
-            (F.col("D2.InvestmentID") == pickup_order_dated["InvestmentID"])
-            & (F.col("D2.TypeId") == pickup_order_dated["TypeId"])
-            & (F.col("D2.TrackingKey") == pickup_order_dated["TrackingKey"])
-            & (F.col("D2.Tag") == pickup_order_dated["Tag"])
-            & (F.coalesce(F.col("D2.LineTypeID"), F.lit(-1)) == F.coalesce(pickup_order_dated["LineTypeID"], F.lit(-1)))
-            & (F.col("D2.IsExcludefromTransfer") == pickup_order_dated["IsExcludefromTransfer"])
-            & (F.col("D2._mode") == pickup_order_dated["_mode"]),
+    if cfg.get("_output_v3_single_pickup_antijoin", False):
+        # The SQL-compatible expression below emits every non-3 row once and
+        # every unmatched pickup-3 row twice. Compute the expensive anti-join
+        # once, then reproduce its required duplicate multiplicity locally.
+        pickup_non3 = pickup_order_dated.filter(
+            F.col("PickUpOrder").isNull()
+            | (F.col("PickUpOrder") != F.lit(3))
+        )
+        pickup_three_remaining = (
+            pickup_order_dated.alias("P")
+            .filter(F.col("P.PickUpOrder") == F.lit(3))
+            .join(
+                no_transfer_entities.alias("D"),
+                (F.col("D.InvestmentID") == F.col("P.InvestmentID"))
+                & (F.col("D.TypeId") == F.col("P.TypeId"))
+                & (F.col("D.TrackingKey") == F.col("P.TrackingKey"))
+                & (F.col("D.Tag") == F.col("P.Tag"))
+                & (
+                    F.coalesce(F.col("D.LineTypeID"), F.lit(-1))
+                    == F.coalesce(F.col("P.LineTypeID"), F.lit(-1))
+                )
+                & (
+                    F.col("D.IsExcludefromTransfer")
+                    == F.col("P.IsExcludefromTransfer")
+                )
+                & (F.col("D._mode") == F.col("P._mode")),
+                "left_anti",
+            )
+            .select("P.*")
+            .withColumn(
+                "_output_v3_repeat",
+                F.explode(F.array(F.lit(1), F.lit(2))),
+            )
+            .drop("_output_v3_repeat")
+        )
+        pickup_order_dated = pickup_non3.unionByName(
+            pickup_three_remaining,
+            allowMissingColumns=True,
+        )
+    else:
+        pickup_order_dated = pickup_order_dated.join(
+            no_transfer_entities.alias("D"),
+            (F.col("D.InvestmentID") == pickup_order_dated["InvestmentID"])
+            & (F.col("D.TypeId") == pickup_order_dated["TypeId"])
+            & (F.col("D.TrackingKey") == pickup_order_dated["TrackingKey"])
+            & (F.col("D.Tag") == pickup_order_dated["Tag"])
+            & (F.coalesce(F.col("D.LineTypeID"), F.lit(-1)) == F.coalesce(pickup_order_dated["LineTypeID"], F.lit(-1)))
+            & (F.col("D.IsExcludefromTransfer") == pickup_order_dated["IsExcludefromTransfer"])
+            & (F.col("D._mode") == pickup_order_dated["_mode"])
+            & (pickup_order_dated["PickUpOrder"] == 3),
             "left_anti",
-        ).filter(F.col("PickUpOrder") == 3),
-        allowMissingColumns=True,
-    )
+        ).unionByName(
+            pickup_order_dated.join(
+                no_transfer_entities.alias("D2"),
+                (F.col("D2.InvestmentID") == pickup_order_dated["InvestmentID"])
+                & (F.col("D2.TypeId") == pickup_order_dated["TypeId"])
+                & (F.col("D2.TrackingKey") == pickup_order_dated["TrackingKey"])
+                & (F.col("D2.Tag") == pickup_order_dated["Tag"])
+                & (F.coalesce(F.col("D2.LineTypeID"), F.lit(-1)) == F.coalesce(pickup_order_dated["LineTypeID"], F.lit(-1)))
+                & (F.col("D2.IsExcludefromTransfer") == pickup_order_dated["IsExcludefromTransfer"])
+                & (F.col("D2._mode") == pickup_order_dated["_mode"]),
+                "left_anti",
+            ).filter(F.col("PickUpOrder") == 3),
+            allowMissingColumns=True,
+        )
 
     # Checkpoint pickup_order_dated after Step 4 modifications
     if checkpoint_fn is not None:

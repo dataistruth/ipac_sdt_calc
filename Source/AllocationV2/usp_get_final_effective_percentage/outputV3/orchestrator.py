@@ -41,6 +41,56 @@ _PRODUCTION_RUN_MODES = _base.run_modes
 _PRODUCTION_RUN_FINAL = _base.run_final_effective_percentages
 _PRODUCTION_RESULT_STORER = _base.GenericResultStorer
 
+# ---------------------------------------------------------------------------
+# Optimized business helpers (outputV3-owned)
+# ---------------------------------------------------------------------------
+# The production ``output`` package stays a pristine SQL conversion. All
+# performance optimizations live in ``outputV3.business`` and are bound onto
+# the isolated production orchestrator here, so the parallel pipeline calls
+# the optimized copies via ``business.<name>`` while ``output`` is untouched.
+# Every optimization is gated behind ``_output_v3_*`` flags / optional keyword
+# arguments whose defaults reproduce the exact production behavior, so binding
+# the copies does not change results unless outputV3 explicitly opts in.
+from .business import cost_pct_loader as _opt_cost_pct_loader
+from .business import state_allocation as _opt_state_allocation
+from .business import pfic_footnotes as _opt_pfic_footnotes
+from .business import effective_calc as _opt_effective_calc
+
+_OPTIMIZED_BUSINESS_EXPORTS = {
+    _opt_cost_pct_loader: (
+        "build_entity_underlyings",
+        "load_transfers_adj_cost",
+        "build_cost_percentage_by_type",
+        "compute_missing_entities",
+        "build_final_cost_percentage",
+        "validate_cost_percentage_sum",
+        "compute_minimum_quarter",
+    ),
+    _opt_state_allocation: (
+        "build_state_allocation_input",
+        "build_state_entities",
+    ),
+    _opt_pfic_footnotes: (
+        "build_footnote_underlyings_ordered",
+        "build_footnote_input_lines",
+        "build_footnote_dated_entities",
+        "_get_custom_footnote_line_types",
+    ),
+    _opt_effective_calc: (
+        "compute_effective_percentage_dated",
+        "compute_effective_percentage_non_dated",
+        "apply_plugging",
+        "apply_type_id_update",
+        "build_final_output",
+    ),
+}
+
+for _opt_module, _opt_names in _OPTIMIZED_BUSINESS_EXPORTS.items():
+    for _opt_name in _opt_names:
+        _optimized_fn = getattr(_opt_module, _opt_name, None)
+        if callable(_optimized_fn):
+            setattr(_base, _opt_name, _optimized_fn)
+
 _ACTIVE_EVENTS: contextvars.ContextVar[list | None] = contextvars.ContextVar(
     "fep_output_v3_events", default=None
 )

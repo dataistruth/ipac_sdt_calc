@@ -360,7 +360,7 @@ class OutputV3StructureTests(unittest.TestCase):
             pipeline,
         )
         cost_pct_loader = (
-            ROOT.parent / "output" / "cost_pct_loader.py"
+            ROOT / "business" / "cost_pct_loader.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
             '"_output_v3_cpbt_post_tag_entity_break"',
@@ -389,7 +389,7 @@ class OutputV3StructureTests(unittest.TestCase):
         )
         self.assertIn('"txfr_post_tag_m{mode}"', cost_pct_loader)
         footnotes = (
-            ROOT.parent / "output" / "pfic_footnotes.py"
+            ROOT / "business" / "pfic_footnotes.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
             '"_output_v3_batch_footnote_line_ids"',
@@ -401,7 +401,7 @@ class OutputV3StructureTests(unittest.TestCase):
         )
         self.assertIn('"fn_alloc_pfic_m{cfg.get(\'mode\', 0)}"', footnotes)
         state_allocation = (
-            ROOT.parent / "output" / "state_allocation.py"
+            ROOT / "business" / "state_allocation.py"
         ).read_text(encoding="utf-8")
         self.assertIn("collapse_state_passes: bool = False", state_allocation)
         self.assertIn(
@@ -420,7 +420,7 @@ class OutputV3StructureTests(unittest.TestCase):
             pipeline,
         )
         effective_calc = (
-            ROOT.parent / "output" / "effective_calc.py"
+            ROOT / "business" / "effective_calc.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
             '"_output_v3_single_pickup_antijoin"',
@@ -430,6 +430,41 @@ class OutputV3StructureTests(unittest.TestCase):
             "F.explode(F.array(F.lit(1), F.lit(2)))",
             effective_calc,
         )
+        # outputV3 owns the optimized business copies and binds them onto the
+        # isolated production orchestrator.
+        self.assertIn(
+            "from .business import cost_pct_loader as _opt_cost_pct_loader",
+            orchestrator,
+        )
+        self.assertIn(
+            "from .business import state_allocation as _opt_state_allocation",
+            orchestrator,
+        )
+        self.assertIn(
+            "from .business import pfic_footnotes as _opt_pfic_footnotes",
+            orchestrator,
+        )
+        self.assertIn(
+            "from .business import effective_calc as _opt_effective_calc",
+            orchestrator,
+        )
+        self.assertIn("_OPTIMIZED_BUSINESS_EXPORTS", orchestrator)
+        self.assertIn("setattr(_base, _opt_name, _optimized_fn)", orchestrator)
+        # Production output/ must stay a pristine SQL conversion with no
+        # outputV3 optimization seams.
+        for _pristine_name in (
+            "cost_pct_loader.py",
+            "state_allocation.py",
+            "pfic_footnotes.py",
+            "effective_calc.py",
+        ):
+            pristine = (
+                ROOT.parent / "output" / _pristine_name
+            ).read_text(encoding="utf-8")
+            self.assertNotIn("_output_v3_", pristine)
+            self.assertNotIn("collapse_state_passes", pristine)
+            self.assertNotIn("batch_state_workflow_lookup", pristine)
+            self.assertNotIn("checkpoint_group_fn", pristine)
         self.assertIn("compute_dated_effective", pipeline)
         self.assertIn("compute_non_dated_effective", pipeline)
         self.assertIn("frozenset({1, 2, 3, 4, 5})", checkpoint_v2)
