@@ -7,6 +7,9 @@
 # COMMAND ----------
 
 dbutils.widgets.removeAll()
+
+# COMMAND ----------
+
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",

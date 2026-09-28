@@ -70,11 +70,27 @@ ThreadPool caused count mismatches on a sibling SP). Sequential writes.
 
 SKIP when `RunStatus=FAIL` or no Cost/704c FEP rows (`load_workflow_ids`).
 
-## Notebook defaults (FEP Development run)
+## Notebook defaults (same FEP Development run widgets)
 
-EntityID `4137`, ClientID `15348`, TaxPeriodID `1`, RunID `17376`,
-catalog `QA7`, schema `iPC_2025_QA7_15348`, LineType **`K1 with Cost`**,
-RankForRule `0`, ExecutionProfile `low`, ProfilePlan `off`.
+`outputV2/notebook/benchmark_load_lookthrough_cost_alloc.py` uses the
+same identity widgets and defaults as FEP
+`benchmark_final_effective_percentage.py`:
+
+| Widget | Default |
+|---|---|
+| source_path | `/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source` |
+| EntityID | `4137` |
+| ClientID | `15348` |
+| TaxPeriodID | `1` |
+| RunID | `17376` |
+| CatalogName | `QA7` |
+| SchemaName | `iPC_2025_QA7_15348` |
+| ExecutionProfile | `low` |
+| MaxThreads | blank |
+| SqlShufflePartitions | blank |
+| CheckpointMode | `default` |
+| LineType | `K1 with Cost` |
+| RankForRule | `0` |
 
 Restore `LookThroughAllocationOutput` and `LookThroughAllocationInput`
 before each variant (Output is also an input).
