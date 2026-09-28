@@ -23,21 +23,21 @@ independent plans.
 
 Then sequential: checkpoint snapshot, PFIC allocation rows, custom
 footnote input (registers `_cf_latest_txn_*`), checkpoint `alloc_input`,
-PFIC flowup pipeline, `pfic_raw`, XML alert, election deletes, Part V/VII,
+PFIC flowup pipeline, XML alert, election deletes, Part V/VII,
 `pfic_flowup`, filters, `alloc_filtered`, tags, optional `alloc_tagged`.
 
-Collect three disjoint `_parquet_results` groups, merge, then:
-
-1. AllocationInput Delta `replaceWhere` RunID
-2. remaining distinct flow-up tables in `output_writes` (up to 4 workers)
+Collect disjoint `_parquet_results` groups (`output_collect`, per form
+table), merge, then write **all** collected tables in `output_writes`
+including AllocationInput (up to 4 workers). Do not checkpoint
+`pfic_raw` after `7a-2`.
 
 ## Parallel groups
 
 | Group | Tasks |
 |---|---|
 | `independent_input_builders` | forms, K1-related, PFIC snapshot |
-| `output_collect` | collect AllocationInput / PFIC flowup / form flowups |
-| `output_writes` | one disk write per distinct flow-up table |
+| `output_collect` | AllocationInput, PFIC flowup, 926, 199A, 8886, 8865, AtRisk, Custom |
+| `output_writes` | one disk write per collected table, including AllocationInput |
 
 Orchestrator applies `ExecutionProfile` at start, default `low`.
 

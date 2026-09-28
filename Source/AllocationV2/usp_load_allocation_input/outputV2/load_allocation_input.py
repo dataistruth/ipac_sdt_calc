@@ -371,9 +371,6 @@ def run_load_allocation_input(
             pfic_flowup_df = build_pfic_flowup_pipeline(
                 spark, cfg, pfic_snapshot_df, lower_tier_df
             )
-            pfic_flowup_df = _checkpoint(
-                spark, pfic_flowup_df, "pfic_raw", cfg
-            )
             check_pfic_xml_override_alert(spark, cfg, pfic_flowup_df)
             allocation_input_df, pfic_flowup_df = apply_pfic_election_deletes(
                 spark, cfg, allocation_input_df, pfic_flowup_df, lower_tier_df

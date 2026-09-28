@@ -64,7 +64,7 @@ Public entry:
 4. FAIL when `RunStatus=FAIL` or validations return False. Do not write
    result tables after those gates.
 5. Keep production orchestrator checkpoint seams:
-   `pfic_snapshot`, `alloc_input`, `pfic_raw`, `pfic_flowup`,
+   `pfic_snapshot`, `alloc_input`, `pfic_flowup`,
    `alloc_filtered`, and `alloc_tagged` when the tag workflow is on.
    Production helpers may still call the legacy checkpoint helper
    (`reclass_data`, inner `base_flowup`); do not drop those by editing
@@ -74,11 +74,11 @@ Public entry:
    view `_cf_latest_txn_*`) stay **sequential**.
 7. PFIC flowup, election deletes, Part V/VII flags, filters, and tags
    stay **sequential**.
-8. `AllocationInput` Delta `replaceWhere` stays **first**. The remaining
-   distinct flow-up tables (`PFICFootnoteFlowup`, form flowups, etc.)
-   write in `output_writes` (cap 4). Do not invert AllocationInput vs
-   flow-ups. Do not batch them through one `GenericResultStorer.save_results`
-   call.
+8. Distinct result tables, including `AllocationInput`, write together in
+   `output_writes` (cap 4). Do not batch them through one
+   `GenericResultStorer.save_results` call. After production `7a-2`
+   `base_flowup`, do **not** add orchestrator `pfic_raw`; keep `pfic_flowup`
+   after election deletes / Part V/VII.
 9. Never use a runtime improvement from a failed or non-parity run.
 10. Do not leave `__pycache__` or `.pyc` files in the repository.
 11. Mode 1 Production: no plan profiler. Mode 2 Development: slim profiler
@@ -119,12 +119,13 @@ Resolve `ExecutionProfile` in the orchestrator at run start (default
 - **`independent_input_builders`**: after validations,
   `build_all_form_inputs`, `build_k1_and_related_inputs`, and
   `build_pfic_snapshot`. Isolated `cfg`. No temp views in these three.
-- **`output_collect`**: after tags, collect frames for AllocationInput,
-  PFIC flowup tables, and form flowups on isolated `_parquet_results`,
-  then merge.
-- **`output_writes`**: after AllocationInput Delta commit, write each
-  remaining distinct flow-up table concurrently. Writer constructed
-  in-task. `replaceWhere RunID` when the frame has `RunID`.
+- **`output_collect`**: after tags, collect AllocationInput, PFIC flowup,
+  and **each** form flowup table (926 / 199A / 8886 / 8865 / AtRisk /
+  Custom) as its own task. Register `_unblocked_footnotes_{run_id}` on
+  the main thread first. Isolated `_parquet_results`, then merge.
+- **`output_writes`**: write **every** collected table concurrently,
+  including `AllocationInput`. Writer constructed in-task.
+  `replaceWhere RunID` when the frame has `RunID`.
 
 Wave time is `max(task)`. Cap workers 1..4.
 
@@ -134,10 +135,9 @@ Production batches the flow-up tables through one
 `GenericResultStorer.save_results` call, which writes them one after
 another. Replace that batch in `outputV2/write_helpers.py`:
 
-1. Write `AllocationInput` first (Delta `replaceWhere RunID`), on the main
-   thread. It must commit before any flow-up table.
-2. Then submit one task per remaining `_parquet_results` table under
-   `output_writes`:
+1. Submit **every** `_parquet_results` table under `output_writes` in
+   one wave, including `AllocationInput`:
+   - `AllocationInput`
    - `PFICFootnoteFlowup`
    - `PFICFootnoteFlowupWithTrackingKey`
    - `Form926Flowup`
@@ -148,23 +148,23 @@ another. Replace that batch in `outputV2/write_helpers.py`:
    - `CustomFootnoteFlowup`
    - plus `Form200616Flowup`, `PFICUpdateAlert`, `PFICAlertDetails` when
      present in `_parquet_results`
-3. Each task aligns to the target schema, applies `coalesce(1)` for
+2. Each task aligns to the target schema, applies `coalesce(1)` for
    production `SMALL_TABLES`, and builds its own writer. Use Delta
    `replaceWhere RunID` when the frame has `RunID`; otherwise fall back to
    a single-table `GenericResultStorer.save_results` call.
-4. Observe every future. Raise after all tasks finish if any failed.
+3. Observe every future. Raise after all tasks finish if any failed.
 
-Evidence: the 2026-09-28 A/B run (RunID `16560`) passed parity at 63.4s
-with the batched storer. The eight flow-up tables took ~14s end to end
-(`20:34:17` to `20:34:31`). Parallel writes target that segment.
+Evidence: 2026-09-28 RunID `16560` production store 17.2s vs updated
+8-table wave 5.7s (AllocationInput still sequential). Overlapping
+AllocationInput with that wave is the next write win.
 
-Expected log shape after the change:
+Expected log shape:
 
 ```text
-   [ok] AllocationInput (delta)
-[store] Writing 8 flow-up tables in parallel: ...
+[store] Writing 9 tables in parallel: ...
+[parallel] START phase=output_writes task=AllocationInput ...
 [parallel] START phase=output_writes task=Form926Flowup ...
-[parallel] output_writes: tasks=8 workers=4 wall=...s critical=max-task
+[parallel] output_writes: tasks=9 workers=4 wall=...s critical=max-task
 ```
 
 If the log still shows `Storing to Delta Tables` with one checkmark per
@@ -178,12 +178,13 @@ Reject if any table hash differs.
 
 ## Known bad experiments
 
-- dropping `pfic_snapshot` / `alloc_input` / `pfic_raw` / `pfic_flowup` /
+- dropping `pfic_snapshot` / `alloc_input` / `pfic_flowup` /
   `alloc_filtered` without a new A/B;
 - parallelizing `build_custom_footnote_input` or `build_entity_hierarchy`;
 - parallelizing the PFIC flowup / election-delete chain;
-- running Parquet/flow-up writes **before** the AllocationInput Delta write;
-- batching the eight flow-up tables through one sequential
+- collecting all form flowups in one `FormFlowups` task;
+- adding orchestrator `pfic_raw` immediately after production `7a-2`;
+- batching tables through one sequential
   `GenericResultStorer.save_results` call;
 - copying FEP SkipYearlyEmptyProbe or footnotes plan-breaks.
 

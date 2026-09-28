@@ -1,9 +1,4 @@
-"""Collect independent result frames, then flush in production write order.
-
-``write_allocation_input``, ``write_pfic_flowup``, and ``write_form_flowups``
-only populate ``cfg["_parquet_results"]``. The Delta AllocationInput write
-still runs before the Parquet storer, matching production failure semantics.
-"""
+"""Collect independent result frames, then flush distinct tables in parallel."""
 
 from __future__ import annotations
 
@@ -13,13 +8,17 @@ from Common_V2.core.generic_result_storer import GenericResultStorer
 from Common_V2.core.helpers import table_prefix
 from pyspark.sql import functions as _F
 
+from .form_flowup_collect import (
+    FORM_FLOWUP_TABLES,
+    collect_form_flowup_table,
+    prepare_unblocked_footnotes,
+)
 from .parallel_helpers import isolated_cfg, run_parallel
 from .parent import output_module
 
 _final = output_module("ai_finalization_service")
 write_allocation_input = _final.write_allocation_input
 write_pfic_flowup = _final.write_pfic_flowup
-write_form_flowups = _final.write_form_flowups
 
 SMALL_TABLES = {
     "Form926Flowup",
@@ -62,6 +61,20 @@ def collect_output_frames_parallel(
     enabled_groups,
 ):
     """Build disjoint collected frames concurrently. No disk writes."""
+    prepare_unblocked_footnotes(spark, cfg)
+    form_tasks = [
+        (
+            table_name,
+            lambda table_name=table_name: _collect_one(
+                spark,
+                cfg,
+                lambda s, c, table_name=table_name: collect_form_flowup_table(
+                    s, c, k1_workflow_df, table_name
+                ),
+            ),
+        )
+        for table_name in FORM_FLOWUP_TABLES
+    ]
     parts = run_parallel(
         [
             (
@@ -82,14 +95,7 @@ def collect_output_frames_parallel(
                     lambda s, c: write_pfic_flowup(s, c, pfic_flowup_df),
                 ),
             ),
-            (
-                "FormFlowups",
-                lambda: _collect_one(
-                    spark,
-                    cfg,
-                    lambda s, c: write_form_flowups(s, c, k1_workflow_df),
-                ),
-            ),
+            *form_tasks,
         ],
         workers,
         activity,
@@ -164,31 +170,15 @@ def flush_collected_results(
     activity,
     enabled_groups,
 ):
-    """AllocationInput first, then parallel distinct-table flow-up writes."""
+    """Write every collected table in one output_writes wave, including AllocationInput."""
     parquet_results = cfg.get("_parquet_results", {})
-    run_id = cfg["run_id"]
     save_return_value = None
     if not parquet_results:
         return save_return_value
 
-    prefix = table_prefix(cfg)
-    alloc_df = parquet_results.get("AllocationInput")
-    if alloc_df is not None:
-        alloc_df.write.format("delta").mode("overwrite").option(
-            "replaceWhere", f"RunID = {run_id}"
-        ).saveAsTable(f"{prefix}.AllocationInput")
-        print("   [ok] AllocationInput (delta)")
-
-    flowup_items = [
-        (tbl_name, df)
-        for tbl_name, df in parquet_results.items()
-        if tbl_name != "AllocationInput"
-    ]
-    if not flowup_items:
-        return save_return_value
-
+    write_items = list(parquet_results.items())
     print(
-        f"[store] Writing {len(flowup_items)} flow-up tables in parallel: "
+        f"[store] Writing {len(write_items)} tables in parallel: "
         f"{datetime.now()}"
     )
     save_values = run_parallel(
@@ -205,7 +195,7 @@ def flush_collected_results(
                     execution_id,
                 ),
             )
-            for tbl_name, df in flowup_items
+            for tbl_name, df in write_items
         ],
         workers,
         activity,
@@ -213,7 +203,7 @@ def flush_collected_results(
         enabled_groups,
     )
     print(
-        f"[done] Stored {len(flowup_items)} flow-up tables: {datetime.now()}"
+        f"[done] Stored {len(write_items)} tables: {datetime.now()}"
     )
     for value in save_values:
         if (
