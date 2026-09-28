@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-load-lookthrough-footnote-effective-allocation-pct
-description: Optimizes Development outputV2 for uspLoadLookThroughFootnoteEffectiveAllocationPercentage (Checkpoint V2 on lt_output, parallel cost/book/temp-input plans, sequential Output then Input writes). Use when generating, benchmarking, or diagnosing this SP. Do not parallelize Output+Input writes.
+description: Optimizes Development outputV2 for uspLoadLookThroughFootnoteEffectiveAllocationPercentage. Same production builders and write order; Checkpoint V2 on lt_output plus extra plan-break seams like footnotes. Sequential Output then Input writes. Use when generating or diagnosing this SP.
 ---
 
 # Optimize uspLoadLookThroughFootnoteEffectiveAllocationPercentage
@@ -8,86 +8,74 @@ description: Optimizes Development outputV2 for uspLoadLookThroughFootnoteEffect
 Use this skill only for
 `AllocationV2/usp_load_lookthrough_footnote_effective_allocation_pct`.
 
-Parent packaging lives in [optimize-spark-sp](../SKILL.md). The **SP
-orchestrator** resolves `ExecutionProfile` from
-`Common_V2.core.execution_profiles` at start. Default **low**. No AQE.
-No `business/`. Production `output/` is the correctness baseline.
+Production `output/load_lt_footnote_effective_allocation_pct.py` is the
+correctness baseline. `outputV2` imports those builders via `parent.py`
+and only changes scheduling, Checkpoint V2, and packaging.
 
 Public entry: `run_load_lt_footnote_effective_allocation_pct`.
 
-## Allowed outputV2 tree
+## Logic identity (do not change)
 
-```text
-outputV2/
-├── __init__.py
-├── load_lt_footnote_effective_allocation_pct.py
-├── parent.py
-├── parallel_helpers.py
-├── write_helpers.py
-├── plan_profiler.py
-├── output_reconcile.py
-├── OPTIMIZATION_REPORT.md
-└── notebook/benchmark_load_lt_footnote_effective_allocation_pct.py
-```
+Call production functions in this order:
 
-Import production via `output_module("load_lt_footnote_effective_allocation_pct")`.
-Do not copy the production module into `outputV2/`.
+1. `_load_sp_config` then SKIPPED if `RunStatus=FAIL`, AllocationTypeName
+   not `PE Book Allocation`, or `register_type_id` empty.
+2. `load_mappings` → `expand_parent_k1_mappings` (may `isEmpty`) →
+   `build_distinct_mappings` → K1 `isEmpty` gate (`OK_NO_K1`).
+3. `build_yearly_effective_pct` → `load_partners` →
+   `load_final_effective_percentages` → `build_lt_allocation_output`.
+4. `build_cost_effective_pct` → `build_book_effective_pct` →
+   `unionByName` → `load_temp_allocation_input` → SKIPPED if empty.
+5. `build_single_multi_alloc_type` → `build_k1_data_amounts` →
+   `build_final_effective_pct` → `build_allocation_output`.
+6. `write_allocation_output` then `update_allocation_input`.
 
-## Parallel groups
+Do not parallelize those steps. Parallel Output+Input writes produced a
+row-count mismatch. Do not copy builder bodies into `outputV2/`.
 
-```python
-{"independent_builders"}
-```
+## Checkpoint V2 seams (footnotes-style extras)
 
-| Group | Tasks |
-|---|---|
-| sequential | yearly %, partners, FEP, `build_lt_allocation_output`, Checkpoint V2 `lt_output` |
-| `independent_builders` | cost %, book %, temp allocation input (lazy plans only) |
-| sequential | empty-input gate, single/multi, K1 amounts, final %, build frames |
-| sequential writes | LookThroughAllocationOutput append, then LookThroughAllocationInput overwrite |
+Keep production seam **`lt_output`**. Add extra local plan breaks the
+same way footnotes adds `cost_snapshot` / `temp_alloc_input` /
+`alloc_pass*` on top of production:
 
-Keep sequential: `_load_sp_config` and skip gates, `load_mappings` →
-`expand_parent_k1_mappings` (isEmpty), `build_distinct_mappings`, K1
-gate, yearly/partners/FEP/`lt_output` (those fire Spark actions), and
-both result writes. Do not drop `lt_output`. Do not parallelize classify
-→ K1 amounts → final % → build frames.
+| Name | After | Role |
+|---|---|---|
+| `distinct_mappings` | K1 gate | fan-out to yearly, LT output, temp input, classify, K1 |
+| `yearly_line_amounts` | yearly % (skip if None) | INSERT 3 of final % |
+| `partners` | `load_partners` | output join |
+| `fep` | FEP load | cost + book |
+| `lt_output` | **production** | cost, book, K1 amounts |
+| `temp_final_eff_pct` | cost∪book | classify (`isEmpty` + join) |
+| `temp_alloc_input` | temp input load | empty gate + classify + final % + write join |
+| `single_percent` | classify (skip if None) | K1 amounts + final % |
+| `k1_amount_pct` | K1 amounts (skip if None) | final % INSERT 2 |
+| `final_pct` | final % (skip if None) | output join |
+| `alloc_output` | build output | Output write |
+| `grouped_output` | build output | Input overwrite |
 
-Thread prefix: `lt-fn-eff-pct`. Isolated `{**cfg}` on parallel builder
-tasks.
+After a **local** Checkpoint V2 backend, `toDF(*columns)` like footnotes.
+Do not drop `lt_output`.
 
-## Reconcile
+## Writes
 
-Snapshot `LookThroughAllocationOutput` and `LookThroughAllocationInput`
-on `RunID` after inspecting live columns. **Restore** (do not purge
-Output) before each variant — §7 reads existing Output rows.
+Sequential: append `LookThroughAllocationOutput`, then overwrite
+`LookThroughAllocationInput` for the RunID. Restore both tables before
+each A/B variant (Output is also an input to §7).
 
-## Notebook defaults (FEP Development run)
+## Notebook defaults
 
-| Widget | Default |
-|---|---|
-| source_path | `/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source` |
-| EntityID | `4137` |
-| ClientID | `15348` |
-| TaxPeriodID | `1` |
-| RunID | `17376` |
-| CatalogName | `QA7` |
-| SchemaName | `iPC_2025_QA7_15348` |
-| VolumePath | `/Volumes/qa7/datavolume/databrickdata` |
-| ExecutionProfile | `low` |
-| MaxThreads | blank |
-| ProfilePlan | `off` |
-| SqlShufflePartitions | blank |
+EntityID `4137`, ClientID `15348`, TaxPeriodID `1`, RunID `17376`,
+catalog `QA7`, schema `iPC_2025_QA7_15348`, ExecutionProfile `low`,
+ProfilePlan `off`, shuffle blank.
 
-Pass profile / MaxThreads / ParallelGroups / ProfilePlan / CheckpointMode
-only to updated. Fair timing: ProfilePlan off.
+Updated always returns a status dict (`elapsed_seconds`, `skip_reason`).
 
 ## Known bad
 
-- Purging `LookThroughAllocationOutput` before a variant
-- Copying the 2k-line production module into `outputV2/`
+- Parallel `output_writes`
+- Parallel yearly / partners / FEP / `lt_output` (`collect` / `isEmpty`)
+- Purging Output before a variant
+- Copying the production module into `outputV2/`
 - Dropping `lt_output`
-- Parallelizing mapping expand or the classify→write DAG
-- Parallel `output_writes` (Output append + Input overwrite) — A/B
-  LookThroughAllocationOutput count mismatch (original 110 rows)
-- Parallel yearly/partners/FEP/`lt_output` (Spark actions / `collect`)
-- FEP CPBT / footnotes `cost_snapshot` rewrites
+- FEP CPBT / footnotes `cost_snapshot` *rewrites* (extra **seams** are OK)

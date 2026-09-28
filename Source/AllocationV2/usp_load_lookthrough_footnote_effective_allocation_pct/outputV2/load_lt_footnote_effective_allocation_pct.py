@@ -20,7 +20,6 @@ from Common_V2.core.execution_profiles import resolve_execution_profile
 from .parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
-    run_parallel,
 )
 from .parent import output_module
 from .plan_profiler import (
@@ -89,9 +88,26 @@ def _timed(timings, step):
         )
 
 
+def _v2(msg):
+    print(f"[outputV2] {msg}", flush=True)
+
+
 def _checkpoint(spark, df, name, cfg):
+    """Checkpoint V2 with the footnotes local-backend qualifier reset."""
+    if df is None:
+        _v2(f"checkpoint {name}: skipped (df=None)")
+        return None
     track_checkpoint_plan(name, df, cfg)
-    return checkpoint(spark, df, name, cfg)
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = checkpoint(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    _v2(f"checkpoint {name}: done")
+    return result
 
 
 def _emit_reports(cfg):
@@ -205,6 +221,7 @@ def run_load_lt_footnote_effective_allocation_pct(
         "error": None,
         "elapsed_seconds": 0,
         "sections_completed": 0,
+        "skip_reason": None,
     }
 
     try:
@@ -283,7 +300,9 @@ def run_load_lt_footnote_effective_allocation_pct(
             if (cfg.get("run_status") or "").upper() == "FAIL":
                 logger.error("RunStatus=FAIL — aborting.")
                 status["status"] = "SKIPPED"
+                status["skip_reason"] = "run_status_fail"
                 status["error"] = "RunStatus=FAIL"
+                _v2("SKIPPED: RunStatus=FAIL")
                 return status
             if (cfg.get("allocation_type_name") or "").lower() != (
                 "pe book allocation"
@@ -292,10 +311,17 @@ def run_load_lt_footnote_effective_allocation_pct(
                     "AllocationTypeName != 'PE Book Allocation' — skipping."
                 )
                 status["status"] = "SKIPPED"
+                status["skip_reason"] = "not_pe_book_allocation"
+                _v2(
+                    "SKIPPED: AllocationTypeName="
+                    f"{cfg.get('allocation_type_name')!r}"
+                )
                 return status
             if not cfg.get("register_type_id"):
                 logger.info("RegisterTypeID is NULL/0 — skipping.")
                 status["status"] = "SKIPPED"
+                status["skip_reason"] = "no_register_type_id"
+                _v2("SKIPPED: RegisterTypeID is NULL/0")
                 return status
 
         with _timed(timings, "S2 mappings and K1 gate"):
@@ -314,7 +340,12 @@ def run_load_lt_footnote_effective_allocation_pct(
                 )
                 status["sections_completed"] = 5
                 status["status"] = "OK_NO_K1"
+                status["skip_reason"] = "no_k1_mappings"
+                _v2("OK_NO_K1: no K1 SourceTypeID in distinct mappings")
                 return status
+            distinct_mappings_df = _checkpoint(
+                spark, distinct_mappings_df, "distinct_mappings", cfg
+            )
 
         with _timed(timings, "S3 yearly partners FEP and lt_output"):
             yearly_pair = build_yearly_effective_pct(
@@ -322,8 +353,13 @@ def run_load_lt_footnote_effective_allocation_pct(
             )
             total_amount_yearly_df, tmp_line_amounts_df = yearly_pair
             del total_amount_yearly_df
+            tmp_line_amounts_df = _checkpoint(
+                spark, tmp_line_amounts_df, "yearly_line_amounts", cfg
+            )
             partners_df = load_partners(spark, cfg)
+            partners_df = _checkpoint(spark, partners_df, "partners", cfg)
             final_eff_pct_df = load_final_effective_percentages(spark, cfg)
+            final_eff_pct_df = _checkpoint(spark, final_eff_pct_df, "fep", cfg)
             lt_output_df = build_lt_allocation_output(
                 spark, cfg, distinct_mappings_df
             )
@@ -332,42 +368,27 @@ def run_load_lt_footnote_effective_allocation_pct(
             )
 
         with _timed(timings, "S4 cost book and temp input"):
-            cost_pct_df, book_pct_df, temp_alloc_input_df = run_parallel(
-                [
-                    (
-                        "build_cost_effective_pct",
-                        lambda: build_cost_effective_pct(
-                            spark,
-                            {**cfg},
-                            lt_output_df,
-                            final_eff_pct_df,
-                        ),
-                    ),
-                    (
-                        "build_book_effective_pct",
-                        lambda: build_book_effective_pct(
-                            spark,
-                            {**cfg},
-                            lt_output_df,
-                            final_eff_pct_df,
-                        ),
-                    ),
-                    (
-                        "load_temp_allocation_input",
-                        lambda: load_temp_allocation_input(
-                            spark, {**cfg}, distinct_mappings_df
-                        ),
-                    ),
-                ],
-                workers,
-                parallel_activity,
-                "independent_builders",
-                enabled_groups,
+            cost_pct_df = build_cost_effective_pct(
+                spark, cfg, lt_output_df, final_eff_pct_df
+            )
+            book_pct_df = build_book_effective_pct(
+                spark, cfg, lt_output_df, final_eff_pct_df
             )
             temp_final_eff_pct_df = cost_pct_df.unionByName(book_pct_df)
+            temp_final_eff_pct_df = _checkpoint(
+                spark, temp_final_eff_pct_df, "temp_final_eff_pct", cfg
+            )
+            temp_alloc_input_df = load_temp_allocation_input(
+                spark, cfg, distinct_mappings_df
+            )
+            temp_alloc_input_df = _checkpoint(
+                spark, temp_alloc_input_df, "temp_alloc_input", cfg
+            )
             if temp_alloc_input_df.isEmpty():
                 logger.info("No allocation input rows — exiting.")
                 status["status"] = "SKIPPED"
+                status["skip_reason"] = "empty_temp_allocation_input"
+                _v2("SKIPPED: temp allocation input is empty")
                 return status
 
         with _timed(timings, "S5 classify k1 and allocation output"):
@@ -378,6 +399,9 @@ def run_load_lt_footnote_effective_allocation_pct(
                 distinct_mappings_df,
                 temp_final_eff_pct_df,
             )
+            single_percent_df = _checkpoint(
+                spark, single_percent_df, "single_percent", cfg
+            )
             total_amount_pct_df, total_amounts_df = build_k1_data_amounts(
                 spark,
                 cfg,
@@ -386,6 +410,9 @@ def run_load_lt_footnote_effective_allocation_pct(
                 single_percent_df,
             )
             del total_amounts_df
+            total_amount_pct_df = _checkpoint(
+                spark, total_amount_pct_df, "k1_amount_pct", cfg
+            )
             final_pct_df = build_final_effective_pct(
                 spark,
                 cfg,
@@ -394,8 +421,17 @@ def run_load_lt_footnote_effective_allocation_pct(
                 total_amount_pct_df,
                 tmp_line_amounts_df,
             )
+            final_pct_df = _checkpoint(
+                spark, final_pct_df, "final_pct", cfg
+            )
             alloc_output_df, grouped_output_df = build_allocation_output(
                 spark, cfg, temp_alloc_input_df, final_pct_df, partners_df
+            )
+            alloc_output_df = _checkpoint(
+                spark, alloc_output_df, "alloc_output", cfg
+            )
+            grouped_output_df = _checkpoint(
+                spark, grouped_output_df, "grouped_output", cfg
             )
 
         with _timed(timings, "S6 write output then update input"):
@@ -414,6 +450,7 @@ def run_load_lt_footnote_effective_allocation_pct(
                 cfg,
             )
             status["sections_completed"] = 16
+            status["storer_return"] = save_return_value
     except Exception as exc:
         status["status"] = "FAIL"
         status["error"] = str(exc)
@@ -441,18 +478,19 @@ def run_load_lt_footnote_effective_allocation_pct(
         }
         if isinstance(cfg, dict):
             drop_checkpoints_V2(spark, cfg)
+        _v2(
+            f"DONE status={status.get('status')} "
+            f"skip_reason={status.get('skip_reason')} "
+            f"sections={status.get('sections_completed')} "
+            f"elapsed={status.get('elapsed_seconds')}s "
+            f"profile={profile_name} checkpoint_mode={mode}"
+        )
 
     logger.info(
         f"[DONE] run_load_lt_footnote_effective_allocation_pct | "
         f"{status['elapsed_seconds']}s | RunID={cfg['run_id']} "
         f"EntityID={cfg['entity_id']}"
     )
-    if (
-        save_return_value
-        and isinstance(save_return_value, str)
-        and save_return_value.strip()
-    ):
-        return save_return_value
     return status
 
 

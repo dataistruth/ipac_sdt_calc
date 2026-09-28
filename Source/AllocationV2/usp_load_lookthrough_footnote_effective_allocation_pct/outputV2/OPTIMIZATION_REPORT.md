@@ -1,35 +1,25 @@
 # Look-through footnote effective allocation % — Development outputV2
 
-Production `output/` is unchanged. Candidate lives in `outputV2/` and
-imports production builders via `parent.py`.
+Production `output/` is unchanged. `outputV2` calls the same production
+builders in the same order.
 
-## What changed
+## Logic vs production
 
-- Orchestrator resolves `ExecutionProfile` (default **low**) at start:
-  shuffle 32, CheckpointMode 4, MaxThreads 4. No AQE override.
-- Production checkpoint seam `lt_output` now uses Checkpoint V2.
-- Phase `independent_builders`: cost %, book %, temp allocation input
-  (lazy plans; materialize on the main thread).
-- Sequential writes matching production: LookThroughAllocationOutput
-  append, then LookThroughAllocationInput RunID overwrite. Parallel
-  writes caused a LookThroughAllocationOutput count mismatch.
-- Sequential: config/skip gates, mapping expand (isEmpty), distinct
-  mappings, K1 gate, yearly/partners/FEP/lt_output (Spark actions),
-  single/multi classify, K1 amounts, final %, build output frames.
+Identical gates, K1 short-circuit, yearly/partners/FEP/LT output,
+cost then book then union, temp input empty exit, classify → K1 amounts
+→ final % → build frames, then Output append then Input overwrite.
 
-## Compared tables
+## Checkpoints (footnotes-style extras)
 
-- `LookThroughAllocationOutput` (`RunID`) — snapshot and restore; do
-  not purge before a variant (SP reads this table in §7).
-- `LookThroughAllocationInput` (`RunID`)
+Production only materializes `lt_output`. outputV2 keeps that seam and
+adds plan breaks on the other multi-consumer frames:
+`distinct_mappings`, `yearly_line_amounts`, `partners`, `fep`,
+`temp_final_eff_pct`, `temp_alloc_input`, `single_percent`,
+`k1_amount_pct`, `final_pct`, `alloc_output`, `grouped_output`.
+Local V2 backends get the footnotes `toDF` qualifier reset.
 
-## Notebook defaults (from FEP Development run)
+## Validation
 
-EntityID `4137`, ClientID `15348`, TaxPeriodID `1`, RunID `17376`,
-catalog `QA7`, schema `iPC_2025_QA7_15348`, ExecutionProfile `low`,
-ProfilePlan `off`, shuffle blank.
-
-## Validation status
-
-Local syntax check only. Databricks A/B hashes are not accepted yet.
-Production baseline on this procedure is ~96s.
+Local syntax only until a new Databricks A/B on EntityID 4137 /
+RunID 17376 with matching hashes. Re-upload this `outputV2/` first;
+older workspace copies still had parallel writes.

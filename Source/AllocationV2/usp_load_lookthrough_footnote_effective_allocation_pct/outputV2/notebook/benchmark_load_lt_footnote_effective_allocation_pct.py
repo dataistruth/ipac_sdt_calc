@@ -198,7 +198,9 @@ def run_variant(variant, number, snapshot):
     rows = reconcile.summarize_metrics(metrics)["total_rows"]
     print(
         f"[benchmark] {variant}: wall={wall:.3f}s "
-        f"reported={_reported_seconds(result)} rows={rows}"
+        f"reported={_reported_seconds(result)} rows={rows} "
+        f"status={result.get('status') if isinstance(result, dict) else None} "
+        f"skip_reason={result.get('skip_reason') if isinstance(result, dict) else None}"
     )
     return dict(
         pass_number=number,
@@ -207,6 +209,9 @@ def run_variant(variant, number, snapshot):
         reported_seconds=_reported_seconds(result),
         rows=rows,
         status=result.get("status") if isinstance(result, dict) else None,
+        skip_reason=(
+            result.get("skip_reason") if isinstance(result, dict) else None
+        ),
         metrics=metrics,
         profile=profile,
     )
@@ -265,6 +270,7 @@ summary = [
             "reported_seconds",
             "rows",
             "status",
+            "skip_reason",
         )
     }
     for row in records
