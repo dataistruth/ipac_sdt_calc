@@ -2,19 +2,44 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from datetime import datetime
+from pathlib import Path
 
 from Common_V2.core.generic_result_storer import GenericResultStorer
 from Common_V2.core.helpers import table_prefix
 from pyspark.sql import functions as _F
 
-from .form_flowup_collect import (
-    FORM_FLOWUP_TABLES,
-    collect_form_flowup_table,
-    prepare_unblocked_footnotes,
-)
 from .parallel_helpers import isolated_cfg, run_parallel
 from .parent import output_module
+
+
+def _load_form_flowup_collect():
+    """Import sibling form_flowup_collect.py even if Databricks package scan missed it."""
+    try:
+        from . import form_flowup_collect as module
+        return module
+    except (ModuleNotFoundError, ImportError):
+        path = Path(__file__).resolve().with_name("form_flowup_collect.py")
+        if not path.is_file():
+            raise ModuleNotFoundError(
+                "form_flowup_collect.py is not next to write_helpers.py at "
+                f"{path}. Sync that file into the same outputV2 folder as a "
+                "Python source file (not a Databricks notebook)."
+            ) from None
+        name = "usp_load_allocation_input_outputV2_form_flowup_collect"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+_form_flowup_collect = _load_form_flowup_collect()
+FORM_FLOWUP_TABLES = _form_flowup_collect.FORM_FLOWUP_TABLES
+collect_form_flowup_table = _form_flowup_collect.collect_form_flowup_table
+prepare_unblocked_footnotes = _form_flowup_collect.prepare_unblocked_footnotes
 
 _final = output_module("ai_finalization_service")
 write_allocation_input = _final.write_allocation_input
