@@ -1,194 +1,265 @@
 ---
 name: optimize-usp-load-allocation-input
-description: Optimizes the Spark implementation of uspLoadAllocationInput by applying Checkpoint V2 on production seams, parallel form/K1/PFIC-snapshot builders, a parallel output_collect phase, and parallel per-table flow-up writes after the AllocationInput Delta commit. Use when implementing, benchmarking, diagnosing, or extending performance work for this specific SP.
+description: Regenerates or extends the locked Development outputV2 for uspLoadAllocationInput (Checkpoint V2, three parallel groups, AllocationInput-first then eight parallel flow-up Delta writes). Use when implementing, generating, benchmarking, or diagnosing this SP. Do not invent extra modules or revert to GenericResultStorer batch writes.
 ---
 
 # Optimize uspLoadAllocationInput
 
-Use this skill only for:
+Use this skill only for `AllocationV2/usp_load_allocation_input`.
 
-`AllocationV2/usp_load_allocation_input`
+When the user asks to **generate**, **optimize in Development mode**, or
+**recreate outputV2**, reproduce the locked candidate below. Do not
+redesign packaging. Do not add files that are not in the allowed tree.
+Portable two-mode rules live in the parent
+[optimize-spark-sp](../SKILL.md) skill. Read
+[SP_OPTIMIZATION_GUIDE.md](SP_OPTIMIZATION_GUIDE.md) for the DAG.
 
-The production implementation is the correctness baseline. This SP-specific
-skill keeps the candidate in `outputV2`. Portable two-mode generation
-(Production inline `output/` vs Development `outputV2` A/B) lives in the
-parent [optimize-spark-sp](../SKILL.md) skill. On that path the **SP
-orchestrator** resolves `ExecutionProfile` from
-`Common_V2.core.execution_profiles`; `Common_V2.core.__init__` does not.
-Locked defaults (`CheckpointMode=4`, shuffle `32`, `MaxThreads=4`) match
-profile `low`.
+The **SP orchestrator** (`outputV2/load_allocation_input.py`) resolves
+`ExecutionProfile` from `Common_V2.core.execution_profiles` at run start.
+Do not resolve profiles from `Common_V2.core.__init__`. Default **low**.
+Do not set AQE.
 
-Never improve benchmark results by weakening business logic, validation,
-output persistence, or exact result comparison.
+Public entry: `run_load_allocation_input`. Adapter:
+`run_usp_load_allocation_input` in `usp_load_allocation_input.py`.
 
-Read [SP_OPTIMIZATION_GUIDE.md](SP_OPTIMIZATION_GUIDE.md) before making a
-structural change or interpreting a benchmark.
+Do not copy FEP / footnotes / look-through SP-only opts. No `business/`.
 
-Do not copy FEP CPBT / yearly / three-table FEP rewrites, footnotes
-`cost_snapshot` / `entity_levels` / `alloc_passN`, or look-through FX /
-K3 write lists into this SP. Do not add a `business/` folder.
+## Locked candidate (regenerate this)
 
-## Paths
+Exact-parity A/B, 2026-09-28, RunID `16560`, EntityID `115`,
+ClientID `15348`, TaxPeriodID `1`, catalog `QA7`, schema
+`IPC_2025_QA7_15348`, ProfilePlan **off**, ExecutionProfile **low**:
 
-- Production baseline:
-  `Source/AllocationV2/usp_load_allocation_input/output/`
-- Optimized implementation:
-  `Source/AllocationV2/usp_load_allocation_input/outputV2/`
-- Shared checkpoint implementation:
-  `Source/Common_V2/core/checkpoint_V2.py`
-- Benchmark:
-  `Source/AllocationV2/usp_load_allocation_input/outputV2/notebook/benchmark_load_allocation_input.py`
+| Variant | Notebook wall | Reported |
+|---|---|---|
+| production `output/` | 69.814s | 67.6s |
+| updated `outputV2/` | 49.194s | **48.4s** |
 
-Public entry:
+Store: production `GenericResultStorer` batch **17.2s** vs updated
+`output_writes` **5.666s** (8 tables, 4 workers). Fingerprints **PASS**.
 
-`run_load_allocation_input`
+Treat **48.4s / exact parity** as the Development bar. Do not replace this
+shape with experiments that failed (see Known bad).
 
-## Non-negotiable contracts
+## Allowed outputV2 tree
 
-1. Treat production `output` behavior as authoritative. Keep stage order
-   of business results even when independent builders run concurrently.
-2. Compared tables (snapshot and hash when the table exists **and** the
-   declared key is on the live schema):
-   - `AllocationInput` (`RunID`)
-   - `PFICFootnoteFlowup` (`RunID`)
-   - `PFICFootnoteFlowupWithTrackingKey` (`RunID`)
-   - `Form926Flowup`, `Form199AFlowup`, `Form8865Flowup`, `Form8886Flowup` (`RunID`)
-   - `AtRiskFlowup`, `CustomFootnoteFlowup`, `Form200616Flowup` (`RunID`)
-   - `AllocationRunErrors` (`RunID`)
-   Do **not** snapshot `PFICUpdateAlert` or `PFICAlertDetails` with
-   `WHERE RunID`. Those tables have no `RunID`. Inspect columns first;
-   skip if the key is absent. Sync the Databricks `source_path` tree
-   (notebook + `output_reconcile.py`) before running A/B.
-3. Require exact fingerprints: schema, row count, key nulls, decimal
-   sums, order-independent `xxhash64`.
-4. FAIL when `RunStatus=FAIL` or validations return False. Do not write
-   result tables after those gates.
-5. Keep production orchestrator checkpoint seams:
-   `pfic_snapshot`, `alloc_input`, `pfic_raw`, `pfic_flowup`,
-   `alloc_filtered`, and `alloc_tagged` when the tag workflow is on.
-   Production helpers may still call the legacy checkpoint helper
-   (`reclass_data`, inner `base_flowup`); do not drop those by editing
-   `output/`.
-6. `register_shared_views`, hierarchy temp view `_entity_hierarchy_*`,
-   FX-unrelated shared views, and `build_custom_footnote_input` (temp
-   view `_cf_latest_txn_*`) stay **sequential**.
-7. PFIC flowup, election deletes, Part V/VII flags, filters, and tags
-   stay **sequential**.
-8. `AllocationInput` Delta `replaceWhere` stays **first**. The remaining
-   distinct flow-up tables write in `output_writes` (cap 4). Do not batch
-   them through one `GenericResultStorer.save_results` call.
-9. Never use a runtime improvement from a failed or non-parity run.
-10. Do not leave `__pycache__` or `.pyc` files in the repository.
-11. Mode 1 Production: no plan profiler. Mode 2 Development: slim profiler
-    off unless ProfilePlan is on.
+```text
+Source/AllocationV2/usp_load_allocation_input/
+├── output/                          # PRODUCTION — do not edit in Development
+└── outputV2/
+    ├── __init__.py                  # export run_load_allocation_input only
+    ├── usp_load_allocation_input.py # run_usp_load_allocation_input adapter
+    ├── load_allocation_input.py     # orchestrator (public API)
+    ├── parent.py                    # output_module("ai_*") → sibling output/
+    ├── parallel_helpers.py
+    ├── write_helpers.py             # output_collect + output_writes
+    ├── plan_profiler.py             # slim shim; no-op unless ProfilePlan on
+    ├── output_reconcile.py
+    ├── OPTIMIZATION_REPORT.md
+    └── notebook/
+        └── benchmark_load_allocation_input.py
+```
+
+**Do not create:** `form_flowup_collect.py`, `business/`, `updated/`,
+`output/*_updated.py`, copies of `ai_*.py` inside `outputV2/`. Business
+services stay in production `output/` and are imported via `parent.py`.
+
+`parent.py` must be:
+
+```python
+_OUTPUT_PACKAGE = f"{__package__.rsplit('.', 1)[0]}.output"
+
+def output_module(name: str):
+    return importlib.import_module(f"{_OUTPUT_PACKAGE}.{name}")
+```
+
+Example: `output_module("ai_finalization_service")` is
+`AllocationV2.usp_load_allocation_input.output.ai_finalization_service`.
+
+## parallel_helpers.py (required)
+
+`KNOWN_GROUPS` exactly:
+
+```python
+{"independent_input_builders", "output_collect", "output_writes"}
+```
+
+- `normalize_workers`: clamp 1..4.
+- `parse_enabled_groups`: `all` → all KNOWN_GROUPS; `none` → empty; else CSV.
+- `isolated_cfg(cfg)`: shallow copy; new `_parquet_results={}`; copy
+  `_schema_cache`.
+- `run_parallel(tasks, workers, activity, label, enabled_groups)`:
+  sequential if group disabled or workers<=1 or len(tasks)<=1.
+  Else `ThreadPoolExecutor` prefix `ai-alloc-input`, cap
+  `min(workers, task_count, 4)`. Observe every future. Raise after all
+  complete if any failed. Log START/DONE and
+  `critical=max-task`. Return results in **declared task order**.
+
+## Orchestrator (`load_allocation_input.py`)
+
+Import production via `output_module` only:
+
+`ai_config_service`, `ai_shared_views`, `ai_validation_service`,
+`ai_hierarchy_service`, `ai_k1_service`, `ai_form_service`,
+`ai_pfic_service`, `ai_pfic_flowup_service`, `ai_finalization_service`.
+
+Checkpoint V2: `checkpoint_V2 as checkpoint`, `initialize_checkpoint_V2`,
+`resolve_checkpoint_mode`, `drop_checkpoints_V2` in `finally` on success
+path (same as current file: drop after try when returning SUCCESS).
+
+Wrap `_checkpoint` with `track_checkpoint_plan`. Wrap listed builders with
+`track_plan`. Do **not** wrap `load_config` with `track_plan`.
+
+Signature must accept production params plus Development-only
+`profile_plan` / `ProfilePlan`, `plan_checkpoint_threshold`,
+`execution_profile` / `ExecutionProfile` default **low**, `MaxThreads`,
+`ParallelGroups`, `CheckpointMode`, `SqlShufflePartitions`.
+
+### Stage order (do not reorder)
+
+1. **S1** `load_common_config` if needed → apply profile shuffle /
+   checkpoint mode / MaxThreads → `initialize_checkpoint_V2` → abort
+   `run_status=FAIL` → `load_config` → `register_shared_views`.
+2. **S2 sequential:** `build_entity_hierarchy` (temp view
+   `_entity_hierarchy_{run_id}`), `build_lower_tier_funds`,
+   `build_workflows`.
+3. **S3 sequential:** `run_validations`; abort FAIL; `purge_output_tables`.
+4. **S4–S6 parallel `independent_input_builders`:**  
+   `build_all_form_inputs(spark, {**cfg}, k1_workflow_df)`,  
+   `build_k1_and_related_inputs(spark, {**cfg})`,  
+   `build_pfic_snapshot(spark, {**cfg}, k1_workflow_df)`.  
+   Isolated `{**cfg}`. No temp views in these three.
+5. **S6 sequential unions:** checkpoint `pfic_snapshot` → union form+k1 →
+   `build_pfic_allocation_input` → union → `build_custom_footnote_input`
+   (temp view `_cf_latest_txn_*`) → union → checkpoint `alloc_input`.
+6. **S7 sequential:** `build_pfic_flowup_pipeline` (inner production
+   `base_flowup` 7a-1 / 7a-2 stay inside that helper) → checkpoint
+   **`pfic_raw`** → `check_pfic_xml_override_alert` →
+   `apply_pfic_election_deletes` → `apply_part_v_vii_flags` → checkpoint
+   **`pfic_flowup`**.
+7. **S8 sequential:** master feed, blocker cleanup, distribution
+   suppression → checkpoint `alloc_filtered` → `apply_tag_percentages` →
+   checkpoint `alloc_tagged` only if `investment_tag_workflow_id != 0`.
+8. **S9:** `collect_output_frames_parallel` then
+   `flush_collected_results` via `profile_action`.
+
+Print `[outputV2] ExecutionProfile=... CheckpointMode=... shuffle=... MaxThreads=... ProfilePlan=...`.
+
+Expose `get_last_run_profile()`.
+
+## write_helpers.py (required)
+
+Import production `write_allocation_input`, `write_pfic_flowup`,
+`write_form_flowups` via `output_module("ai_finalization_service")`.
+Do **not** split `write_form_flowups` into a generated per-form module.
+
+### `output_collect` — exactly 3 tasks
+
+| Task name | Production call |
+|---|---|
+| `AllocationInput` | `write_allocation_input` (collect only) |
+| `PFICFootnoteFlowup` | `write_pfic_flowup` (collects PFIC tables) |
+| `FormFlowups` | `write_form_flowups` (all form flowups in **one** task) |
+
+Each task uses `isolated_cfg` so `_parquet_results` do not race; merge
+after the wave with unionByName on colliding keys.
+
+### Flush
+
+1. Sequential Delta write of `AllocationInput` with
+   `replaceWhere RunID = {run_id}`. Log `[ok] AllocationInput (delta)`.
+2. Remaining keys in `_parquet_results` (not AllocationInput) →
+   `output_writes`, one task per table. Writer **inside** the task.
+   If `result_type == deltalake` and frame has `RunID`: Delta overwrite
+   `replaceWhere`. Else single-table `GenericResultStorer.save_results`.
+3. `SMALL_TABLES` coalesce(1) before write:
+   Form926/199A/8865/8886, AtRisk, CustomFootnote, Form200616,
+   PFICFootnoteFlowup.
+
+Log `[store] Writing N flow-up tables in parallel` and
+`[parallel] START phase=output_writes task=<TableName>`.
+
+## output_reconcile.py
+
+`TABLE_SPECS` RunID tables only:
+
+AllocationInput, PFICFootnoteFlowup, PFICFootnoteFlowupWithTrackingKey,
+Form926/199A/8865/8886 Flowup, AtRiskFlowup, CustomFootnoteFlowup,
+Form200616Flowup, AllocationRunErrors.
+
+Inspect live columns before `WHERE RunID`. Skip missing tables and tables
+without `RunID`. **Do not** snapshot `PFICUpdateAlert` /
+`PFICAlertDetails` on RunID.
+
+Export aliases used by the notebook: `create_run_snapshots`,
+`capture_outputs`, `compare_outputs`, `restore_run_snapshots`,
+`drop_run_snapshots`.
+
+## Notebook widgets (required defaults)
+
+`outputV2/notebook/benchmark_load_allocation_input.py`:
+
+| Widget | Default |
+|---|---|
+| source_path | `/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source` |
+| number_of_runs | `1` |
+| ExecutionOrder | `alternate` |
+| EntityID | `115` |
+| ClientID | `15348` |
+| TaxPeriodID | `1` |
+| RunID | `16560` |
+| CatalogName | `QA7` |
+| SchemaName | `IPC_2025_QA7_15348` |
+| VolumePath | `/Volumes/qa7/datavolume/databrickdata` |
+| ExecutionProfile | **`low`** |
+| MaxThreads | `4` |
+| ParallelGroups | `all` |
+| ProfilePlan | **`off`** |
+| CheckpointMode | `default` |
+| SqlShufflePartitions | **blank** (do not force 16) |
+| ResultType | `deltalake` |
+
+Put `source_path` first on `sys.path`. Evict
+`AllocationV2.usp_load_allocation_input.output`, `.outputV2`,
+`AllocationV2.plan_profiler`, `Common_V2`. Original module
+`...output.load_allocation_input`; updated
+`...outputV2.load_allocation_input`. Pass ExecutionProfile / MaxThreads /
+ParallelGroups / ProfilePlan / CheckpointMode **only** to updated.
+Purge only tables that have a `RunID` column. Restore snapshots in
+`finally`.
+
+Fair timing: ProfilePlan **off**.
 
 ## Target configuration
 
-- `ExecutionProfile=low` (orchestrator-resolved at run start)
-- `CheckpointMode=4`
-- `SqlShufflePartitions=32`
-- `MaxThreads=4`
-- ParallelGroups `all` includes:
-  - `independent_input_builders`
-  - `output_collect`
-  - `output_writes`
-- production orchestrator checkpoints: **keep**
-- FEP / footnotes / look-through-only flags: **do not apply**
+- `ExecutionProfile=low` → shuffle 32, CheckpointMode 4, MaxThreads 4
+- Explicit CheckpointMode / shuffle / MaxThreads override the profile
+- Inner production `base_flowup` checkpoints stay local/eager as in
+  production helpers; do not rewrite `ai_pfic_flowup_service.py`
 
-## Implementation workflow
+## Non-negotiable contracts
 
-### 1. Production baseline
+1. Production `output/` behavior is authoritative.
+2. Exact fingerprints on reconcile tables (schema, rows, sums, xxhash64).
+3. FAIL / SKIPPED gates unchanged.
+4. No `__pycache__`. No `Common_V2.core.checkpoint` in the orchestrator.
+5. Mode 1 Production: inline `output/` only, no profiler, no outputV2 mix.
 
-Read `output/load_allocation_input.py` and `ai_*` services. Record
-checkpoints, temp views, `_parquet_results` keys, and the two-step flush.
+## Known bad experiments (do not regenerate)
 
-### 2. outputV2 isolation
-
-Leave production `output/` unchanged unless the user asked for
-Production mode. Development `outputV2/` imports helpers via `parent.py`.
-Required modules: orchestrator, `parallel_helpers.py`, `write_helpers.py`,
-`output_reconcile.py`, slim `plan_profiler.py`, A/B notebook.
-
-Resolve `ExecutionProfile` in the orchestrator at run start (default
-`low`). Use Checkpoint V2 on orchestrator seams.
-
-### 3. Proven parallel phases
-
-- **`independent_input_builders`**: after validations,
-  `build_all_form_inputs`, `build_k1_and_related_inputs`, and
-  `build_pfic_snapshot`. Isolated `cfg`. No temp views in these three.
-- **`output_collect`**: after tags, collect AllocationInput, PFIC flowup,
-  and all form flowups as three isolated `_parquet_results` tasks, then
-  merge.
-- **`output_writes`**: after AllocationInput commits, write each remaining
-  distinct flow-up table concurrently. Writer constructed in-task.
-  `replaceWhere RunID` when the frame has `RunID`.
-
-Wave time is `max(task)`. Cap workers 1..4.
-
-### 4. Parallel flow-up writes (required)
-
-Production batches the flow-up tables through one
-`GenericResultStorer.save_results` call, which writes them one after
-another. Replace that batch in `outputV2/write_helpers.py`:
-
-1. Write `AllocationInput` first (Delta `replaceWhere RunID`) on the main
-   thread.
-2. Submit every remaining `_parquet_results` table under `output_writes`:
-   - `PFICFootnoteFlowup`
-   - `PFICFootnoteFlowupWithTrackingKey`
-   - `Form926Flowup`
-   - `Form199AFlowup`
-   - `Form8865Flowup`
-   - `Form8886Flowup`
-   - `AtRiskFlowup`
-   - `CustomFootnoteFlowup`
-   - plus `Form200616Flowup`, `PFICUpdateAlert`, `PFICAlertDetails` when
-     present in `_parquet_results`
-3. Each task aligns to the target schema, applies `coalesce(1)` for
-   production `SMALL_TABLES`, and builds its own writer. Use Delta
-   `replaceWhere RunID` when the frame has `RunID`; otherwise fall back to
-   a single-table `GenericResultStorer.save_results` call.
-4. Observe every future. Raise after all tasks finish if any failed.
-
-Evidence: 2026-09-28 RunID `16560` production store 17.2s vs updated
-8-table wave 5.7s. The exact-parity updated run completed in 48.4s
-(49.2s notebook wall). This is the locked Development candidate.
-
-Expected log shape:
-
-```text
-[ok] AllocationInput (delta)
-[store] Writing 8 flow-up tables in parallel: ...
-[parallel] START phase=output_writes task=Form926Flowup ...
-[parallel] output_writes: tasks=8 workers=4 wall=...s critical=max-task
-```
-
-If the log still shows `Storing to Delta Tables` with one checkmark per
-table from a single storer call, the Databricks `source_path` is running a
-stale `write_helpers.py`.
-
-### 5. Validate
-
-Syntax-check. Run the Databricks A/B notebook on an isolated RunID.
-Reject if any table hash differs.
-
-## Known bad experiments
-
-- dropping `pfic_snapshot` / `alloc_input` / `pfic_raw` / `pfic_flowup` /
-  `alloc_filtered` without a new A/B;
-- parallelizing `build_custom_footnote_input` or `build_entity_hierarchy`;
-- parallelizing the PFIC flowup / election-delete chain;
-- splitting production `write_form_flowups` into generated per-table code;
-- overlapping the AllocationInput Delta write with flow-up writes;
-- dropping orchestrator `pfic_raw` after production `7a-2`;
-- batching tables through one sequential
-  `GenericResultStorer.save_results` call;
-- copying FEP SkipYearlyEmptyProbe or footnotes plan-breaks.
+- `form_flowup_collect.py` / splitting `write_form_flowups` per table
+- Overlapping AllocationInput Delta with flow-up writes
+- Dropping orchestrator `pfic_raw` after 7a-2
+- One `GenericResultStorer.save_results` for all flow-up tables
+- Copying `ai_*.py` into `outputV2/`
+- Parallel custom footnotes, hierarchy, or PFIC election/flowup chain
+- FEP / footnotes-only plan breaks
+- Snapshotting PFICUpdateAlert / PFICAlertDetails with `WHERE RunID`
+- Inlining snapshot SQL in the notebook instead of `output_reconcile.py`
+- Forcing SqlShufflePartitions=16 (overrides profile low)
 
 ## Completion report
 
-Report production vs outputV2 wall times, per-table hash result, which
-parallel groups ran, checkpoint names, and ExecutionProfile loaded.
-Include the `output_writes` wall time next to the ~14s batched-storer
-baseline.
+Report production vs outputV2 wall, per-table hash, groups that ran,
+checkpoint names, ExecutionProfile, and `output_writes` wall vs ~17s
+production store. Locked bar: **48.4s updated, PASS hashes**.

@@ -57,10 +57,15 @@ and notebooks. Use the child skill when the work is that SP:
 | `usp_get_final_effective_percentage` | [usp-get-final-effective-percentage/SKILL.md](usp-get-final-effective-percentage/SKILL.md) |
 | `usp_load_footnotes_allocation_to_output` | [usp-load-footnotes-allocation-to-output/SKILL.md](usp-load-footnotes-allocation-to-output/SKILL.md) |
 | `usp_load_lookthrough_allocation_input` | [usp-load-lookthrough-allocation-input/SKILL.md](usp-load-lookthrough-allocation-input/SKILL.md) |
+| `usp_load_lookthrough_footnote_effective_allocation_pct` | [usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md](usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md) |
 | `usp_load_allocation_input` | [usp-load-allocation-input/SKILL.md](usp-load-allocation-input/SKILL.md) |
 
 The child skill owns SP-only checkpoints, extra tables, and locked
-timings. Do not copy those into other SPs.
+timings. Do not copy those into other SPs. For
+`usp_load_allocation_input`, Development generate must reproduce the
+locked `outputV2` in that child skill (no `form_flowup_collect.py`,
+collect FormFlowups as one task, keep `pfic_raw`, AllocationInput Delta
+then parallel `output_writes`).
 
 ## Mode 1 — Production
 

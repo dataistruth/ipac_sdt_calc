@@ -1,57 +1,59 @@
 # uspLoadAllocationInput — optimization guide
 
-Companion to the SP-specific skill. Production `output/` is the
-correctness baseline.
+Companion to the SP-specific skill. When generating Development
+`outputV2`, match the locked tree and APIs in `SKILL.md`. Production
+`output/` is the correctness baseline.
 
 ## What this SP does
 
 `run_load_allocation_input` loads AllocationInput from forms, K1-related
 sources, PFIC, and custom footnotes, builds PFIC/form flowups, then
-writes AllocationInput (Delta) and flow-up tables (Parquet storer).
+writes AllocationInput (Delta) and flow-up tables.
 
 ## Dependency map (do not flatten)
 
-Config and `register_shared_views` first (includes `reclass_data`
-checkpoint in production helpers).
+Config and `register_shared_views` first (`reclass_data` checkpoint in
+production helpers).
 
-Hierarchy registers `_entity_hierarchy_{run_id}` (needed by Part V/VII).
-Lower-tier funds are already a shared view. Workflows feed forms and
-PFIC snapshot. Validations can insert `AllocationRunErrors` and abort.
+Hierarchy registers `_entity_hierarchy_{run_id}` (Part V/VII). Lower-tier
+funds are a shared view. Workflows feed forms and PFIC snapshot.
+Validations can insert `AllocationRunErrors` and abort.
 
 After purge no-op: form inputs, K1-related inputs, and PFIC snapshot are
-independent plans.
+independent plans (`independent_input_builders`).
 
-Then sequential: checkpoint snapshot, PFIC allocation rows, custom
-footnote input (registers `_cf_latest_txn_*`), checkpoint `alloc_input`,
-PFIC flowup pipeline, `pfic_raw`, XML alert, election deletes, Part V/VII,
-`pfic_flowup`, filters, `alloc_filtered`, tags, optional `alloc_tagged`.
+Then sequential: checkpoint `pfic_snapshot`, PFIC allocation rows, custom
+footnote input (`_cf_latest_txn_*`), checkpoint `alloc_input`, PFIC
+flowup pipeline (inner `base_flowup` 7a-1 / 7a-2), checkpoint `pfic_raw`,
+XML alert, election deletes, Part V/VII, checkpoint `pfic_flowup`,
+filters, `alloc_filtered`, tags, optional `alloc_tagged`.
 
-Collect three disjoint `_parquet_results` groups and merge. Write
-AllocationInput first, then write the remaining distinct flow-up tables
-in `output_writes` (up to 4 workers).
+Then `output_collect` (3 tasks) and sequential AllocationInput Delta
+write, then `output_writes` (one task per remaining table, max 4 workers).
 
 ## Parallel groups
 
 | Group | Tasks |
 |---|---|
-| `independent_input_builders` | forms, K1-related, PFIC snapshot |
-| `output_collect` | AllocationInput, PFIC flowup, all form flowups |
-| `output_writes` | one disk write per flow-up table after AllocationInput |
+| `independent_input_builders` | `build_all_form_inputs`, `build_k1_and_related_inputs`, `build_pfic_snapshot` |
+| `output_collect` | AllocationInput collect, PFIC flowup collect, **one** FormFlowups collect |
+| `output_writes` | each flow-up table after AllocationInput commits |
 
 Orchestrator applies `ExecutionProfile` at start, default `low`.
 
 ## Packaging
 
-Development: `outputV2/` importing `output/` via `parent.py`. Collect
-helpers live in `write_helpers.py`.
+Development: `outputV2/` importing `output/` via `parent.py`. Write and
+collect helpers live in `write_helpers.py` only. No `form_flowup_collect.py`.
+No copies of `ai_*.py` under `outputV2/`.
 
-## A/B reconcile (do not regress on regenerate)
+## A/B reconcile
 
-- List snapshot tables from writers / `_parquet_results` keys that use
-  `RunID`, not from every `_collect_result` table.
-- `output_reconcile.py` reads live columns before `WHERE RunID`.
-- Notebook purge uses the same column check.
-- `PFICUpdateAlert` / `PFICAlertDetails` are not RunID-scoped.
-- Databricks must import the same generated `outputV2/` as the notebook;
-  a stale workspace copy of `output_reconcile.py` is a sync failure, not
-  a reason to inline snapshot SQL in the notebook.
+- Snapshot tables that have `RunID` on the live schema.
+- Do not snapshot `PFICUpdateAlert` / `PFICAlertDetails` with RunID.
+- Notebook and `output_reconcile.py` must be the same `source_path` tree.
+
+## Locked timings (RunID 16560)
+
+Production ~67.6s reported / ~69.8s wall. Updated **48.4s** reported /
+**49.2s** wall, hashes PASS, ProfilePlan off, profile low.

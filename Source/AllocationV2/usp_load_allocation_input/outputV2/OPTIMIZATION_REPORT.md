@@ -28,8 +28,9 @@ cleanup on V2 seams.
 6. PFIC flowup, `pfic_raw`, XML alert, election deletes, Part V/VII,
    `pfic_flowup`.
 7. Filters, `alloc_filtered`, tags, optional `alloc_tagged`.
-8. Parallel collect into `_parquet_results`, then sequential Delta
-   AllocationInput write and Parquet storer flush.
+8. Parallel `output_collect` (AllocationInput, PFIC flowup, FormFlowups),
+   sequential AllocationInput Delta `replaceWhere`, then parallel
+   `output_writes` (one Delta write per remaining table, max 4 workers).
 
 ## Thread pools and safety
 
@@ -65,6 +66,9 @@ table for the RunID, purges before each variant, and restores in
 
 ## Validation status
 
-Local validation is syntax compilation. Databricks catalog parity is not
-yet accepted. Acceptance requires matching fingerprints in both orders
-and improvement beyond run-to-run variance.
+Locked exact-parity A/B (2026-09-28, RunID 16560, ProfilePlan off,
+ExecutionProfile low): production **67.6s** reported / **69.8s** wall;
+updated **48.4s** reported / **49.2s** wall; all fingerprints PASS.
+Production store 17.2s vs `output_writes` 5.666s. Do not regenerate a
+different packaging without a new isolated A/B that beats 48.4s with
+parity.
