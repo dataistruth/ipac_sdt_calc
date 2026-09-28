@@ -1,205 +1,408 @@
 # Databricks notebook source
-# MAGIC %md
-# MAGIC # Load allocation input A/B benchmark
-# MAGIC Use an isolated RunID; all affected rows are restored on exit.
-
-# COMMAND ----------
-
-dbutils.widgets.removeAll()
-dbutils.widgets.text("source_path", "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source")
-dbutils.widgets.text("number_of_runs", "2")
-dbutils.widgets.dropdown("ExecutionOrder", "alternate", ["alternate", "original_first", "updated_first"])
-for name in ("EntityID", "ClientID", "TaxPeriodID", "RunID", "CatalogName", "SchemaName"):
-    dbutils.widgets.text(name, "")
-dbutils.widgets.dropdown("ResultType", "deltalake", ["deltalake"])
-dbutils.widgets.text("VolumePath", "")
-dbutils.widgets.dropdown(
-    "ExecutionProfile", "low", ["low", "medium", "big"]
-)
-dbutils.widgets.text("MaxThreads", "")
-dbutils.widgets.text("ParallelGroups", "all")
-dbutils.widgets.dropdown("ProfilePlan", "off", ["off", "on"])
-dbutils.widgets.text("PlanCheckpointThreshold", "30")
-dbutils.widgets.dropdown("CheckpointMode", "default", ["default", "1", "2", "3", "4"])
-dbutils.widgets.text("SqlShufflePartitions", "")
+"""A/B benchmark for production and outputV2 allocation orchestrators."""
 
 # COMMAND ----------
 
 import importlib
+import json
 import sys
 import time
 
-source_path = dbutils.widgets.get("source_path").strip().rstrip("/")
-runs = int(dbutils.widgets.get("number_of_runs") or "2")
-order_setting = dbutils.widgets.get("ExecutionOrder")
-entity_id = int(dbutils.widgets.get("EntityID"))
-client_id = int(dbutils.widgets.get("ClientID"))
-tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
-run_id = int(dbutils.widgets.get("RunID"))
-catalog = dbutils.widgets.get("CatalogName").strip()
-schema = dbutils.widgets.get("SchemaName").strip()
-volume_path = dbutils.widgets.get("VolumePath").strip()
-execution_profile = (
-    dbutils.widgets.get("ExecutionProfile").strip() or "low"
+# COMMAND ----------
+
+dbutils.widgets.removeAll()
+dbutils.widgets.text(
+    "source_path",
+    "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
+    "1. Monolith Source/",
 )
-max_threads_raw = dbutils.widgets.get("MaxThreads").strip()
-workers = int(max_threads_raw) if max_threads_raw else None
-parallel_groups = dbutils.widgets.get("ParallelGroups").strip() or "all"
-profile_plan = dbutils.widgets.get("ProfilePlan").lower() == "on"
-threshold = int(dbutils.widgets.get("PlanCheckpointThreshold") or "30")
-mode_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
-mode = None if mode_raw in {"", "default"} else int(mode_raw)
-shuffle = dbutils.widgets.get("SqlShufflePartitions").strip()
-if runs < 1 or (workers is not None and not 1 <= workers <= 4) or (
-    mode is not None and mode not in (1, 2, 3, 4)
-):
-    raise ValueError("Invalid runs, MaxThreads, or CheckpointMode")
-if mode == 3 and not volume_path:
-    raise ValueError("VolumePath is required for CheckpointMode=3")
-if shuffle:
-    spark.conf.set("spark.sql.shuffle.partitions", shuffle)
-sys.path[:] = [item for item in sys.path if item != source_path]
-sys.path.insert(0, source_path)
-
-package = "AllocationV2.usp_load_allocation_input"
-production = f"{package}.output.load_allocation_input"
-updated = f"{package}.outputV2.load_allocation_input"
-
-
-def fresh_import(name):
-    roots = (f"{package}.output", f"{package}.outputV2", "AllocationV2.plan_profiler", "Common_V2")
-    for loaded in list(sys.modules):
-        if any(loaded == root or loaded.startswith(root + ".") for root in roots):
-            del sys.modules[loaded]
-    importlib.invalidate_caches()
-    checkpoint = importlib.import_module("Common_V2.core.checkpoint_V2")
-    print(f"[import] checkpoint_V2={checkpoint.__file__}")
-    module = importlib.import_module(name)
-    print(f"[import] runner={module.__file__}")
-    return module
-
-
-reconcile = fresh_import(f"{package}.outputV2.output_reconcile")
-
-
-def order_for(number):
-    if order_setting == "original_first":
-        return ("original", "updated")
-    if order_setting == "updated_first":
-        return ("updated", "original")
-    return ("original", "updated") if number % 2 else ("updated", "original")
-
-
-def run_variant(variant, number, snapshot):
-    reconcile.reset_before_variant(spark, snapshot)
-    module = fresh_import(production if variant == "original" else updated)
-    kwargs = dict(
-        EntityID=entity_id, ClientID=client_id, TaxPeriodID=tax_period_id,
-        RunID=run_id, CatalogName=catalog, SchemaName=schema,
-        ResultType="deltalake", VolumePath=volume_path or None,
-        ExecutionID=f"lai-ab-{number}-{variant}",
-    )
-    if variant == "updated":
-        kwargs.update(
-            ExecutionProfile=execution_profile,
-            ParallelGroups=parallel_groups,
-            ProfilePlan=profile_plan,
-            PlanCheckpointThreshold=threshold,
-        )
-        if workers is not None:
-            kwargs["MaxThreads"] = workers
-        if mode is not None:
-            kwargs["CheckpointMode"] = mode
-        if shuffle:
-            kwargs["SqlShufflePartitions"] = int(shuffle)
-    started = time.perf_counter()
-    result = module.run_load_allocation_input(spark, **kwargs)
-    wall = round(time.perf_counter() - started, 3)
-    metrics = reconcile.capture_metrics(spark, catalog, schema, run_id)
-    profile = module.get_last_run_profile() if variant == "updated" else {}
-    reported = result.get("elapsed_seconds") if isinstance(result, dict) else None
-    status = result.get("status") if isinstance(result, dict) else "SUCCESS"
-    rows = reconcile.summarize_metrics(metrics)["total_rows"]
-    print(f"[benchmark] {variant}: wall={wall:.3f}s reported={reported} rows={rows}")
-    return dict(
-        pass_number=number, variant=variant, wall_seconds=wall,
-        reported_seconds=reported, rows=rows,
-        status=status, metrics=metrics, profile=profile,
-    )
-
-
-records, parity = [], []
-snapshot = reconcile.create_benchmark_snapshot(spark, catalog, schema, run_id)
-try:
-    for number in range(1, runs + 1):
-        order = order_for(number)
-        print(f"[benchmark] pass {number} execution order: {' -> '.join(order)}")
-        current = {variant: run_variant(variant, number, snapshot) for variant in order}
-        records.extend(current.values())
-        mismatches = reconcile.compare_metrics(current["original"]["metrics"], current["updated"]["metrics"])
-        mismatch_tables = {item["table"] for item in mismatches}
-        parity.extend(dict(pass_number=number, table=table, matches=table not in mismatch_tables) for table, _ in reconcile.TABLE_SPECS)
-        if mismatches:
-            raise AssertionError(f"First mismatch: {mismatches[0]}")
-        print(f"[reconcile] PASS {number}: all output fingerprints match")
-finally:
-    try:
-        reconcile.restore_original_state(spark, snapshot)
-    except Exception:
-        print("[reconcile] RESTORE FAILED; benchmark backups retained")
-        raise
-    else:
-        reconcile.drop_benchmark_snapshot(spark, snapshot)
+dbutils.widgets.text("number_of_runs", "1", "2. A/B passes")
+dbutils.widgets.dropdown(
+    "ExecutionOrder",
+    "alternate",
+    ["alternate", "original_first", "updated_first"],
+    "3. Execution order",
+)
+dbutils.widgets.text("EntityID", "115", "4. EntityID")
+dbutils.widgets.text("ClientID", "15348", "5. ClientID")
+dbutils.widgets.text("TaxPeriodID", "1", "6. TaxPeriodID")
+dbutils.widgets.text("RunID", "16560", "7. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "8. Catalog")
+dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "9. Schema")
+dbutils.widgets.text(
+    "VolumePath",
+    "/Volumes/qa7/datavolume/databrickdata",
+    "10. Volume path",
+)
+dbutils.widgets.dropdown(
+    "ExecutionProfile",
+    "low",
+    ["low", "medium", "big"],
+    "11. Execution profile",
+)
+dbutils.widgets.text("MaxThreads", "4", "12. Updated parallel workers")
+dbutils.widgets.text("ParallelGroups", "all", "13. Parallel groups")
+dbutils.widgets.dropdown(
+    "ProfilePlan",
+    "off",
+    ["off", "on"],
+    "14. Plan profiler",
+)
+dbutils.widgets.text(
+    "PlanCheckpointThreshold",
+    "30",
+    "15. Plan checkpoint threshold",
+)
+dbutils.widgets.dropdown(
+    "CheckpointMode",
+    "default",
+    ["default", "1", "2", "3", "4"],
+    "16. Checkpoint mode",
+)
+dbutils.widgets.text(
+    "SqlShufflePartitions",
+    "",
+    "17. spark.sql.shuffle.partitions (blank = profile)",
+)
+dbutils.widgets.dropdown(
+    "ResultType",
+    "deltalake",
+    ["deltalake", "parquet"],
+    "18. Result type",
+)
 
 # COMMAND ----------
 
-summary = [{key: row[key] for key in ("pass_number", "variant", "wall_seconds", "reported_seconds", "rows", "status")} for row in records]
-display(spark.createDataFrame(summary).orderBy("pass_number", "variant"))
-display(spark.createDataFrame(parity).orderBy("pass_number", "table"))
+source_root = dbutils.widgets.get("source_path").rstrip("/")
+# Import root is Source/, not Source/AllocationV2. AllocationV2 and Common_V2
+# are sibling packages beneath this directory.
+while source_root in sys.path:
+    sys.path.remove(source_root)
+sys.path.insert(0, source_root)
+print(f"[benchmark] Python import root={sys.path[0]}", flush=True)
+for loaded in list(sys.modules):
+    if loaded == "Common_V2" or loaded.startswith("Common_V2."):
+        del sys.modules[loaded]
+importlib.invalidate_caches()
+try:
+    import Common_V2.core.checkpoint_V2 as _checkpoint_v2  # noqa: F401
+except ImportError as exc:
+    raise ImportError(
+        "Could not import Common_V2.core.checkpoint_V2 after adding "
+        f"the Source folder to sys.path: {source_root}"
+    ) from exc
 
-delta = []
-for number in range(1, runs + 1):
-    current = {row["variant"]: row for row in records if row["pass_number"] == number}
-    old, new = current["original"]["wall_seconds"], current["updated"]["wall_seconds"]
-    delta.append(dict(pass_number=number, original_seconds=old, updated_seconds=new, improvement_percent=round(100 * (old - new) / old, 2) if old else None))
-display(spark.createDataFrame(delta))
+shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
+if shuffle_partitions:
+    spark.conf.set("spark.sql.shuffle.partitions", int(shuffle_partitions))
 
-
-def profile_rows(key):
-    return [dict(pass_number=row["pass_number"], **item) for row in records if row["variant"] == "updated" for item in row["profile"].get(key, [])]
-
-
-for key in ("timings", "parallel_activity", "checkpoint_activity", "plan_profile", "checkpoint_plan_profile", "action_profile"):
-    values = profile_rows(key)
-    print(f"===== {key.upper()} =====")
-    display(spark.createDataFrame(values)) if values else print("No records")
-
-consumers = {
-    "pfic_snapshot": 3,
-    "alloc_input": 4,
-    "pfic_raw": 2,
-    "pfic_flowup": 2,
-    "alloc_filtered": 2,
-    "alloc_tagged": 1,
+common_args = {
+    "EntityID": int(dbutils.widgets.get("EntityID")),
+    "ClientID": int(dbutils.widgets.get("ClientID")),
+    "TaxPeriodID": int(dbutils.widgets.get("TaxPeriodID")),
+    "RunID": int(dbutils.widgets.get("RunID")),
+    "CatalogName": dbutils.widgets.get("CatalogName"),
+    "SchemaName": dbutils.widgets.get("SchemaName"),
+    "ResultType": dbutils.widgets.get("ResultType"),
+    "VolumePath": dbutils.widgets.get("VolumePath"),
 }
-checkpoint_times = {
-    (row["pass_number"], row.get("name")): row.get("elapsed_seconds")
-    for row in profile_rows("checkpoint_activity")
+updated_args = {
+    **common_args,
+    "ExecutionProfile": dbutils.widgets.get("ExecutionProfile").strip()
+    or "low",
+    "MaxThreads": int(dbutils.widgets.get("MaxThreads") or "4"),
+    "ParallelGroups": dbutils.widgets.get("ParallelGroups").strip() or "all",
+    "ProfilePlan": dbutils.widgets.get("ProfilePlan"),
+    "PlanCheckpointThreshold": int(
+        dbutils.widgets.get("PlanCheckpointThreshold")
+    ),
 }
-recommendations = []
-for row in profile_rows("checkpoint_plan_profile"):
-    name = str(row.get("func", "")).split("#", 1)[0]
-    recommendations.append(dict(
-        pass_number=row["pass_number"], name=name, builder_delta=row.get("delta"),
-        checkpoint_nodes=row.get("nodes"), depth=row.get("depth"),
-        operator_mix=str(row.get("ops") or {}), consumer_count=consumers.get(name),
-        fan_out=(consumers.get(name) or 0) > 1,
-        measured_action_seconds=None,
-        measured_checkpoint_seconds=checkpoint_times.get(
-            (row["pass_number"], name)
+checkpoint_mode_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
+if checkpoint_mode_raw not in {"", "default"}:
+    updated_args["CheckpointMode"] = int(checkpoint_mode_raw)
+if shuffle_partitions:
+    updated_args["SqlShufflePartitions"] = int(shuffle_partitions)
+
+# COMMAND ----------
+
+PRODUCTION_MODULE = (
+    "AllocationV2.usp_load_allocation_input.output.load_allocation_input"
+)
+OUTPUT_V2_MODULE = (
+    "AllocationV2.usp_load_allocation_input.outputV2.load_allocation_input"
+)
+RECONCILE_MODULE = (
+    "AllocationV2.usp_load_allocation_input.outputV2.output_reconcile"
+)
+MODULE_ROOTS = (
+    "AllocationV2.usp_load_allocation_input.output",
+    "AllocationV2.usp_load_allocation_input.outputV2",
+    "AllocationV2.plan_profiler",
+    "Common_V2",
+)
+OUTPUT_TABLES = (
+    "AllocationInput",
+    "PFICFootnoteFlowup",
+    "PFICFootnoteFlowupWithTrackingKey",
+    "Form926Flowup",
+    "Form199AFlowup",
+    "Form8865Flowup",
+    "Form8886Flowup",
+    "AtRiskFlowup",
+    "CustomFootnoteFlowup",
+    "Form200616Flowup",
+)
+
+
+def _clear_modules():
+    for loaded in list(sys.modules):
+        if any(
+            loaded == root or loaded.startswith(root + ".")
+            for root in MODULE_ROOTS
+        ):
+            del sys.modules[loaded]
+    importlib.invalidate_caches()
+
+
+def _fresh_import(module_name):
+    _clear_modules()
+    return importlib.import_module(module_name)
+
+
+def _quoted_fqn(table_name):
+    return ".".join(
+        f"`{part.replace('`', '``')}`"
+        for part in (
+            common_args["CatalogName"],
+            common_args["SchemaName"],
+            table_name,
+        )
+    )
+
+
+def _purge_run_outputs(variant):
+    """Delete only the benchmark RunID where the table format supports it."""
+    run_id = int(common_args["RunID"])
+    for table_name in OUTPUT_TABLES:
+        fqn = _quoted_fqn(table_name)
+        try:
+            columns = spark.table(fqn).columns
+            if "RunID" not in columns:
+                print(f"[purge] {variant}: skip {table_name} (no RunID)")
+                continue
+            spark.sql(f"DELETE FROM {fqn} WHERE RunID = {run_id}")
+            print(f"[purge] {variant}: {table_name} RunID={run_id}")
+        except Exception as exc:
+            print(
+                f"[purge] {variant}: skip {table_name}; "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+
+def _reported_seconds(result):
+    parsed = result
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(parsed, dict):
+        return None
+    for key in ("elapsed_seconds", "ElapsedSeconds", "total_time_seconds"):
+        if parsed.get(key) is not None:
+            try:
+                return float(parsed[key])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+reconcile_tools = _fresh_import(RECONCILE_MODULE)
+create_run_snapshots = reconcile_tools.create_run_snapshots
+drop_run_snapshots = reconcile_tools.drop_run_snapshots
+restore_run_snapshots = reconcile_tools.restore_run_snapshots
+
+
+def _run_variant(name):
+    if name == "production":
+        module_name = PRODUCTION_MODULE
+        args = common_args
+    else:
+        module_name = OUTPUT_V2_MODULE
+        args = updated_args
+    module = _fresh_import(module_name)
+    _purge_run_outputs(name)
+    started = time.perf_counter()
+    result = module.run_load_allocation_input(spark, **args)
+    elapsed = time.perf_counter() - started
+    reconcile = importlib.import_module(RECONCILE_MODULE)
+    fingerprints = reconcile.capture_outputs(
+        spark,
+        common_args["CatalogName"],
+        common_args["SchemaName"],
+        common_args["RunID"],
+    )
+    parsed_result = result
+    if isinstance(parsed_result, str):
+        try:
+            parsed_result = json.loads(parsed_result)
+        except (TypeError, ValueError):
+            parsed_result = {}
+    if not isinstance(parsed_result, dict):
+        parsed_result = {}
+    profile = {}
+    if name == "updated" and hasattr(module, "get_last_run_profile"):
+        profile = module.get_last_run_profile() or {}
+    return {
+        "variant": name,
+        "elapsed_seconds": round(elapsed, 3),
+        "reported_seconds": _reported_seconds(result),
+        "checkpoint_mode": (
+            str(updated_args.get("CheckpointMode", "common-default"))
+            if name == "updated"
+            else "production"
         ),
-        recommendation=row.get("recommendation"),
-        rationale="Retain until measured A/B parity and timing justify removal.",
-    ))
-print("===== CHECKPOINT RECOMMENDATIONS =====")
-display(spark.createDataFrame(recommendations)) if recommendations else print("Enable ProfilePlan")
+        "execution_profile": (
+            updated_args.get("ExecutionProfile", "low")
+            if name == "updated"
+            else "production"
+        ),
+        "profile_plan": (
+            updated_args["ProfilePlan"] if name == "updated" else "off"
+        ),
+        "fingerprints": json.dumps(
+            fingerprints, default=str, sort_keys=True
+        ),
+        "checkpoint_activity": profile.get("checkpoint_activity")
+        or parsed_result.get("checkpoint_timings", []),
+        "plan_profile": profile.get("plan_profile")
+        or parsed_result.get("plan_profile")
+        or [],
+        "result": json.dumps(result, default=str, sort_keys=True),
+    }
+
+
+number_of_runs = max(1, int(dbutils.widgets.get("number_of_runs")))
+execution_order = dbutils.widgets.get("ExecutionOrder")
+
+rows = []
+snapshots = create_run_snapshots(
+    spark,
+    common_args["CatalogName"],
+    common_args["SchemaName"],
+    common_args["RunID"],
+)
+try:
+    for iteration in range(1, number_of_runs + 1):
+        if execution_order == "alternate":
+            order = (
+                ["production", "updated"]
+                if iteration % 2
+                else ["updated", "production"]
+            )
+        elif execution_order == "original_first":
+            order = ["production", "updated"]
+        else:
+            order = ["updated", "production"]
+        print(
+            f"[benchmark] pass {iteration} execution order: "
+            f"{' -> '.join(order)}"
+        )
+        pass_rows = {}
+        for variant in order:
+            row = _run_variant(variant)
+            row["iteration"] = iteration
+            row["order"] = " -> ".join(order)
+            rows.append(row)
+            pass_rows[variant] = row
+            print(
+                f"[benchmark] {variant}: wall={row['elapsed_seconds']:.3f}s "
+                f"reported={row['reported_seconds']}"
+            )
+        production = json.loads(pass_rows["production"]["fingerprints"])
+        updated = json.loads(pass_rows["updated"]["fingerprints"])
+        reconcile = importlib.import_module(RECONCILE_MODULE)
+        mismatches = reconcile.compare_outputs(production, updated)
+        if mismatches:
+            print(
+                f"[reconcile] FAIL run={iteration}: "
+                f"{[row['table'] for row in mismatches]}"
+            )
+            raise AssertionError(
+                f"Output parity failed: {json.dumps(mismatches, default=str)}"
+            )
+        print(f"[reconcile] PASS {iteration}: all output fingerprints match")
+finally:
+    try:
+        restore_run_snapshots(
+            spark,
+            common_args["CatalogName"],
+            common_args["SchemaName"],
+            common_args["RunID"],
+            snapshots,
+        )
+    except Exception:
+        print(f"[reconcile] RESTORE FAILED; snapshots retained: {snapshots}")
+        raise
+    else:
+        drop_run_snapshots(
+            spark,
+            common_args["CatalogName"],
+            common_args["SchemaName"],
+            snapshots,
+        )
+
+benchmark_rows = [
+    {
+        key: row[key]
+        for key in (
+            "iteration",
+            "order",
+            "variant",
+            "elapsed_seconds",
+            "reported_seconds",
+            "checkpoint_mode",
+            "execution_profile",
+            "profile_plan",
+        )
+    }
+    for row in rows
+]
+display(
+    spark.createDataFrame(benchmark_rows).orderBy("iteration", "variant")
+)
+
+# COMMAND ----------
+
+summary = (
+    spark.createDataFrame(benchmark_rows)
+    .groupBy("variant", "checkpoint_mode", "execution_profile", "profile_plan")
+    .avg("elapsed_seconds")
+    .withColumnRenamed("avg(elapsed_seconds)", "average_elapsed_seconds")
+)
+display(summary)
+
+# COMMAND ----------
+
+checkpoint_rows = [
+    {"iteration": row["iteration"], **item}
+    for row in rows
+    if row["variant"] == "updated"
+    for item in row["checkpoint_activity"]
+]
+plan_rows = [
+    {"iteration": row["iteration"], **item}
+    for row in rows
+    if row["variant"] == "updated"
+    for item in row["plan_profile"]
+]
+print("===== CHECKPOINT TELEMETRY =====")
+if checkpoint_rows:
+    display(spark.createDataFrame(checkpoint_rows).orderBy("iteration"))
+else:
+    print("No checkpoint telemetry returned")
+print("===== PLAN TELEMETRY =====")
+if plan_rows:
+    display(spark.createDataFrame(plan_rows).orderBy("iteration"))
+else:
+    print("Enable ProfilePlan to populate plan telemetry")

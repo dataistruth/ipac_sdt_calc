@@ -16,6 +16,7 @@ TABLE_SPECS = (
     ("Form8886Flowup", "RunID"),
     ("AtRiskFlowup", "RunID"),
     ("CustomFootnoteFlowup", "RunID"),
+    ("Form200616Flowup", "RunID"),
     ("PFICUpdateAlert", "RunID"),
     ("PFICAlertDetails", "RunID"),
     ("AllocationRunErrors", "RunID"),
@@ -201,14 +202,41 @@ def summarize_metrics(metrics):
     }
 
 
+def create_run_snapshots(spark, catalog, schema, run_id):
+    return create_benchmark_snapshot(spark, catalog, schema, run_id)
+
+
+def capture_outputs(spark, catalog, schema, run_id):
+    return capture_metrics(spark, catalog, schema, run_id)
+
+
+def compare_outputs(original, updated):
+    return compare_metrics(original, updated)
+
+
+def restore_run_snapshots(spark, catalog, schema, run_id, snapshots):
+    del catalog, schema, run_id
+    restore_original_state(spark, snapshots)
+
+
+def drop_run_snapshots(spark, catalog, schema, snapshots):
+    del catalog, schema
+    drop_benchmark_snapshot(spark, snapshots)
+
+
 __all__ = [
     "TABLE_SPECS",
     "capture_metrics",
+    "capture_outputs",
     "compare_metrics",
+    "compare_outputs",
     "create_benchmark_snapshot",
+    "create_run_snapshots",
     "drop_benchmark_snapshot",
+    "drop_run_snapshots",
     "fingerprint_table",
     "reset_before_variant",
     "restore_original_state",
+    "restore_run_snapshots",
     "summarize_metrics",
 ]
