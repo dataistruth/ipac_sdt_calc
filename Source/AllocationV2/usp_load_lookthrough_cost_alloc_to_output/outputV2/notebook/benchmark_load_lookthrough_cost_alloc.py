@@ -12,51 +12,49 @@ dbutils.widgets.text(
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
     "1. Source root",
 )
-dbutils.widgets.text("number_of_runs", "1", "2. A/B passes")
-dbutils.widgets.dropdown(
-    "ExecutionOrder",
-    "alternate",
-    ["alternate", "original_first", "updated_first"],
-    "3. Execution order",
-)
-dbutils.widgets.text("EntityID", "4137", "4. EntityID")
-dbutils.widgets.text("ClientID", "15348", "5. ClientID")
-dbutils.widgets.text("TaxPeriodID", "1", "6. TaxPeriodID")
-dbutils.widgets.text("RunID", "17376", "7. RunID")
-dbutils.widgets.text("CatalogName", "QA7", "8. Catalog")
-dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "9. Schema")
-dbutils.widgets.text(
-    "VolumePath",
-    "/Volumes/qa7/datavolume/databrickdata",
-    "10. Volume path",
-)
-dbutils.widgets.text("LineType", "K1 with Cost", "11. LineType")
-dbutils.widgets.text("RankForRule", "0", "12. RankForRule")
+dbutils.widgets.text("EntityID", "4137", "2. EntityID")
+dbutils.widgets.text("ClientID", "15348", "3. ClientID")
+dbutils.widgets.text("TaxPeriodID", "1", "4. TaxPeriodID")
+dbutils.widgets.text("RunID", "17376", "5. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
+dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
     "low",
     ["low", "medium", "big"],
-    "13. Execution profile",
+    "8. Execution profile",
 )
-dbutils.widgets.text("MaxThreads", "", "14. Max threads (blank=profile)")
-dbutils.widgets.dropdown(
-    "ProfilePlan",
-    "off",
-    ["off", "on"],
-    "15. Plan profiler",
+dbutils.widgets.text("MaxThreads", "", "9. Max threads (blank=profile)")
+dbutils.widgets.text(
+    "SqlShufflePartitions", "", "10. Shuffle partitions (blank=profile)"
 )
-dbutils.widgets.text("PlanCheckpointThreshold", "30", "16. Plan threshold")
 dbutils.widgets.dropdown(
     "CheckpointMode",
     "default",
     ["default", "1", "2", "3", "4"],
-    "17. Checkpoint mode",
+    "11. Checkpoint mode (blank=profile)",
+)
+dbutils.widgets.text("number_of_runs", "1", "12. A/B passes")
+dbutils.widgets.dropdown(
+    "ExecutionOrder",
+    "alternate",
+    ["alternate", "original_first", "updated_first"],
+    "13. Execution order",
 )
 dbutils.widgets.text(
-    "SqlShufflePartitions",
-    "",
-    "18. spark.sql.shuffle.partitions (blank = profile)",
+    "VolumePath",
+    "/Volumes/qa7/datavolume/databrickdata",
+    "14. Volume path",
 )
+dbutils.widgets.text("LineType", "K1 with Cost", "15. LineType")
+dbutils.widgets.text("RankForRule", "0", "16. RankForRule")
+dbutils.widgets.dropdown(
+    "ProfilePlan",
+    "off",
+    ["off", "on"],
+    "17. Plan profiler",
+)
+dbutils.widgets.text("PlanCheckpointThreshold", "30", "18. Plan threshold")
 dbutils.widgets.dropdown(
     "ResultType",
     "deltalake",
