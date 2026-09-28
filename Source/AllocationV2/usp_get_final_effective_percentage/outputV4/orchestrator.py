@@ -42,15 +42,15 @@ _PRODUCTION_RUN_FINAL = _base.run_final_effective_percentages
 _PRODUCTION_RESULT_STORER = _base.GenericResultStorer
 
 # ---------------------------------------------------------------------------
-# Optimized business helpers (outputV3-owned)
+# Optimized business helpers (outputV4-owned)
 # ---------------------------------------------------------------------------
 # The production ``output`` package stays a pristine SQL conversion. All
-# performance optimizations live in ``outputV3.business`` and are bound onto
+# performance optimizations live in ``outputV4.business`` and are bound onto
 # the isolated production orchestrator here, so the parallel pipeline calls
 # the optimized copies via ``business.<name>`` while ``output`` is untouched.
-# Every optimization is gated behind ``_output_v3_*`` flags / optional keyword
+# Every optimization is gated behind ``_output_v4_*`` flags / optional keyword
 # arguments whose defaults reproduce the exact production behavior, so binding
-# the copies does not change results unless outputV3 explicitly opts in.
+# the copies does not change results unless outputV4 explicitly opts in.
 from .business import cost_pct_loader as _opt_cost_pct_loader
 from .business import state_allocation as _opt_state_allocation
 from .business import pfic_footnotes as _opt_pfic_footnotes
@@ -96,31 +96,31 @@ for _opt_module, _opt_names in _OPTIMIZED_BUSINESS_EXPORTS.items():
             setattr(_base, _opt_name, _optimized_fn)
 
 _ACTIVE_EVENTS: contextvars.ContextVar[list | None] = contextvars.ContextVar(
-    "fep_output_v3_events", default=None
+    "fep_output_v4_events", default=None
 )
 _ACTIVE_COORDINATOR = contextvars.ContextVar(
-    "fep_output_v3_coordinator", default=None
+    "fep_output_v4_coordinator", default=None
 )
 _ACTIVE_RUN_CFG: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
-    "fep_output_v3_run_cfg", default=None
+    "fep_output_v4_run_cfg", default=None
 )
 _ACTIVE_STAGE_OVERRIDE: contextvars.ContextVar[str | None] = (
-    contextvars.ContextVar("fep_output_v3_stage_override", default=None)
+    contextvars.ContextVar("fep_output_v4_stage_override", default=None)
 )
 _ACTIVE_CHECKPOINT_MODE: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "fep_output_v3_checkpoint_mode", default=1
+    "fep_output_v4_checkpoint_mode", default=1
 )
 _ACTIVE_PROFILE_PLAN: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "fep_output_v3_profile_plan", default=False
+    "fep_output_v4_profile_plan", default=False
 )
 _ACTIVE_PLAN_THRESHOLD: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "fep_output_v3_plan_threshold", default=30
+    "fep_output_v4_plan_threshold", default=30
 )
 _ACTIVE_EXPERIMENT: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
-    "fep_output_v3_experiment", default=None
+    "fep_output_v4_experiment", default=None
 )
 _NAMED_ACTION_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "fep_output_v3_named_action_depth", default=0
+    "fep_output_v4_named_action_depth", default=0
 )
 _EVENT_LOCK = threading.Lock()
 _PROCESS_PRINT_LOCK = threading.Lock()
@@ -144,7 +144,7 @@ _ALL_PARALLEL_GROUPS = frozenset(
     }
 )
 
-# Locked promoted outputV3 defaults for Entity 4137 / RunID 17376.
+# Locked promoted outputV4 defaults for Entity 4137 / RunID 17376.
 # Do not change a value here unless a new exact-parity Databricks run is
 # faster. SkipYearlyEmptyProbe must stay False: enabling it dropped
 # tcp_with_yearly_common and regressed tcp_post_et_m0 from ~2.5s to ~16s.
@@ -304,7 +304,7 @@ def _print_process(
     thread_name = threading.current_thread().name
     details = [
         f"[{timestamp}]",
-        "[outputV3 process]",
+        "[outputV4 process]",
         event,
         f"kind={kind}",
         f"name={name}",
@@ -396,7 +396,7 @@ class _Coordinator:
         self.workers = workers
         self.enabled_groups = frozenset(enabled_groups)
         self._executor = (
-            ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fep-v3")
+            ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fep-v4")
             if workers > 1
             else None
         )
@@ -582,7 +582,7 @@ def _profiled_dataframe_is_empty(self):
             module_name = str(frame.f_globals.get("__name__", ""))
             if (
                 "usp_get_final_effective_percentage.output" in module_name
-                and not module_name.endswith("outputV3.orchestrator")
+                and not module_name.endswith("outputV4.orchestrator")
             ):
                 caller_name = frame.f_code.co_name
                 break
@@ -688,13 +688,13 @@ def _parallel_result(group, name, *args, **kwargs):
     coordinator = _ACTIVE_COORDINATOR.get()
     fn = _PARALLEL_ORIGINALS[name]
     cfg = args[1] if len(args) > 1 and isinstance(args[1], dict) else {}
-    if cfg.get("_output_v3_warning_probe_removal") == {
+    if cfg.get("_output_v4_warning_probe_removal") == {
         "load_line_items": "line_items",
         "load_quarters": "quarters",
         "build_lookthrough_input_modes14": "lookthrough",
     }.get(name):
         fn = WARNING_PROBE_BUILDERS[
-            cfg["_output_v3_warning_probe_removal"]
+            cfg["_output_v4_warning_probe_removal"]
         ]
     if coordinator is None:
         return fn(*args, **kwargs)
@@ -742,7 +742,7 @@ def _line_items_wrapper(spark, cfg, *args, **kwargs):
     if coordinator is not None:
         line_items_fn = (
             WARNING_PROBE_BUILDERS["line_items"]
-            if cfg.get("_output_v3_warning_probe_removal") == "line_items"
+            if cfg.get("_output_v4_warning_probe_removal") == "line_items"
             else _PARALLEL_ORIGINALS["load_line_items"]
         )
         coordinator.submit_group(
@@ -757,7 +757,7 @@ def _line_items_wrapper(spark, cfg, *args, **kwargs):
                             WARNING_PROBE_BUILDERS["quarters"]
                             if name == "load_quarters"
                             and cfg.get(
-                                "_output_v3_warning_probe_removal"
+                                "_output_v4_warning_probe_removal"
                             )
                             == "quarters"
                             else _PARALLEL_ORIGINALS[name]
@@ -780,7 +780,7 @@ def _lookthrough_wrapper(spark, cfg, *args, **kwargs):
     if coordinator is not None:
         lookthrough_fn = (
             WARNING_PROBE_BUILDERS["lookthrough"]
-            if cfg.get("_output_v3_warning_probe_removal") == "lookthrough"
+            if cfg.get("_output_v4_warning_probe_removal") == "lookthrough"
             else _PARALLEL_ORIGINALS[
                 "build_lookthrough_input_modes14"
             ]
@@ -1033,13 +1033,13 @@ def _run_profiled(fn, *args, **kwargs):
         )
     )
     experiment = {
-        "_output_v3_experiment_id": str(
+        "_output_v4_experiment_id": str(
             kwargs.pop(
                 "ExperimentID",
                 kwargs.pop("experiment_id", "baseline"),
             )
         ).strip() or "baseline",
-        "_output_v3_shuffle_partitions": int(
+        "_output_v4_shuffle_partitions": int(
             kwargs.pop(
                 "SqlShufflePartitions",
                 kwargs.pop(
@@ -1048,7 +1048,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_warning_probe_removal": str(
+        "_output_v4_warning_probe_removal": str(
             kwargs.pop(
                 "WarningProbeRemoval",
                 kwargs.pop(
@@ -1057,7 +1057,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ).strip().lower(),
-        "_output_v3_missing_entity_identity": _as_bool(
+        "_output_v4_missing_entity_identity": _as_bool(
             kwargs.pop(
                 "MissingEntityIdentity",
                 kwargs.pop(
@@ -1066,7 +1066,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_cpbt_input_break": str(
+        "_output_v4_cpbt_input_break": str(
             kwargs.pop(
                 "CpbtInputBreak",
                 kwargs.pop(
@@ -1075,7 +1075,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ).strip().lower(),
-        "_output_v3_cpbt_post_tag_entity_break": _as_bool(
+        "_output_v4_cpbt_post_tag_entity_break": _as_bool(
             kwargs.pop(
                 "CpbtPostTagEntityBreak",
                 kwargs.pop(
@@ -1084,7 +1084,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_parallel_cpbt_post_tag": _as_bool(
+        "_output_v4_parallel_cpbt_post_tag": _as_bool(
             kwargs.pop(
                 "ParallelCpbtPostTag",
                 kwargs.pop(
@@ -1093,7 +1093,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_compact_all_entities": _as_bool(
+        "_output_v4_compact_all_entities": _as_bool(
             kwargs.pop(
                 "CompactAllEntities",
                 kwargs.pop(
@@ -1102,7 +1102,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_cpbt_narrow_anti_keys": _as_bool(
+        "_output_v4_cpbt_narrow_anti_keys": _as_bool(
             kwargs.pop(
                 "CpbtNarrowAntiKeys",
                 kwargs.pop(
@@ -1111,7 +1111,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_cpbt_transfer_prefilter": _as_bool(
+        "_output_v4_cpbt_transfer_prefilter": _as_bool(
             kwargs.pop(
                 "CpbtTransferPrefilter",
                 kwargs.pop(
@@ -1120,7 +1120,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_cpbt_drop_tracking_match": _as_bool(
+        "_output_v4_cpbt_drop_tracking_match": _as_bool(
             kwargs.pop(
                 "CpbtDropTrackingMatch",
                 kwargs.pop(
@@ -1129,7 +1129,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_batch_footnote_line_ids": _as_bool(
+        "_output_v4_batch_footnote_line_ids": _as_bool(
             kwargs.pop(
                 "BatchFootnoteLineIds",
                 kwargs.pop(
@@ -1138,7 +1138,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_footnote_shared_lineage": _as_bool(
+        "_output_v4_footnote_shared_lineage": _as_bool(
             kwargs.pop(
                 "FootnoteSharedLineage",
                 kwargs.pop(
@@ -1147,7 +1147,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_footnote_checkpoint_partitions": int(
+        "_output_v4_footnote_checkpoint_partitions": int(
             kwargs.pop(
                 "FootnoteCheckpointPartitions",
                 kwargs.pop(
@@ -1158,7 +1158,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_broadcast_cpbt_remaining": _as_bool(
+        "_output_v4_broadcast_cpbt_remaining": _as_bool(
             kwargs.pop(
                 "BroadcastCpbtRemaining",
                 kwargs.pop(
@@ -1167,7 +1167,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_hierarchy_materialize": _as_bool(
+        "_output_v4_hierarchy_materialize": _as_bool(
             kwargs.pop(
                 "HierarchyMaterialize",
                 kwargs.pop(
@@ -1176,7 +1176,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_parallel_cpbt_validate": _as_bool(
+        "_output_v4_parallel_cpbt_validate": _as_bool(
             kwargs.pop(
                 "ParallelCpbtValidate",
                 kwargs.pop(
@@ -1185,7 +1185,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_skip_yearly_empty_probe": _as_bool(
+        "_output_v4_skip_yearly_empty_probe": _as_bool(
             kwargs.pop(
                 "SkipYearlyEmptyProbe",
                 kwargs.pop(
@@ -1194,7 +1194,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_collapse_state_passes": _as_bool(
+        "_output_v4_collapse_state_passes": _as_bool(
             kwargs.pop(
                 "CollapseStatePasses",
                 kwargs.pop(
@@ -1203,7 +1203,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_batch_state_workflow_lookup": _as_bool(
+        "_output_v4_batch_state_workflow_lookup": _as_bool(
             kwargs.pop(
                 "BatchStateWorkflowLookup",
                 kwargs.pop(
@@ -1214,7 +1214,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_single_pickup_antijoin": _as_bool(
+        "_output_v4_single_pickup_antijoin": _as_bool(
             kwargs.pop(
                 "SinglePickupAntiJoin",
                 kwargs.pop(
@@ -1223,7 +1223,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_materialize_effective_inputs": _as_bool(
+        "_output_v4_materialize_effective_inputs": _as_bool(
             kwargs.pop(
                 "MaterializeEffectiveInputs",
                 kwargs.pop(
@@ -1234,7 +1234,7 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_parallel_effective": _as_bool(
+        "_output_v4_parallel_effective": _as_bool(
             kwargs.pop(
                 "ParallelEffective",
                 kwargs.pop(
@@ -1243,25 +1243,25 @@ def _run_profiled(fn, *args, **kwargs):
                 ),
             )
         ),
-        "_output_v3_target_checkpoint": str(
+        "_output_v4_target_checkpoint": str(
             kwargs.pop(
                 "TargetCheckpoint",
                 kwargs.pop("target_checkpoint", ""),
             )
         ).strip(),
-        "_output_v3_target_partition_strategy": str(
+        "_output_v4_target_partition_strategy": str(
             kwargs.pop(
                 "TargetPartitionStrategy",
                 kwargs.pop("target_partition_strategy", "off"),
             )
         ).strip().lower(),
-        "_output_v3_target_partitions": int(
+        "_output_v4_target_partitions": int(
             kwargs.pop(
                 "TargetPartitions",
                 kwargs.pop("target_partitions", 0),
             )
         ),
-        "_output_v3_target_partition_keys": [
+        "_output_v4_target_partition_keys": [
             item.strip()
             for item in str(
                 kwargs.pop(
@@ -1271,7 +1271,7 @@ def _run_profiled(fn, *args, **kwargs):
             ).split(",")
             if item.strip()
         ],
-        "_output_v3_business_optimization": str(
+        "_output_v4_business_optimization": str(
             kwargs.pop(
                 "BusinessOptimization",
                 kwargs.pop(
@@ -1281,11 +1281,11 @@ def _run_profiled(fn, *args, **kwargs):
             )
         ).strip().lower(),
     }
-    if experiment["_output_v3_shuffle_partitions"] < 1:
+    if experiment["_output_v4_shuffle_partitions"] < 1:
         raise ValueError("SqlShufflePartitions must be >= 1")
-    if experiment["_output_v3_footnote_checkpoint_partitions"] < 0:
+    if experiment["_output_v4_footnote_checkpoint_partitions"] < 0:
         raise ValueError("FootnoteCheckpointPartitions must be >= 0")
-    if experiment["_output_v3_warning_probe_removal"] not in {
+    if experiment["_output_v4_warning_probe_removal"] not in {
         "off",
         "line_items",
         "quarters",
@@ -1295,7 +1295,7 @@ def _run_profiled(fn, *args, **kwargs):
             "WarningProbeRemoval must be off, line_items, quarters, "
             "or lookthrough"
         )
-    if experiment["_output_v3_cpbt_input_break"] not in {
+    if experiment["_output_v4_cpbt_input_break"] not in {
         "off",
         "non_dated",
         "dated",
@@ -1304,7 +1304,7 @@ def _run_profiled(fn, *args, **kwargs):
         raise ValueError(
             "CpbtInputBreak must be off, non_dated, dated, or both"
         )
-    if experiment["_output_v3_target_partition_strategy"] not in {
+    if experiment["_output_v4_target_partition_strategy"] not in {
         "off",
         "coalesce",
         "repartition",
@@ -1313,10 +1313,10 @@ def _run_profiled(fn, *args, **kwargs):
             "TargetPartitionStrategy must be off, coalesce, or repartition"
         )
     if (
-        experiment["_output_v3_target_partition_strategy"] != "off"
+        experiment["_output_v4_target_partition_strategy"] != "off"
         and (
-            not experiment["_output_v3_target_checkpoint"]
-            or experiment["_output_v3_target_partitions"] < 1
+            not experiment["_output_v4_target_checkpoint"]
+            or experiment["_output_v4_target_partitions"] < 1
         )
     ):
         raise ValueError(
@@ -1324,13 +1324,13 @@ def _run_profiled(fn, *args, **kwargs):
             "targeted partitioning"
         )
     if (
-        experiment["_output_v3_target_partition_strategy"] == "repartition"
-        and not experiment["_output_v3_target_partition_keys"]
+        experiment["_output_v4_target_partition_strategy"] == "repartition"
+        and not experiment["_output_v4_target_partition_keys"]
     ):
         raise ValueError(
             "TargetPartitionKeys is required for keyed repartition"
         )
-    if experiment["_output_v3_business_optimization"] not in {
+    if experiment["_output_v4_business_optimization"] not in {
         "off",
         "broadcast_entity_partners",
     }:
@@ -1394,7 +1394,7 @@ def _run_profiled(fn, *args, **kwargs):
         action_token, action_records = start_action_profile()
     started = time.time()
     succeeded = False
-    run_name = getattr(fn, "__name__", "outputV3")
+    run_name = getattr(fn, "__name__", "outputV4")
     _print_process("START", "run", run_name, "pipeline")
     previous_is_empty = DataFrame.isEmpty
     if profile_plan:
@@ -1420,12 +1420,12 @@ def _run_profiled(fn, *args, **kwargs):
                     drop_failed_run_checkpoints(spark, cfg)
             except Exception as cleanup_error:
                 print(
-                    "[outputV3] failed-run checkpoint cleanup also failed: "
+                    "[outputV4] failed-run checkpoint cleanup also failed: "
                     f"{cleanup_error}"
                 )
         wall = round(time.time() - started, 3)
         pipeline_strategy = (
-            cfg.get("_output_v3_pipeline_strategy")
+            cfg.get("_output_v4_pipeline_strategy")
             if isinstance(cfg, dict)
             else None
         )
@@ -1452,16 +1452,16 @@ def _run_profiled(fn, *args, **kwargs):
                 "checkpoint_mode": checkpoint_mode,
                 "profile_plan": profile_plan,
                 "plan_checkpoint_threshold": plan_threshold,
-                "experiment_id": experiment["_output_v3_experiment_id"],
+                "experiment_id": experiment["_output_v4_experiment_id"],
                 "requested_shuffle_partitions": experiment[
-                    "_output_v3_shuffle_partitions"
+                    "_output_v4_shuffle_partitions"
                 ],
                 "experiment_settings": {
-                    key.removeprefix("_output_v3_"): value
+                    key.removeprefix("_output_v4_"): value
                     for key, value in experiment.items()
                 },
                 "effective_spark_config": (
-                    dict(cfg.get("_output_v3_effective_spark_config", {}))
+                    dict(cfg.get("_output_v4_effective_spark_config", {}))
                     if isinstance(cfg, dict)
                     else {}
                 ),
@@ -1509,7 +1509,7 @@ def _run_profiled(fn, *args, **kwargs):
                 "operation_timings": list(events),
                 "stage_contracts": stage_contracts(),
                 "artifact_merges": list(
-                    cfg.get("_output_v3_artifact_merges", ())
+                    cfg.get("_output_v4_artifact_merges", ())
                 ) if isinstance(cfg, dict) else [],
                 "plan_profile": reports["builder"],
                 "checkpoint_plan_profile": reports["checkpoint"],
@@ -1533,15 +1533,15 @@ def _run_profiled(fn, *args, **kwargs):
         _ACTIVE_PLAN_THRESHOLD.reset(threshold_token)
         _ACTIVE_EXPERIMENT.reset(experiment_token)
     print(
-        f"[outputV3 timing] wall={wall:.3f}s "
+        f"[outputV4 timing] wall={wall:.3f}s "
         f"checkpoint_mode={checkpoint_mode} profile_plan={profile_plan} "
-        f"experiment={experiment['_output_v3_experiment_id']} "
+        f"experiment={experiment['_output_v4_experiment_id']} "
         f"threads={max_threads} "
         f"groups={','.join(sorted(requested_groups)) or 'none'}"
     )
     effective_config = _LAST_RUN_PROFILE.get("effective_spark_config", {})
     print(
-        "[outputV3 config] "
+        "[outputV4 config] "
         f"shuffle_partitions={effective_config.get('spark.sql.shuffle.partitions')} "
         f"aqe_enabled={effective_config.get('spark.sql.adaptive.enabled')} "
         "advisory_partition_bytes="
@@ -1549,13 +1549,13 @@ def _run_profiled(fn, *args, **kwargs):
     )
     for stage in _LAST_RUN_PROFILE.get("stage_timings", ()):
         print(
-            f"[outputV3 timing] stage={stage['stage']} "
+            f"[outputV4 timing] stage={stage['stage']} "
             f"elapsed={stage['elapsed_seconds']:.3f}s "
             f"calls={stage['calls']}"
         )
     perf = _LAST_RUN_PROFILE.get("performance_summary", {})
     print(
-        "[outputV3 budget] "
+        "[outputV4 budget] "
         f"target={perf.get('target_wall_seconds', 50.0):.1f}s "
         f"over={perf.get('seconds_over_target', 0.0):.3f}s "
         f"checkpoint_actions={perf.get('checkpoint_action_seconds', 0.0):.3f}s "
@@ -1563,7 +1563,7 @@ def _run_profiled(fn, *args, **kwargs):
     )
     for row in perf.get("critical_actions", ())[:10]:
         print(
-            "[outputV3 critical] "
+            "[outputV4 critical] "
             f"kind={row['kind']} name={row['name']} stage={row['stage']} "
             f"elapsed={row['elapsed_seconds']:.3f}s "
             f"nodes={row.get('incoming_plan_nodes')} "
@@ -1572,7 +1572,7 @@ def _run_profiled(fn, *args, **kwargs):
         )
     for row in perf.get("parallel_wave_critical_path", ()):
         print(
-            "[outputV3 wave] "
+            "[outputV4 wave] "
             f"wave={row['wave']} elapsed={row['elapsed_seconds']:.3f}s "
             f"groups={','.join(row['groups'])} "
             f"tasks={','.join(row['tasks'])}"

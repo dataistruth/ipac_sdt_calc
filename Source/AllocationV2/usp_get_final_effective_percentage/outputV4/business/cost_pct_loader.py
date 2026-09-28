@@ -427,7 +427,7 @@ def build_cost_percentage_by_type(
         )
 
     def _anti_cost_keys(cp):
-        if not cfg.get("_output_v3_cpbt_narrow_anti_keys", False):
+        if not cfg.get("_output_v4_cpbt_narrow_anti_keys", False):
             return cp
         return cp.select(
             "DealId",
@@ -610,7 +610,7 @@ def build_cost_percentage_by_type(
         "Tag",
         "_mode",
     )
-    if cfg.get("_output_v3_compact_all_entities", False):
+    if cfg.get("_output_v4_compact_all_entities", False):
         # The original four-way union scans each dated/non-dated relation
         # twice and performs redundant per-branch distincts. Generate the
         # optional CostAllocationTypeID variant per row, then deduplicate once.
@@ -781,7 +781,7 @@ def build_cost_percentage_by_type(
     if transfers_adj is not None:
         parent_ordered_adj = parent_ordered  # same hierarchy
         transfer_tk_source = transfers_adj
-        if cfg.get("_output_v3_cpbt_transfer_prefilter", False):
+        if cfg.get("_output_v4_cpbt_transfer_prefilter", False):
             transfer_tk_source = transfer_tk_source.filter(
                 (F.col("TrackingKey") == "")
                 & (
@@ -884,7 +884,7 @@ def build_cost_percentage_by_type(
 
     if transfers_adj is not None:
         transfer_notk_source = transfers_adj
-        if cfg.get("_output_v3_cpbt_transfer_prefilter", False):
+        if cfg.get("_output_v4_cpbt_transfer_prefilter", False):
             transfer_notk_source = transfer_notk_source.filter(
                 (F.col("TrackingKey") == "")
                 & (
@@ -952,7 +952,7 @@ def build_cost_percentage_by_type(
                 & (F.coalesce(F.col("TrackingKeyMatch"), F.lit("")) != "")
             )
         )
-    if cfg.get("_output_v3_cpbt_drop_tracking_match", False):
+    if cfg.get("_output_v4_cpbt_drop_tracking_match", False):
         if "TrackingKeyMatch" in temp_cost_pct.columns:
             temp_cost_pct = temp_cost_pct.drop("TrackingKeyMatch")
         if (
@@ -982,12 +982,19 @@ def build_cost_percentage_by_type(
         all_entities = checkpoint_fn(spark, all_entities, f"all_ent_pre_tag_m{mode}", cfg)
         logger.info("[CHECKPOINT] all_entities (pre-tag matching)")
 
+    remaining_entities = all_entities
+    if cfg.get("_output_v4_broadcast_cpbt_remaining", False):
+        # Low-tier remaining-entity sets are small after the pre-tag
+        # anti-join. Broadcasting them turns the tag and nothing-match
+        # lookups into map-side joins without changing rows.
+        remaining_entities = F.broadcast(all_entities)
+
     # ── Tag matching: cost % TrackingKey matches, Tag = '' → input Tag ──
     # Phase 2a: both C and E carry _mode; add _mode equality + project _mode.
     tag_match = (
         temp_cost_pct.alias("C")
         .join(
-            all_entities.alias("E"),
+            remaining_entities.alias("E"),
             (F.col("C.DealId") == F.col("E.UnderlyingEntityID"))
             & (F.col("C.TypeId") == F.col("E.TypeID"))
             & (F.col("C.TrackingKey") == F.col("E.TrackingKey"))
@@ -1012,11 +1019,10 @@ def build_cost_percentage_by_type(
     temp_cost_pct = temp_cost_pct.unionByName(tag_match, allowMissingColumns=True)
 
     if transfers_adj is not None:
-        all_entities_adj = all_entities  # same remaining set
         adj_tag_match = (
             transfers_adj.alias("C")
             .join(
-                all_entities_adj.alias("E"),
+                remaining_entities.alias("E"),
                 (F.col("C.InvestmentID") == F.col("E.UnderlyingEntityID"))
                 & (F.col("C.TypeID") == F.col("E.TypeID"))
                 & (F.col("C.TrackingKey") == F.col("E.TrackingKey"))
@@ -1046,7 +1052,7 @@ def build_cost_percentage_by_type(
             checkpoint_group_fn is not None
             and transfers_adj is not None
             and cfg.get(
-                "_output_v3_parallel_cpbt_post_tag", False
+                "_output_v4_parallel_cpbt_post_tag", False
             )
         ):
             post_tag = checkpoint_group_fn(
@@ -1085,7 +1091,7 @@ def build_cost_percentage_by_type(
                 cfg,
             )
         logger.info("[CHECKPOINT] temp_cost_pct after tag matching")
-        # outputV3 can overlap the transfer lineage break with this existing
+        # outputV4 can overlap the transfer lineage break with this existing
         # temp checkpoint. The final caller checkpoint then materializes only
         # the shallow nothing-match suffix.
 
@@ -1102,12 +1108,12 @@ def build_cost_percentage_by_type(
         "left_anti",
     )
 
-    # outputV3 materializes this shared anti-join once because both nothing-
+    # outputV4 materializes this shared anti-join once because both nothing-
     # match branches are consumed by separate concurrent output checkpoints.
-    # Keep the production path unchanged unless the outputV3 flag is present.
+    # Keep the production path unchanged unless the outputV4 flag is present.
     if (
         checkpoint_fn is not None
-        and cfg.get("_output_v3_cpbt_post_tag_entity_break", False)
+        and cfg.get("_output_v4_cpbt_post_tag_entity_break", False)
     ):
         mode = cfg.get("_current_mode", 1)
         all_entities = checkpoint_fn(
@@ -1118,12 +1124,16 @@ def build_cost_percentage_by_type(
         )
         logger.info("[CHECKPOINT] all_entities (post-tag remaining)")
 
+    nothing_entities = all_entities
+    if cfg.get("_output_v4_broadcast_cpbt_remaining", False):
+        nothing_entities = F.broadcast(all_entities)
+
     # ── Nothing matching: cost % TrackingKey = '' AND Tag = '' → input TrackingKey + Tag ──
     # Phase 2a: both C and E carry _mode; add _mode equality + project _mode.
     nothing_match = (
         temp_cost_pct.alias("C")
         .join(
-            all_entities.alias("E"),
+            nothing_entities.alias("E"),
             (F.col("C.DealId") == F.col("E.UnderlyingEntityID"))
             & (F.col("C.TypeId") == F.col("E.TypeID"))
             & (F.col("C._mode") == F.col("E._mode"))
@@ -1151,7 +1161,7 @@ def build_cost_percentage_by_type(
         adj_nothing_match = (
             transfers_adj.alias("C")
             .join(
-                all_entities.alias("E"),
+                nothing_entities.alias("E"),
                 (F.col("C.InvestmentID") == F.col("E.UnderlyingEntityID"))
                 & (F.col("C.TypeID") == F.col("E.TypeID"))
                 & (F.col("C._mode") == F.col("E._mode"))

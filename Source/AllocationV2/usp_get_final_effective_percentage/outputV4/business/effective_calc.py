@@ -648,7 +648,7 @@ def compute_effective_percentage_dated(
 
     # Delete ProRata (pickup=3) for these entities from pickup_order
     # Phase 3a-2: add _mode equality to both anti-joins.
-    if cfg.get("_output_v3_single_pickup_antijoin", False):
+    if cfg.get("_output_v4_single_pickup_antijoin", False):
         # The SQL-compatible expression below emits every non-3 row once and
         # every unmatched pickup-3 row twice. Compute the expensive anti-join
         # once, then reproduce its required duplicate multiplicity locally.
@@ -678,10 +678,10 @@ def compute_effective_percentage_dated(
             )
             .select("P.*")
             .withColumn(
-                "_output_v3_repeat",
+                "_output_v4_repeat",
                 F.explode(F.array(F.lit(1), F.lit(2))),
             )
-            .drop("_output_v3_repeat")
+            .drop("_output_v4_repeat")
         )
         pickup_order_dated = pickup_non3.unionByName(
             pickup_three_remaining,
@@ -1706,13 +1706,11 @@ def build_final_output(
         .select("L.*")
     )
 
-    
     # Ensure final_amounts has EffPercentage=0.0 — amount-based rows use
     # EffAmount instead; the SQL target table requires non-NULL EffPercentage.
     if final_amounts is not None and "EffPercentage" not in final_amounts.columns:
         final_amounts = final_amounts.withColumn("EffPercentage", F.lit(0.0))
 
-    
     if mode == 4:
         # Mode 4: only non-dated 704c rows
         result = (
@@ -1747,4 +1745,3 @@ def build_final_output(
 
     _log_timing("build_final_output", t0)
     return result
-

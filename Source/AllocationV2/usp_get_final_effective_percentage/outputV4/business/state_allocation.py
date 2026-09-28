@@ -85,7 +85,7 @@ def build_state_allocation_input(
     enu_ut = F.broadcast(_tbl(spark, "ENU_UnderlyingType", cfg))
 
     # --- SM_TempBookEffective: Load from SM_StateLineAllocationRule_Snapshot ---
-    # Get state allocation workflow.  outputV3 resolves the event, workflow
+    # Get state allocation workflow.  outputV4 resolves the event, workflow
     # threshold, excluded statuses, and approved workflow in one Spark action.
     # The production-compatible branch retains the original scalar sequence.
     phase_id = cfg.get("phase_id")
@@ -595,7 +595,7 @@ def build_state_allocation_input(
     )
 
     # The legacy shape applies each pass to the rows left by the preceding
-    # pass.  outputV3 can build all four candidates independently and retain
+    # pass.  outputV4 can build all four candidates independently and retain
     # only the first matching priority.  That is equivalent because the
     # legacy anti-joins remove rows by this same three-column input key, while
     # avoiding repeated expansion of every earlier pass in the final DAG.

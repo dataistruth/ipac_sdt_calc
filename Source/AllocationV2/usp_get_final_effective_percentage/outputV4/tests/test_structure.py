@@ -26,7 +26,7 @@ def function_names(name):
     }
 
 
-class OutputV3StructureTests(unittest.TestCase):
+class OutputV4StructureTests(unittest.TestCase):
     def test_public_api_is_preserved(self):
         names = function_names("orchestrator.py")
         self.assertTrue(
@@ -47,11 +47,27 @@ class OutputV3StructureTests(unittest.TestCase):
             self.assertIn(f'"{api}"', init_text)
 
     def test_no_disallowed_package_dependency(self):
-        for path in ROOT.glob("*.py"):
+        package_files = [path for path in ROOT.rglob("*.py") if "tests" not in path.parts]
+        for path in package_files:
             text = path.read_text(encoding="utf-8")
             self.assertNotIn(".outputV2", text, path.name)
+            self.assertNotIn(".outputV3", text, path.name)
             self.assertNotIn(".output.updated", text, path.name)
             self.assertNotIn("output/updated", text, path.name)
+            self.assertNotIn("outputV3", text, path.name)
+            self.assertNotIn("_output_v3_", text, path.name)
+            self.assertNotIn("OUTPUT_V3", text, path.name)
+            self.assertNotIn("PROMOTED_OUTPUT_V3_KWARGS", text, path.name)
+
+    def test_parent_loader_isolates_production_output(self):
+        text = source("parent.py")
+        self.assertIn('parent.parent / "output"', text)
+        self.assertIn("def isolated_output_module(", text)
+        self.assertIn('.endswith(".outputV4")', text)
+        orchestrator = source("orchestrator.py")
+        self.assertIn("from .parent import isolated_output_module", orchestrator)
+        self.assertIn('isolated_output_module("orchestrator")', orchestrator)
+        self.assertIn("from .business import cost_pct_loader", orchestrator)
 
     def test_named_stage_contracts_are_explicit(self):
         text = source("stages.py")
@@ -78,13 +94,13 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("tcp_post_tag", text)
         self.assertIn("safe cheap lineage break", text)
         self.assertIn("checkpoint_mode=checkpoint_mode", text)
-        self.assertIn('cfg["_output_v3_checkpoint_mode"]', text)
+        self.assertIn('cfg["_output_v4_checkpoint_mode"]', text)
         self.assertIn('"checkpoint_mode": checkpoint_mode', text)
         self.assertIn("drop_failed_run_checkpoints", text)
         self.assertIn("drop_checkpoints_V2", text)
-        self.assertIn("[outputV3 checkpoint] START", text)
-        self.assertIn("[outputV3 checkpoint] DONE", text)
-        self.assertIn("[outputV3 checkpoint] FAIL", text)
+        self.assertIn("[outputV4 checkpoint] START", text)
+        self.assertIn("[outputV4 checkpoint] DONE", text)
+        self.assertIn("[outputV4 checkpoint] FAIL", text)
 
     def test_parallelism_is_bounded_and_staged(self):
         text = source("orchestrator.py")
@@ -131,7 +147,7 @@ class OutputV3StructureTests(unittest.TestCase):
 
     def test_cfg_fork_runtime_identity_contract(self):
         spec = importlib.util.spec_from_file_location(
-            "output_v3_cfg_isolation", ROOT / "cfg_isolation.py"
+            "output_v4_cfg_isolation", ROOT / "cfg_isolation.py"
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -223,10 +239,16 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertNotIn(
             'dbutils.widgets.dropdown(\n    "BusinessOptimization"', text
         )
-        self.assertIn("PROMOTED_OUTPUT_V3_KWARGS", text)
+        self.assertIn("PROMOTED_OUTPUT_V4_KWARGS", text)
         self.assertIn('"SkipYearlyEmptyProbe": False', text)
         self.assertIn('"HierarchyMaterialize": True', text)
-        self.assertIn("**PROMOTED_OUTPUT_V3_KWARGS", text)
+        self.assertIn("**PROMOTED_OUTPUT_V4_KWARGS", text)
+        self.assertIn('OUTPUT_V4 = f"{PACKAGE}.outputV4.orchestrator"', text)
+        self.assertIn('_run("outputV4")', text)
+        self.assertIn("outputV4_fingerprint", text)
+        self.assertIn('"tables": 3', text)
+        self.assertIn("expected 79", text)
+        self.assertIn("production must write three tables", text)
         # No stdout logging helpers remain in the run cell.
         self.assertNotIn("def _log(", text)
         self.assertNotIn("def _clock(", text)
@@ -234,15 +256,15 @@ class OutputV3StructureTests(unittest.TestCase):
     def test_runtime_logging_is_present(self):
         text = source("orchestrator.py")
         self.assertIn("def _print_process(", text)
-        self.assertIn("[outputV3 process]", text)
+        self.assertIn("[outputV4 process]", text)
         self.assertIn('"START", "helper"', text)
         self.assertIn('"START", "task"', text)
         self.assertIn('"START", "run"', text)
         self.assertIn('"helper",\n                operation', text)
         self.assertIn('"task",\n                f"{group}.{name}"', text)
         self.assertIn('"run",\n            run_name', text)
-        self.assertIn("[outputV3 timing] wall=", text)
-        self.assertIn("[outputV3 timing] stage=", text)
+        self.assertIn("[outputV4 timing] wall=", text)
+        self.assertIn("[outputV4 timing] stage=", text)
         self.assertIn("start_plan_profile()", text)
         self.assertIn("start_checkpoint_plan_profile()", text)
         self.assertIn("start_action_profile()", text)
@@ -252,7 +274,7 @@ class OutputV3StructureTests(unittest.TestCase):
         )
         self.assertIn('"action_profile": reports["action"]', text)
         self.assertIn('"performance_summary": performance', text)
-        self.assertIn("[outputV3 budget]", text)
+        self.assertIn("[outputV4 budget]", text)
 
     def test_deep_baseline_experiments_are_isolated_and_reported(self):
         orchestrator = source("orchestrator.py")
@@ -262,14 +284,14 @@ class OutputV3StructureTests(unittest.TestCase):
             "notebook/benchmark_final_effective_percentage.py"
         )
         self.assertIn('"SqlShufflePartitions"', orchestrator)
-        self.assertIn('"_output_v3_effective_spark_config"', pipeline)
+        self.assertIn('"_output_v4_effective_spark_config"', pipeline)
         self.assertNotIn('"spark.sql.shuffle.partitions": "32"', pipeline)
         self.assertIn('"WarningProbeRemoval"', orchestrator)
-        self.assertIn('"_output_v3_missing_entity_identity"', pipeline)
+        self.assertIn('"_output_v4_missing_entity_identity"', pipeline)
         self.assertIn('"CpbtInputBreak"', orchestrator)
         self.assertIn('"cpbt_input_non_dated_fused"', pipeline)
         self.assertIn('"cpbt_input_dated_fused"', pipeline)
-        self.assertIn('"_output_v3_target_checkpoint"', checkpoint)
+        self.assertIn('"_output_v4_target_checkpoint"', checkpoint)
         self.assertIn('"started_at": started_at', checkpoint)
         self.assertIn('"ended_at": ended_at', checkpoint)
         self.assertIn("CHECKPOINT_TIMING_SCHEMA", notebook)
@@ -316,6 +338,7 @@ class OutputV3StructureTests(unittest.TestCase):
             '_PROMOTED_EXPERIMENT_DEFAULTS["skip_yearly_empty_probe"]',
             orchestrator,
         )
+        self.assertIn('"tcp_with_yearly_common"', pipeline)
         self.assertIn('"broadcast_entity_partners"', orchestrator)
         self.assertIn('"fused_effective"', orchestrator)
         self.assertNotIn("checkpoint_mode != 5", checkpoint)
@@ -338,32 +361,32 @@ class OutputV3StructureTests(unittest.TestCase):
             ROOT / "business" / "cost_pct_loader.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            '"_output_v3_cpbt_post_tag_entity_break"',
+            '"_output_v4_cpbt_post_tag_entity_break"',
             cost_pct_loader,
         )
         self.assertIn('"all_ent_post_tag_m{mode}"', cost_pct_loader)
         self.assertIn(
-            '"_output_v3_compact_all_entities"',
+            '"_output_v4_compact_all_entities"',
             cost_pct_loader,
         )
         self.assertIn(
-            '"_output_v3_cpbt_narrow_anti_keys"',
+            '"_output_v4_cpbt_narrow_anti_keys"',
             cost_pct_loader,
         )
         self.assertIn(
-            '"_output_v3_cpbt_transfer_prefilter"',
+            '"_output_v4_cpbt_transfer_prefilter"',
             cost_pct_loader,
         )
         self.assertIn(
-            '"_output_v3_cpbt_drop_tracking_match"',
+            '"_output_v4_cpbt_drop_tracking_match"',
             cost_pct_loader,
         )
         self.assertIn(
-            '"_output_v3_parallel_cpbt_post_tag"',
+            '"_output_v4_parallel_cpbt_post_tag"',
             cost_pct_loader,
         )
         self.assertIn(
-            '"_output_v3_broadcast_cpbt_remaining"',
+            '"_output_v4_broadcast_cpbt_remaining"',
             cost_pct_loader,
         )
         self.assertIn('"txfr_post_tag_m{mode}"', cost_pct_loader)
@@ -371,11 +394,11 @@ class OutputV3StructureTests(unittest.TestCase):
             ROOT / "business" / "pfic_footnotes.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            '"_output_v3_batch_footnote_line_ids"',
+            '"_output_v4_batch_footnote_line_ids"',
             footnotes,
         )
         self.assertIn(
-            '"_output_v3_footnote_shared_lineage"',
+            '"_output_v4_footnote_shared_lineage"',
             footnotes,
         )
         self.assertIn('"fn_alloc_pfic_m{cfg.get(\'mode\', 0)}"', footnotes)
@@ -391,44 +414,44 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('F.min("_pass_priority")', state_allocation)
         self.assertIn("workflow_meta", state_allocation)
         self.assertIn(
-            '"_output_v3_collapse_state_passes"',
+            '"_output_v4_collapse_state_passes"',
             pipeline,
         )
         self.assertIn(
-            '"_output_v3_batch_state_workflow_lookup"',
+            '"_output_v4_batch_state_workflow_lookup"',
             pipeline,
         )
         self.assertIn(
-            '"_output_v3_skip_yearly_empty_probe"',
+            '"_output_v4_skip_yearly_empty_probe"',
             pipeline,
         )
         self.assertIn(
-            '"_output_v3_footnote_checkpoint_partitions"',
+            '"_output_v4_footnote_checkpoint_partitions"',
             pipeline,
         )
         self.assertIn(
-            '"_output_v3_parallel_cpbt_validate"',
+            '"_output_v4_parallel_cpbt_validate"',
             pipeline,
         )
         entity_hierarchy = (
             ROOT / "business" / "entity_hierarchy.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            '"_output_v3_hierarchy_materialize"',
+            '"_output_v4_hierarchy_materialize"',
             entity_hierarchy,
         )
         effective_calc = (
             ROOT / "business" / "effective_calc.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            '"_output_v3_single_pickup_antijoin"',
+            '"_output_v4_single_pickup_antijoin"',
             effective_calc,
         )
         self.assertIn(
             "F.explode(F.array(F.lit(1), F.lit(2)))",
             effective_calc,
         )
-        # outputV3 owns the optimized business copies and binds them onto the
+        # outputV4 owns the optimized business copies and binds them onto the
         # isolated production orchestrator.
         self.assertIn(
             "from .business import cost_pct_loader as _opt_cost_pct_loader",
@@ -453,7 +476,7 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn("_OPTIMIZED_BUSINESS_EXPORTS", orchestrator)
         self.assertIn("setattr(_base, _opt_name, _optimized_fn)", orchestrator)
         # Production output/ must stay a pristine SQL conversion with no
-        # outputV3 optimization seams.
+        # outputV4 optimization seams.
         for _pristine_name in (
             "cost_pct_loader.py",
             "state_allocation.py",
@@ -464,10 +487,7 @@ class OutputV3StructureTests(unittest.TestCase):
             pristine = (
                 ROOT.parent / "output" / _pristine_name
             ).read_text(encoding="utf-8")
-            self.assertNotIn("_output_v3_", pristine)
-            self.assertNotIn("collapse_state_passes", pristine)
-            self.assertNotIn("batch_state_workflow_lookup", pristine)
-            self.assertNotIn("checkpoint_group_fn", pristine)
+            self.assertNotIn("_output_v4_", pristine)
         self.assertIn("compute_dated_effective", pipeline)
         self.assertIn("compute_non_dated_effective", pipeline)
         self.assertIn("frozenset({1, 2, 3, 4, 5})", checkpoint_v2)
@@ -477,7 +497,7 @@ class OutputV3StructureTests(unittest.TestCase):
             checkpoint_v2,
         )
 
-    def test_warning_probe_experiments_are_output_v3_local(self):
+    def test_warning_probe_experiments_are_output_v4_local(self):
         text = source("orchestrator.py")
         self.assertIn("_line_items_without_warning_probe", text)
         self.assertIn("_quarters_without_warning_probe", text)

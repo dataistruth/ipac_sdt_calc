@@ -547,7 +547,7 @@ def build_footnote_input_lines(
         return F.when(F.coalesce(col, F.lit("")) == "", F.lit("-1")).otherwise(col)
 
     shared_pfic_input = None
-    if cfg.get("_output_v3_footnote_shared_lineage", False):
+    if cfg.get("_output_v4_footnote_shared_lineage", False):
         shared_pfic_input = (
             alloc_input.alias("I")
             .join(
@@ -559,7 +559,7 @@ def build_footnote_input_lines(
             .select(
                 "I.*",
                 F.col("P.LineDescription").alias(
-                    "_output_v3_pfic_line_description"
+                    "_output_v4_pfic_line_description"
                 ),
             )
         )
@@ -575,7 +575,7 @@ def build_footnote_input_lines(
         if shared_pfic_input is not None:
             return (
                 shared_pfic_input.alias("I"),
-                F.col("I._output_v3_pfic_line_description"),
+                F.col("I._output_v4_pfic_line_description"),
             )
         return (
             alloc_input.alias("I").join(
@@ -952,7 +952,7 @@ def build_footnote_dated_entities(
         ("pfic_dist_date", "PFICFootnoteLineItem", "DatesofDistribution"),
     )
 
-    if cfg.get("_output_v3_batch_footnote_line_ids", False):
+    if cfg.get("_output_v4_batch_footnote_line_ids", False):
         # Preserve each original first() lookup with limit(1), but submit the
         # six independent table scans as one Spark action.
         line_id_lookup = None

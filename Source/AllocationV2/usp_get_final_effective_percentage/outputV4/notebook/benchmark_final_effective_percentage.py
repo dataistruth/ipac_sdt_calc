@@ -2,7 +2,7 @@
 # MAGIC %md
 # MAGIC # Final Effective Percentage: one side-by-side run
 # MAGIC
-# MAGIC Runs production once and outputV3 once, verifies exact output parity,
+# MAGIC Runs production once and outputV4 once, verifies exact output parity,
 # MAGIC restores the RunID snapshots, and displays runtime, parity, and
 # MAGIC checkpoint timing tables. Progress is logged with wall-clock times.
 
@@ -79,7 +79,7 @@ import sys
 import time
 
 PARALLEL_GROUPS = "all"
-PROMOTED_OUTPUT_V3_KWARGS = {
+PROMOTED_OUTPUT_V4_KWARGS = {
     "CpbtInputBreak": "both",
     "ParallelEffective": True,
     "BusinessOptimization": "broadcast_entity_partners",
@@ -101,9 +101,9 @@ PROMOTED_OUTPUT_V3_KWARGS = {
     "SinglePickupAntiJoin": True,
     "MaterializeEffectiveInputs": True,
 }
-CPBT_INPUT_BREAK = PROMOTED_OUTPUT_V3_KWARGS["CpbtInputBreak"]
-PARALLEL_EFFECTIVE = PROMOTED_OUTPUT_V3_KWARGS["ParallelEffective"]
-BUSINESS_OPTIMIZATION = PROMOTED_OUTPUT_V3_KWARGS["BusinessOptimization"]
+CPBT_INPUT_BREAK = PROMOTED_OUTPUT_V4_KWARGS["CpbtInputBreak"]
+PARALLEL_EFFECTIVE = PROMOTED_OUTPUT_V4_KWARGS["ParallelEffective"]
+BUSINESS_OPTIMIZATION = PROMOTED_OUTPUT_V4_KWARGS["BusinessOptimization"]
 
 settings = {
     "source_path": source_path,
@@ -141,11 +141,11 @@ sys.path.insert(0, source_path)
 
 PACKAGE = "AllocationV2.usp_get_final_effective_percentage"
 PRODUCTION = f"{PACKAGE}.output.orchestrator"
-OUTPUT_V3 = f"{PACKAGE}.outputV3.orchestrator"
+OUTPUT_V4 = f"{PACKAGE}.outputV4.orchestrator"
 
 
 def _evict():
-    roots = (f"{PACKAGE}.output", f"{PACKAGE}.outputV3", "Common_V2")
+    roots = (f"{PACKAGE}.output", f"{PACKAGE}.outputV4", "Common_V2")
     for name in list(sys.modules):
         if any(name == root or name.startswith(root + ".") for root in roots):
             del sys.modules[name]
@@ -158,19 +158,19 @@ def _fresh(module_name):
 
 
 def _require_current_optimized_sources():
-    """Fail fast when outputV3 was synced without its optimized business copies.
+    """Fail fast when outputV4 was synced without its optimized business copies.
 
-    All optimizations live under ``outputV3/business`` now, so only outputV3
+    All optimizations live under ``outputV4/business`` now, so only outputV4
     needs to be synchronized. Production ``output`` stays pristine.
     """
     cost_pct = importlib.import_module(
-        f"{PACKAGE}.outputV3.business.cost_pct_loader"
+        f"{PACKAGE}.outputV4.business.cost_pct_loader"
     )
     state = importlib.import_module(
-        f"{PACKAGE}.outputV3.business.state_allocation"
+        f"{PACKAGE}.outputV4.business.state_allocation"
     )
     footnotes = importlib.import_module(
-        f"{PACKAGE}.outputV3.business.pfic_footnotes"
+        f"{PACKAGE}.outputV4.business.pfic_footnotes"
     )
     requirements = {
         "business.cost_pct_loader.build_cost_percentage_by_type": (
@@ -196,32 +196,32 @@ def _require_current_optimized_sources():
         if absent:
             missing.append(f"{helper_name}: {', '.join(absent)}")
     hierarchy = importlib.import_module(
-        f"{PACKAGE}.outputV3.business.entity_hierarchy"
+        f"{PACKAGE}.outputV4.business.entity_hierarchy"
     )
-    if "_output_v3_hierarchy_materialize" not in inspect.getsource(
+    if "_output_v4_hierarchy_materialize" not in inspect.getsource(
         hierarchy.build_entity_hierarchy
     ):
         missing.append(
             "business.entity_hierarchy.build_entity_hierarchy: "
-            "_output_v3_hierarchy_materialize"
+            "_output_v4_hierarchy_materialize"
         )
-    if "_output_v3_broadcast_cpbt_remaining" not in inspect.getsource(
+    if "_output_v4_broadcast_cpbt_remaining" not in inspect.getsource(
         cost_pct.build_cost_percentage_by_type
     ):
         missing.append(
             "business.cost_pct_loader.build_cost_percentage_by_type: "
-            "_output_v3_broadcast_cpbt_remaining"
+            "_output_v4_broadcast_cpbt_remaining"
         )
     if missing:
         raise RuntimeError(
-            "Stale or partially synchronized outputV3. Sync outputV3/ "
-            "(including outputV3/business) before benchmarking. Missing "
+            "Stale or partially synchronized outputV4. Sync outputV4/ "
+            "(including outputV4/business) before benchmarking. Missing "
             "seams: " + "; ".join(missing)
         )
 
 
 _evict()
-reconcile = importlib.import_module(f"{PACKAGE}.outputV3.output_reconcile")
+reconcile = importlib.import_module(f"{PACKAGE}.outputV4.output_reconcile")
 capture_outputs = reconcile.capture_outputs
 compare_outputs = reconcile.compare_outputs
 create_run_snapshots = reconcile.create_run_snapshots
@@ -247,7 +247,7 @@ def _run(variant):
                 "spark.sql.adaptive.advisoryPartitionSizeInBytes"
             ],
         )
-    runner = _fresh(PRODUCTION if is_production else OUTPUT_V3)
+    runner = _fresh(PRODUCTION if is_production else OUTPUT_V4)
     if not is_production:
         _require_current_optimized_sources()
     purge_run(spark, catalog, schema, run_id)
@@ -260,7 +260,7 @@ def _run(variant):
         "CatalogName": catalog,
         "SchemaName": schema,
         "ResultType": "deltalake",
-        "ExecutionID": f"fep-v3-side-by-side-{variant}",
+        "ExecutionID": f"fep-v4-side-by-side-{variant}",
     }
     if not is_production:
         kwargs.update(
@@ -270,7 +270,7 @@ def _run(variant):
                 "CheckpointMode": checkpoint_mode,
                 "SqlShufflePartitions": shuffle_partitions,
                 "MissingEntityIdentity": missing_entity_identity,
-                **PROMOTED_OUTPUT_V3_KWARGS,
+                **PROMOTED_OUTPUT_V4_KWARGS,
             }
         )
     started = time.time()
@@ -294,12 +294,12 @@ def _run(variant):
     )
     if not is_production and profile_requested_shuffle is None:
         raise RuntimeError(
-            "outputV3 profile has no requested_shuffle_partitions; "
+            "outputV4 profile has no requested_shuffle_partitions; "
             "an old orchestrator is still loaded"
         )
     if not is_production and profile_effective_shuffle is None:
         raise RuntimeError(
-            "outputV3 profile has no effective shuffle value; "
+            "outputV4 profile has no effective shuffle value; "
             "an old pipeline/orchestrator is still loaded"
         )
     shuffle_matches = (
@@ -319,7 +319,7 @@ def _run(variant):
     )
     if verification_required and not shuffle_matches:
         raise AssertionError(
-            "outputV3 spark.sql.shuffle.partitions was overwritten: "
+            "outputV4 spark.sql.shuffle.partitions was overwritten: "
             f"requested={variant_shuffle}, session_after={shuffle_after_run}, "
             f"profile_requested={profile_requested_shuffle}, "
             f"profile_effective={profile_effective_shuffle}"
@@ -354,7 +354,7 @@ def _run(variant):
 
 # COMMAND ----------
 
-# Run production then outputV3 for each pass. Results are shown in the tables
+# Run production then outputV4 for each pass. Results are shown in the tables
 # below; per-pass runtime rows are collected here.
 production = None
 optimized = None
@@ -365,7 +365,7 @@ snapshots = create_run_snapshots(spark, catalog, schema, run_id)
 try:
     for pass_index in range(1, passes + 1):
         production = _run("production")
-        optimized = _run("outputV3")
+        optimized = _run("outputV4")
 
         if production["rows"] != BASELINE["rows"]:
             raise AssertionError(
@@ -436,7 +436,7 @@ try:
         runtime_rows.append(
             {
                 "pass": pass_index,
-                "variant": "improvement (production - outputV3)",
+                "variant": "improvement (production - outputV4)",
                 "wall_seconds": final_comparison["improvement_seconds"],
                 "reported_seconds": final_comparison["improvement_percent"],
                 "rows": final_comparison["rows"],
@@ -507,7 +507,7 @@ if production is not None and optimized is not None:
                 "production_fingerprint": str(
                     production["fingerprints"].get(table)
                 ),
-                "outputV3_fingerprint": str(
+                "outputV4_fingerprint": str(
                     optimized["fingerprints"].get(table)
                 ),
                 "mismatch_detail": (
@@ -520,7 +520,7 @@ COMPARE_SCHEMA = """
     table STRING,
     exact_match BOOLEAN,
     production_fingerprint STRING,
-    outputV3_fingerprint STRING,
+    outputV4_fingerprint STRING,
     mismatch_detail STRING
 """
 if compare_rows:

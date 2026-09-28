@@ -53,7 +53,8 @@ Presentation:
 ## Target configuration
 
 Use these promoted defaults unless a new exact-parity benchmark disproves
-them:
+them. Keep them in `_PROMOTED_EXPERIMENT_DEFAULTS` and the benchmark
+`PROMOTED_OUTPUT_V3_KWARGS` block.
 
 - `CheckpointMode=4`
 - `SqlShufflePartitions=32`
@@ -64,6 +65,18 @@ them:
 - parallel dated/non-dated effective calculation: enabled
 - broadcast `entity_partners`: enabled
 - materialized effective inputs: enabled
+- parallel CPBT post-tag: enabled
+- compact all-entities / narrow anti-keys / transfer prefilter / drop
+  tracking-match: enabled
+- collapse state passes and batch state workflow lookup: enabled
+- batch footnote line IDs: enabled
+- footnote shared lineage: **off**
+- footnote checkpoint partitions: `4`
+- broadcast CPBT remaining entities: enabled
+- hierarchy materialize: enabled
+- parallel CPBT validate + min-quarter: enabled
+- skip yearly empty probe: **off** (must stay off; it regresses
+  `tcp_post_et_m0`)
 
 ## Implementation workflow
 
