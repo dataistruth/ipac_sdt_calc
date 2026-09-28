@@ -27,42 +27,12 @@ dbutils.widgets.dropdown(
     ["low", "medium", "big"],
     "8. Execution profile",
 )
-dbutils.widgets.text("MaxThreads", "", "9. Max threads (blank=profile)")
-dbutils.widgets.text(
-    "SqlShufflePartitions", "", "10. Shuffle partitions (blank=profile)"
-)
-dbutils.widgets.dropdown(
-    "CheckpointMode",
-    "default",
-    ["default", "1", "2", "3", "4"],
-    "11. Checkpoint mode (blank=profile)",
-)
-dbutils.widgets.text("number_of_runs", "1", "12. A/B passes")
+dbutils.widgets.text("number_of_runs", "1", "9. A/B passes")
 dbutils.widgets.dropdown(
     "ExecutionOrder",
     "alternate",
     ["alternate", "original_first", "updated_first"],
-    "13. Execution order",
-)
-dbutils.widgets.text(
-    "VolumePath",
-    "/Volumes/qa7/datavolume/databrickdata",
-    "14. Volume path",
-)
-dbutils.widgets.text("LineType", "K1 with Cost", "15. LineType")
-dbutils.widgets.text("RankForRule", "0", "16. RankForRule")
-dbutils.widgets.dropdown(
-    "ProfilePlan",
-    "off",
-    ["off", "on"],
-    "17. Plan profiler",
-)
-dbutils.widgets.text("PlanCheckpointThreshold", "30", "18. Plan threshold")
-dbutils.widgets.dropdown(
-    "ResultType",
-    "deltalake",
-    ["deltalake", "parquet"],
-    "19. Result type",
+    "10. Execution order",
 )
 
 # COMMAND ----------
@@ -80,28 +50,15 @@ tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
 run_id = int(dbutils.widgets.get("RunID"))
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
-volume_path = dbutils.widgets.get("VolumePath").strip()
-line_type = dbutils.widgets.get("LineType").strip()
-rank_for_rule = int(dbutils.widgets.get("RankForRule") or "0")
 execution_profile = (
     dbutils.widgets.get("ExecutionProfile").strip() or "low"
 )
-max_threads_raw = dbutils.widgets.get("MaxThreads").strip()
-workers = int(max_threads_raw) if max_threads_raw else None
-profile_plan = dbutils.widgets.get("ProfilePlan").lower() == "on"
-threshold = int(dbutils.widgets.get("PlanCheckpointThreshold") or "30")
-mode_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
-mode = None if mode_raw in {"", "default"} else int(mode_raw)
-shuffle = dbutils.widgets.get("SqlShufflePartitions").strip()
-result_type = dbutils.widgets.get("ResultType").strip() or "deltalake"
-if runs < 1 or (workers is not None and not 1 <= workers <= 4) or (
-    mode is not None and mode not in (1, 2, 3, 4)
-):
-    raise ValueError("Invalid runs, MaxThreads, or CheckpointMode")
-if mode == 3 and not volume_path:
-    raise ValueError("VolumePath is required for CheckpointMode=3")
-if shuffle:
-    spark.conf.set("spark.sql.shuffle.partitions", shuffle)
+volume_path = "/Volumes/qa7/datavolume/databrickdata"
+line_type = "K1 with Cost"
+rank_for_rule = 0
+result_type = "deltalake"
+if runs < 1:
+    raise ValueError("A/B passes must be >= 1")
 
 while source_path in sys.path:
     sys.path.remove(source_path)
@@ -111,6 +68,7 @@ print(f"[benchmark] Python import root={sys.path[0]}", flush=True)
 package = "AllocationV2.usp_load_lookthrough_cost_alloc_to_output"
 production = f"{package}.output.load_lookthrough_cost_alloc_to_output"
 updated = f"{package}.outputV2.load_lookthrough_cost_alloc_to_output"
+FLAT_SIBLINGS = ("_data_loading", "_hierarchy", "_allocation")
 
 
 def fresh_import(name):
@@ -121,7 +79,7 @@ def fresh_import(name):
         "Common_V2",
     )
     for loaded in list(sys.modules):
-        if any(
+        if loaded in FLAT_SIBLINGS or any(
             loaded == root or loaded.startswith(root + ".")
             for root in roots
         ):
@@ -129,6 +87,10 @@ def fresh_import(name):
     importlib.invalidate_caches()
     checkpoint = importlib.import_module("Common_V2.core.checkpoint_V2")
     print(f"[import] checkpoint_V2={checkpoint.__file__}")
+    for sibling in FLAT_SIBLINGS:
+        sys.modules[sibling] = importlib.import_module(
+            f"{package}.output.{sibling}"
+        )
     module = importlib.import_module(name)
     print(f"[import] runner={module.__file__}")
     return module
@@ -174,17 +136,7 @@ def run_variant(variant, number, snapshot):
         result_type=result_type,
     )
     if variant == "updated":
-        kwargs.update(
-            ExecutionProfile=execution_profile,
-            ProfilePlan=profile_plan,
-            PlanCheckpointThreshold=threshold,
-        )
-        if workers is not None:
-            kwargs["MaxThreads"] = workers
-        if mode is not None:
-            kwargs["CheckpointMode"] = mode
-        if shuffle:
-            kwargs["SqlShufflePartitions"] = int(shuffle)
+        kwargs["ExecutionProfile"] = execution_profile
     started = time.perf_counter()
     result = module.run_load_lookthrough_cost_alloc(spark, **kwargs)
     wall = round(time.perf_counter() - started, 3)

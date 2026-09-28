@@ -86,11 +86,20 @@ same identity widgets and defaults as FEP
 | CatalogName | `QA7` |
 | SchemaName | `iPC_2025_QA7_15348` |
 | ExecutionProfile | `low` |
-| MaxThreads | blank |
-| SqlShufflePartitions | blank |
-| CheckpointMode | `default` |
-| LineType | `K1 with Cost` |
-| RankForRule | `0` |
+| number_of_runs | `1` |
+| ExecutionOrder | `alternate` |
+
+No MaxThreads / shuffle / CheckpointMode / plan-profiler widgets: the
+execution profile tier resolves them. LineType `K1 with Cost`,
+RankForRule `0`, ResultType `deltalake`, and VolumePath are constants.
+Put `dbutils.widgets.removeAll()` in its own cell (Databricks keeps old
+values if widgets are recreated in the same cell).
+
+Production `output/` uses flat `from _data_loading import ...`. Alias
+`_data_loading`, `_hierarchy`, `_allocation` in `sys.modules` to the
+package-qualified modules before importing production (notebook
+`fresh_import` and `parent.register_flat_aliases`); do not edit
+production imports.
 
 Restore `LookThroughAllocationOutput` and `LookThroughAllocationInput`
 before each variant (Output is also an input).
