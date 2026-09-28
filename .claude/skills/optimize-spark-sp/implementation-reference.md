@@ -239,7 +239,7 @@ reproduce production union/order exactly.
 Pass Spark sessions as the process session; do not create extra sessions
 per thread.
 
-### What not to copy from FEP, footnotes, or look-through input
+### What not to copy from FEP, footnotes, look-through, or allocation input
 
 Do not port FEP CPBT `_mode` fusion, footnote PFIC batching, state-pass
 collapse, or hierarchy WHILE rewrites unless this SP has the same SQL
@@ -253,6 +253,10 @@ Do not port look-through allocation input `independent_early_loads` /
 `independent_input_builders` / `output_writes` table list, or keep-FX-
 sequential / keep-PFIC-chain-sequential rules, unless this SP has the
 same contract.
+
+Do not port load-allocation-input `independent_input_builders` (forms /
+K1 / PFIC snapshot) or collect-then-Delta-then-Parquet `output_writes`
+unless this SP uses the same `_parquet_results` flush.
 
 Port only phasing, isolation, checkpoint V2, profiling, pruning,
 bounded broadcasts, and distinct-table `output_writes` when the tables
