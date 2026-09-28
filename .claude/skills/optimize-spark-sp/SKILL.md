@@ -58,6 +58,7 @@ and notebooks. Use the child skill when the work is that SP:
 | `usp_load_footnotes_allocation_to_output` | [usp-load-footnotes-allocation-to-output/SKILL.md](usp-load-footnotes-allocation-to-output/SKILL.md) |
 | `usp_load_lookthrough_allocation_input` | [usp-load-lookthrough-allocation-input/SKILL.md](usp-load-lookthrough-allocation-input/SKILL.md) |
 | `usp_load_lookthrough_footnote_effective_allocation_pct` | [usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md](usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md) |
+| `usp_load_lookthrough_cost_alloc` | [usp-load-lookthrough-cost-alloc/SKILL.md](usp-load-lookthrough-cost-alloc/SKILL.md) |
 | `usp_load_allocation_input` | [usp-load-allocation-input/SKILL.md](usp-load-allocation-input/SKILL.md) |
 
 The child skill owns SP-only checkpoints, extra tables, and locked
@@ -65,7 +66,10 @@ timings. Do not copy those into other SPs. For
 `usp_load_allocation_input`, Development generate must reproduce the
 locked `outputV2` in that child skill (no `form_flowup_collect.py`,
 collect FormFlowups as one task, keep `pfic_raw`, AllocationInput Delta
-then parallel `output_writes`).
+then parallel `output_writes`). For look-through cost alloc, Development
+generate must keep extra Checkpoint V2 seams
+(`temp_alloc_input`, `fep`, `alloc_pass1`–`alloc_pass4`, `alloc_output`)
+and sequential Output-then-Input writes.
 
 ## Mode 1 — Production
 
