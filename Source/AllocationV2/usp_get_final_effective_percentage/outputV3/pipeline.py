@@ -209,7 +209,7 @@ def run_modes_parallel(
         )
         yearly_rows = None
         skip_yearly_probe = bool(
-            cfg.get("_output_v3_skip_yearly_empty_probe", True)
+            cfg.get("_output_v3_skip_yearly_empty_probe", False)
         )
         if skip_yearly_probe or (
             not is_empty(
@@ -243,13 +243,15 @@ def run_modes_parallel(
             )
         if yearly_rows is not None:
             common_temp_cost_pct = common_temp_cost_pct.unionByName(yearly_rows)
-            if not skip_yearly_probe:
-                common_temp_cost_pct = checkpoint(
-                    spark,
-                    common_temp_cost_pct,
-                    "tcp_with_yearly_common",
-                    common_cfg,
-                )
+            # Always break this union. Skipping the checkpoint left the
+            # yearly cross-join inside tcp_post_et_m0 and regressed it
+            # from ~2.5s to ~16s.
+            common_temp_cost_pct = checkpoint(
+                spark,
+                common_temp_cost_pct,
+                "tcp_with_yearly_common",
+                common_cfg,
+            )
         common_underlying_mod = business.build_underlying_mod(
             underlyings_ordered, snapshot
         )

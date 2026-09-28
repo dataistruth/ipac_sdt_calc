@@ -343,7 +343,7 @@ class OutputV3StructureTests(unittest.TestCase):
             orchestrator,
         )
         self.assertIn(
-            'kwargs.pop("skip_yearly_empty_probe", True)',
+            'kwargs.pop("skip_yearly_empty_probe", False)',
             orchestrator,
         )
         self.assertIn(

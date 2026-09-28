@@ -1108,7 +1108,7 @@ def _run_profiled(fn, *args, **kwargs):
         "_output_v3_skip_yearly_empty_probe": _as_bool(
             kwargs.pop(
                 "SkipYearlyEmptyProbe",
-                kwargs.pop("skip_yearly_empty_probe", True),
+                kwargs.pop("skip_yearly_empty_probe", False),
             )
         ),
         "_output_v3_collapse_state_passes": _as_bool(
