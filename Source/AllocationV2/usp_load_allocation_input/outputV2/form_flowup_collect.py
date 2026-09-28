@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
+
 from Common_V2.core.helpers import read_table
 import pyspark.sql.functions as F
 
-from .parent import output_module
 
-_final = output_module("ai_finalization_service")
+def _output_module(name: str):
+    """Load production output helpers without requiring a package __name__."""
+    here = Path(__file__).resolve()
+    sp_name = here.parent.parent.name
+    return importlib.import_module(f"AllocationV2.{sp_name}.output.{name}")
+
+
+_final = _output_module("ai_finalization_service")
 _collect_result = _final._collect_result
 
 FORM_FLOWUP_TABLES = (

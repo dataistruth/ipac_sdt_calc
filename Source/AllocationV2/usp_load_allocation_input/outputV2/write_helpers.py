@@ -16,24 +16,33 @@ from .parent import output_module
 
 
 def _load_form_flowup_collect():
-    """Import sibling form_flowup_collect.py even if Databricks package scan missed it."""
-    try:
-        from . import form_flowup_collect as module
-        return module
-    except (ModuleNotFoundError, ImportError):
-        path = Path(__file__).resolve().with_name("form_flowup_collect.py")
-        if not path.is_file():
-            raise ModuleNotFoundError(
-                "form_flowup_collect.py is not next to write_helpers.py at "
-                f"{path}. Sync that file into the same outputV2 folder as a "
-                "Python source file (not a Databricks notebook)."
-            ) from None
-        name = "usp_load_allocation_input_outputV2_form_flowup_collect"
-        spec = importlib.util.spec_from_file_location(name, path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-        return module
+    """Import form_flowup_collect.py as a package member or from disk."""
+    path = Path(__file__).resolve().with_name("form_flowup_collect.py")
+    pkg = __package__ or "AllocationV2.usp_load_allocation_input.outputV2"
+    name = f"{pkg}.form_flowup_collect"
+    if name in sys.modules:
+        return sys.modules[name]
+    if __package__:
+        try:
+            from . import form_flowup_collect as module
+            return module
+        except (ModuleNotFoundError, ImportError):
+            pass
+    if not path.is_file():
+        raise ModuleNotFoundError(
+            "form_flowup_collect.py is not next to write_helpers.py at "
+            f"{path}. Sync it as a Python source file, not a notebook."
+        )
+    spec = importlib.util.spec_from_file_location(
+        name,
+        path,
+        submodule_search_locations=[str(path.parent)],
+    )
+    module = importlib.util.module_from_spec(spec)
+    module.__package__ = pkg
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 _form_flowup_collect = _load_form_flowup_collect()
