@@ -164,6 +164,23 @@ Broadcast only:
 
 Do not broadcast fact AllocationInput / cost / underlyings frames.
 
+### Notebook defaults
+
+`outputV2/notebook/benchmark_load_footnotes_allocation_to_output.py`:
+
+| Widget | Default |
+|---|---|
+| EntityID | `4032` |
+| ClientID | `15348` |
+| TaxPeriodID | `1` |
+| RunID | `18263` |
+| CatalogName | `QA7` |
+| SchemaName | `IPC_2025_QA7_15348` |
+| number_of_runs | `1` |
+| ExecutionOrder | `alternate` |
+| ExecutionProfile | `low` |
+| SqlShufflePartitions | blank |
+
 ### 6. Validate
 
 Syntax-check. Then run the Databricks A/B notebook on an isolated RunID:

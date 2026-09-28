@@ -20,10 +20,10 @@ dbutils.widgets.dropdown(
     ["alternate", "original_first", "updated_first"],
     "3. Execution order",
 )
-dbutils.widgets.text("EntityID", "115", "4. EntityID")
+dbutils.widgets.text("EntityID", "4032", "4. EntityID")
 dbutils.widgets.text("ClientID", "15348", "5. ClientID")
 dbutils.widgets.text("TaxPeriodID", "1", "6. TaxPeriodID")
-dbutils.widgets.text("RunID", "16560", "7. RunID")
+dbutils.widgets.text("RunID", "18263", "7. RunID")
 dbutils.widgets.text("CatalogName", "QA7", "8. Catalog")
 dbutils.widgets.text(
     "SchemaName", "IPC_2025_QA7_15348", "9. Schema"
@@ -214,9 +214,19 @@ def _run_variant(variant, pass_number, snapshot):
     print(
         f"[benchmark] {variant}: wall={wall:.3f}s "
         f"reported={reported} "
+        f"sp_status={result.get('status') if isinstance(result, dict) else None} "
+        f"skip_reason={result.get('skip_reason') if isinstance(result, dict) else None} "
+        f"inserted={result.get('write_inserted_rows') if isinstance(result, dict) else None} "
+        f"live_footnote={result.get('live_footnote_rows') if isinstance(result, dict) else None} "
         f"output_rows={summary['allocation_output_rows']} "
         f"input_rows={summary['allocation_input_rows']}"
     )
+    if isinstance(result, dict):
+        print(
+            f"[benchmark] {variant} types combined="
+            f"{result.get('combined_allocation_types')} "
+            f"live={result.get('live_allocation_types')}"
+        )
     return {
         "pass": pass_number,
         "variant": variant,
@@ -234,7 +244,16 @@ def _run_variant(variant, pass_number, snapshot):
             if isinstance(result, dict)
             else []
         ),
-        "status": "PASS",
+        "status": (
+            result.get("status")
+            if isinstance(result, dict)
+            else "UNKNOWN"
+        ),
+        "skip_reason": (
+            result.get("skip_reason")
+            if isinstance(result, dict)
+            else None
+        ),
     }
 
 
@@ -309,6 +328,7 @@ summary_rows = [
             "allocation_output_rows"
         ],
         "status": row["status"],
+        "skip_reason": row.get("skip_reason"),
     }
     for row in records
 ]
