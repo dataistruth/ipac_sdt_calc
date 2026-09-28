@@ -8,9 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 KNOWN_GROUPS = frozenset(
     {
-        "independent_early_loads",
         "independent_builders",
-        "output_writes",
     }
 )
 

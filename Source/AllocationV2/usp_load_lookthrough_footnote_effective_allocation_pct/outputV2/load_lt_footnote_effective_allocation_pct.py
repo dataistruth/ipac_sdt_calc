@@ -316,44 +316,17 @@ def run_load_lt_footnote_effective_allocation_pct(
                 status["status"] = "OK_NO_K1"
                 return status
 
-        with _timed(timings, "S3 independent early loads"):
-            (
-                yearly_pair,
-                partners_df,
-                final_eff_pct_df,
-                lt_output_df,
-            ) = run_parallel(
-                [
-                    (
-                        "build_yearly_effective_pct",
-                        lambda: build_yearly_effective_pct(
-                            spark, {**cfg}, distinct_mappings_df
-                        ),
-                    ),
-                    (
-                        "load_partners",
-                        lambda: load_partners(spark, {**cfg}),
-                    ),
-                    (
-                        "load_final_effective_percentages",
-                        lambda: load_final_effective_percentages(
-                            spark, {**cfg}
-                        ),
-                    ),
-                    (
-                        "build_lt_allocation_output",
-                        lambda: build_lt_allocation_output(
-                            spark, {**cfg}, distinct_mappings_df
-                        ),
-                    ),
-                ],
-                workers,
-                parallel_activity,
-                "independent_early_loads",
-                enabled_groups,
+        with _timed(timings, "S3 yearly partners FEP and lt_output"):
+            yearly_pair = build_yearly_effective_pct(
+                spark, cfg, distinct_mappings_df
             )
             total_amount_yearly_df, tmp_line_amounts_df = yearly_pair
             del total_amount_yearly_df
+            partners_df = load_partners(spark, cfg)
+            final_eff_pct_df = load_final_effective_percentages(spark, cfg)
+            lt_output_df = build_lt_allocation_output(
+                spark, cfg, distinct_mappings_df
+            )
             lt_output_df = _checkpoint(
                 spark, lt_output_df, "lt_output", cfg
             )
@@ -425,7 +398,7 @@ def run_load_lt_footnote_effective_allocation_pct(
                 spark, cfg, temp_alloc_input_df, final_pct_df, partners_df
             )
 
-        with _timed(timings, "S6 distinct-table writes"):
+        with _timed(timings, "S6 write output then update input"):
             save_return_value = profile_action(
                 "flush_result_tables",
                 alloc_output_df,

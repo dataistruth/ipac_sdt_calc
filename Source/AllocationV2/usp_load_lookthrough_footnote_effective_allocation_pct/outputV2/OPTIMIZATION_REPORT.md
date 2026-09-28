@@ -8,14 +8,14 @@ imports production builders via `parent.py`.
 - Orchestrator resolves `ExecutionProfile` (default **low**) at start:
   shuffle 32, CheckpointMode 4, MaxThreads 4. No AQE override.
 - Production checkpoint seam `lt_output` now uses Checkpoint V2.
-- Phase `independent_early_loads`: yearly %, partners, FEP, LT output
-  (then `lt_output` checkpoint on the main thread).
-- Phase `independent_builders`: cost %, book %, temp allocation input.
-- Phase `output_writes`: LookThroughAllocationOutput append and
-  LookThroughAllocationInput RunID overwrite in parallel.
+- Phase `independent_builders`: cost %, book %, temp allocation input
+  (lazy plans; materialize on the main thread).
+- Sequential writes matching production: LookThroughAllocationOutput
+  append, then LookThroughAllocationInput RunID overwrite. Parallel
+  writes caused a LookThroughAllocationOutput count mismatch.
 - Sequential: config/skip gates, mapping expand (isEmpty), distinct
-  mappings, K1 gate, single/multi classify, K1 amounts, final %,
-  build output frames.
+  mappings, K1 gate, yearly/partners/FEP/lt_output (Spark actions),
+  single/multi classify, K1 amounts, final %, build output frames.
 
 ## Compared tables
 
