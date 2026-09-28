@@ -101,6 +101,7 @@ class OutputV3StructureTests(unittest.TestCase):
             "mode_prep_boundaries",
             "cpbt_boundaries",
             "cpbt_internal_boundaries",
+            "cpbt_post_validate",
             "effective_inputs",
             "fused_effective",
             "effective_boundaries",
@@ -322,7 +323,27 @@ class OutputV3StructureTests(unittest.TestCase):
             orchestrator,
         )
         self.assertIn(
-            'kwargs.pop("footnote_shared_lineage", True)',
+            'kwargs.pop("footnote_shared_lineage", False)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("footnote_checkpoint_partitions", 4)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("broadcast_cpbt_remaining", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("hierarchy_materialize", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("parallel_cpbt_validate", True)',
+            orchestrator,
+        )
+        self.assertIn(
+            'kwargs.pop("skip_yearly_empty_probe", True)',
             orchestrator,
         )
         self.assertIn(
@@ -353,6 +374,7 @@ class OutputV3StructureTests(unittest.TestCase):
         self.assertIn('"mode_prep_boundaries"', pipeline)
         self.assertIn('"cpbt_boundaries"', pipeline)
         self.assertIn('"cpbt_internal_boundaries"', pipeline)
+        self.assertIn('"cpbt_post_validate"', pipeline)
         self.assertIn('"effective_boundaries"', pipeline)
         self.assertNotIn('"underlyings_common"', pipeline)
         self.assertIn(
@@ -387,6 +409,10 @@ class OutputV3StructureTests(unittest.TestCase):
             '"_output_v3_parallel_cpbt_post_tag"',
             cost_pct_loader,
         )
+        self.assertIn(
+            '"_output_v3_broadcast_cpbt_remaining"',
+            cost_pct_loader,
+        )
         self.assertIn('"txfr_post_tag_m{mode}"', cost_pct_loader)
         footnotes = (
             ROOT / "business" / "pfic_footnotes.py"
@@ -419,6 +445,25 @@ class OutputV3StructureTests(unittest.TestCase):
             '"_output_v3_batch_state_workflow_lookup"',
             pipeline,
         )
+        self.assertIn(
+            '"_output_v3_skip_yearly_empty_probe"',
+            pipeline,
+        )
+        self.assertIn(
+            '"_output_v3_footnote_checkpoint_partitions"',
+            pipeline,
+        )
+        self.assertIn(
+            '"_output_v3_parallel_cpbt_validate"',
+            pipeline,
+        )
+        entity_hierarchy = (
+            ROOT / "business" / "entity_hierarchy.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"_output_v3_hierarchy_materialize"',
+            entity_hierarchy,
+        )
         effective_calc = (
             ROOT / "business" / "effective_calc.py"
         ).read_text(encoding="utf-8")
@@ -448,6 +493,10 @@ class OutputV3StructureTests(unittest.TestCase):
             "from .business import effective_calc as _opt_effective_calc",
             orchestrator,
         )
+        self.assertIn(
+            "from .business import entity_hierarchy as _opt_entity_hierarchy",
+            orchestrator,
+        )
         self.assertIn("_OPTIMIZED_BUSINESS_EXPORTS", orchestrator)
         self.assertIn("setattr(_base, _opt_name, _optimized_fn)", orchestrator)
         # Production output/ must stay a pristine SQL conversion with no
@@ -457,6 +506,7 @@ class OutputV3StructureTests(unittest.TestCase):
             "state_allocation.py",
             "pfic_footnotes.py",
             "effective_calc.py",
+            "entity_hierarchy.py",
         ):
             pristine = (
                 ROOT.parent / "output" / _pristine_name

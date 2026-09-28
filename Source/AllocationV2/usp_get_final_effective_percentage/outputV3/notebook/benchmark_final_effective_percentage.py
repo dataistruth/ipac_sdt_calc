@@ -173,6 +173,23 @@ def _require_current_optimized_sources():
         absent = sorted(expected - actual)
         if absent:
             missing.append(f"{helper_name}: {', '.join(absent)}")
+    hierarchy = importlib.import_module(
+        f"{PACKAGE}.outputV3.business.entity_hierarchy"
+    )
+    if "_output_v3_hierarchy_materialize" not in inspect.getsource(
+        hierarchy.build_entity_hierarchy
+    ):
+        missing.append(
+            "business.entity_hierarchy.build_entity_hierarchy: "
+            "_output_v3_hierarchy_materialize"
+        )
+    if "_output_v3_broadcast_cpbt_remaining" not in inspect.getsource(
+        cost_pct.build_cost_percentage_by_type
+    ):
+        missing.append(
+            "business.cost_pct_loader.build_cost_percentage_by_type: "
+            "_output_v3_broadcast_cpbt_remaining"
+        )
     if missing:
         raise RuntimeError(
             "Stale or partially synchronized outputV3. Sync outputV3/ "

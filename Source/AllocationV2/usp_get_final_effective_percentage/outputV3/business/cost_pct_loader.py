@@ -982,12 +982,19 @@ def build_cost_percentage_by_type(
         all_entities = checkpoint_fn(spark, all_entities, f"all_ent_pre_tag_m{mode}", cfg)
         logger.info("[CHECKPOINT] all_entities (pre-tag matching)")
 
+    remaining_entities = all_entities
+    if cfg.get("_output_v3_broadcast_cpbt_remaining", False):
+        # Low-tier remaining-entity sets are small after the pre-tag
+        # anti-join. Broadcasting them turns the tag and nothing-match
+        # lookups into map-side joins without changing rows.
+        remaining_entities = F.broadcast(all_entities)
+
     # ── Tag matching: cost % TrackingKey matches, Tag = '' → input Tag ──
     # Phase 2a: both C and E carry _mode; add _mode equality + project _mode.
     tag_match = (
         temp_cost_pct.alias("C")
         .join(
-            all_entities.alias("E"),
+            remaining_entities.alias("E"),
             (F.col("C.DealId") == F.col("E.UnderlyingEntityID"))
             & (F.col("C.TypeId") == F.col("E.TypeID"))
             & (F.col("C.TrackingKey") == F.col("E.TrackingKey"))
@@ -1012,11 +1019,10 @@ def build_cost_percentage_by_type(
     temp_cost_pct = temp_cost_pct.unionByName(tag_match, allowMissingColumns=True)
 
     if transfers_adj is not None:
-        all_entities_adj = all_entities  # same remaining set
         adj_tag_match = (
             transfers_adj.alias("C")
             .join(
-                all_entities_adj.alias("E"),
+                remaining_entities.alias("E"),
                 (F.col("C.InvestmentID") == F.col("E.UnderlyingEntityID"))
                 & (F.col("C.TypeID") == F.col("E.TypeID"))
                 & (F.col("C.TrackingKey") == F.col("E.TrackingKey"))
@@ -1118,12 +1124,16 @@ def build_cost_percentage_by_type(
         )
         logger.info("[CHECKPOINT] all_entities (post-tag remaining)")
 
+    nothing_entities = all_entities
+    if cfg.get("_output_v3_broadcast_cpbt_remaining", False):
+        nothing_entities = F.broadcast(all_entities)
+
     # ── Nothing matching: cost % TrackingKey = '' AND Tag = '' → input TrackingKey + Tag ──
     # Phase 2a: both C and E carry _mode; add _mode equality + project _mode.
     nothing_match = (
         temp_cost_pct.alias("C")
         .join(
-            all_entities.alias("E"),
+            nothing_entities.alias("E"),
             (F.col("C.DealId") == F.col("E.UnderlyingEntityID"))
             & (F.col("C.TypeId") == F.col("E.TypeID"))
             & (F.col("C._mode") == F.col("E._mode"))
@@ -1151,7 +1161,7 @@ def build_cost_percentage_by_type(
         adj_nothing_match = (
             transfers_adj.alias("C")
             .join(
-                all_entities.alias("E"),
+                nothing_entities.alias("E"),
                 (F.col("C.InvestmentID") == F.col("E.UnderlyingEntityID"))
                 & (F.col("C.TypeID") == F.col("E.TypeID"))
                 & (F.col("C._mode") == F.col("E._mode"))

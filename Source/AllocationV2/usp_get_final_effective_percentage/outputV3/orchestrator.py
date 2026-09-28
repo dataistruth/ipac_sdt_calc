@@ -55,6 +55,7 @@ from .business import cost_pct_loader as _opt_cost_pct_loader
 from .business import state_allocation as _opt_state_allocation
 from .business import pfic_footnotes as _opt_pfic_footnotes
 from .business import effective_calc as _opt_effective_calc
+from .business import entity_hierarchy as _opt_entity_hierarchy
 
 _OPTIMIZED_BUSINESS_EXPORTS = {
     _opt_cost_pct_loader: (
@@ -82,6 +83,9 @@ _OPTIMIZED_BUSINESS_EXPORTS = {
         "apply_plugging",
         "apply_type_id_update",
         "build_final_output",
+    ),
+    _opt_entity_hierarchy: (
+        "build_entity_hierarchy",
     ),
 }
 
@@ -131,6 +135,7 @@ _ALL_PARALLEL_GROUPS = frozenset(
         "mode_prep_boundaries",
         "cpbt_boundaries",
         "cpbt_internal_boundaries",
+        "cpbt_post_validate",
         "effective_inputs",
         "fused_effective",
         "effective_boundaries",
@@ -407,6 +412,7 @@ class _Coordinator:
             "mode_prep_boundaries": StageName.MODE_PREP.value,
             "cpbt_boundaries": StageName.FUSED_CPBT.value,
             "cpbt_internal_boundaries": StageName.FUSED_CPBT.value,
+            "cpbt_post_validate": StageName.FUSED_CPBT.value,
             "effective_inputs": StageName.FUSED_EFFECTIVE.value,
             "fused_effective": StageName.FUSED_EFFECTIVE.value,
             "effective_boundaries": StageName.FUSED_EFFECTIVE.value,
@@ -1072,7 +1078,37 @@ def _run_profiled(fn, *args, **kwargs):
         "_output_v3_footnote_shared_lineage": _as_bool(
             kwargs.pop(
                 "FootnoteSharedLineage",
-                kwargs.pop("footnote_shared_lineage", True),
+                kwargs.pop("footnote_shared_lineage", False),
+            )
+        ),
+        "_output_v3_footnote_checkpoint_partitions": int(
+            kwargs.pop(
+                "FootnoteCheckpointPartitions",
+                kwargs.pop("footnote_checkpoint_partitions", 4),
+            )
+        ),
+        "_output_v3_broadcast_cpbt_remaining": _as_bool(
+            kwargs.pop(
+                "BroadcastCpbtRemaining",
+                kwargs.pop("broadcast_cpbt_remaining", True),
+            )
+        ),
+        "_output_v3_hierarchy_materialize": _as_bool(
+            kwargs.pop(
+                "HierarchyMaterialize",
+                kwargs.pop("hierarchy_materialize", True),
+            )
+        ),
+        "_output_v3_parallel_cpbt_validate": _as_bool(
+            kwargs.pop(
+                "ParallelCpbtValidate",
+                kwargs.pop("parallel_cpbt_validate", True),
+            )
+        ),
+        "_output_v3_skip_yearly_empty_probe": _as_bool(
+            kwargs.pop(
+                "SkipYearlyEmptyProbe",
+                kwargs.pop("skip_yearly_empty_probe", True),
             )
         ),
         "_output_v3_collapse_state_passes": _as_bool(
@@ -1145,6 +1181,8 @@ def _run_profiled(fn, *args, **kwargs):
     }
     if experiment["_output_v3_shuffle_partitions"] < 1:
         raise ValueError("SqlShufflePartitions must be >= 1")
+    if experiment["_output_v3_footnote_checkpoint_partitions"] < 0:
+        raise ValueError("FootnoteCheckpointPartitions must be >= 0")
     if experiment["_output_v3_warning_probe_removal"] not in {
         "off",
         "line_items",

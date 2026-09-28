@@ -208,10 +208,16 @@ def run_modes_parallel(
             spark, common_cfg, snapshot
         )
         yearly_rows = None
-        if not is_empty(
-            "yearly_lines.isEmpty", "common_reads", yearly_lines
-        ) and not is_empty(
-            "yearly_data.isEmpty", "common_reads", yearly_data
+        skip_yearly_probe = bool(
+            cfg.get("_output_v3_skip_yearly_empty_probe", True)
+        )
+        if skip_yearly_probe or (
+            not is_empty(
+                "yearly_lines.isEmpty", "common_reads", yearly_lines
+            )
+            and not is_empty(
+                "yearly_data.isEmpty", "common_reads", yearly_data
+            )
         ):
             yearly_rows = (
                 yearly_lines.alias("Y")
@@ -237,12 +243,13 @@ def run_modes_parallel(
             )
         if yearly_rows is not None:
             common_temp_cost_pct = common_temp_cost_pct.unionByName(yearly_rows)
-            common_temp_cost_pct = checkpoint(
-                spark,
-                common_temp_cost_pct,
-                "tcp_with_yearly_common",
-                common_cfg,
-            )
+            if not skip_yearly_probe:
+                common_temp_cost_pct = checkpoint(
+                    spark,
+                    common_temp_cost_pct,
+                    "tcp_with_yearly_common",
+                    common_cfg,
+                )
         common_underlying_mod = business.build_underlying_mod(
             underlyings_ordered, snapshot
         )
@@ -450,6 +457,17 @@ def run_modes_parallel(
                     map_dar,
                     **footnote_input_kwargs,
                 )
+                footnote_parts = int(
+                    mode_cfg.get(
+                        "_output_v3_footnote_checkpoint_partitions",
+                        0,
+                    )
+                    or 0
+                )
+                if footnote_parts > 0:
+                    footnote_input_lines = footnote_input_lines.coalesce(
+                        footnote_parts
+                    )
                 footnote_input_lines = checkpoint(
                     spark,
                     footnote_input_lines,
@@ -825,11 +843,11 @@ def run_modes_parallel(
             ]
             fused_dated = cpbt_final_outputs["post_missing_dated"]
             final_cost = cpbt_final_outputs["final_cost"]
-            if 1 in valid_modes:
-                cfg["mode"] = 1
+
+            def _validate_mode1():
                 validation_cfg = fork_cfg(cfg, mode=1)
                 mode1_final_cost = final_cost.filter(F.col("_mode") == 1)
-                is_valid = profiled_action(
+                return profiled_action(
                     "validate_cost_percentage_sum",
                     "fused_cpbt",
                     mode1_final_cost,
@@ -841,14 +859,43 @@ def run_modes_parallel(
                     ),
                     validation_cfg,
                 )
-                if not is_valid:
+
+            def _compute_min_quarter():
+                min_cfg = fork_cfg(
+                    cfg,
+                    mode=int(cfg.get("mode") or 1),
+                    current_mode=0,
+                )
+                return business.compute_minimum_quarter(
+                    spark, min_cfg, final_cost, fused_dated
+                )
+
+            if 1 in valid_modes and cfg.get(
+                "_output_v3_parallel_cpbt_validate", True
+            ):
+                post_fused = run_group(
+                    "cpbt_post_validate",
+                    [
+                        ("validate", _validate_mode1, (), {}),
+                        ("min_quarter", _compute_min_quarter, (), {}),
+                    ],
+                )
+                if not post_fused["validate"]:
                     raise RuntimeError(
                         "mode 1: Cost percentage does not sum to 100%"
                     )
+                _, min_quarter, fused_dated = post_fused["min_quarter"]
+            else:
+                if 1 in valid_modes:
+                    cfg["mode"] = 1
+                    if not _validate_mode1():
+                        raise RuntimeError(
+                            "mode 1: Cost percentage does not sum to 100%"
+                        )
+                _, min_quarter, fused_dated = _compute_min_quarter()
+            if 1 in valid_modes:
+                cfg["mode"] = 1
             cfg["_current_mode"] = 0
-            _, min_quarter, fused_dated = business.compute_minimum_quarter(
-                spark, cfg, final_cost, fused_dated
-            )
             if cfg.get(
                 "_output_v3_materialize_effective_inputs", False
             ):
