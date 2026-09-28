@@ -25,8 +25,7 @@ cleanup on V2 seams.
 4. Independent builders: form inputs, K1-related inputs, PFIC snapshot.
 5. Checkpoint `pfic_snapshot`; PFIC allocation union; custom footnotes
    (temp view); checkpoint `alloc_input`.
-6. PFIC flowup (inner `base_flowup` 7a-1 / 7a-2 stay in production helper),
-   XML alert, election deletes, Part V/VII, `pfic_flowup`.
+6. PFIC flowup, `pfic_raw`, XML alert, election deletes, Part V/VII,
    `pfic_flowup`.
 7. Filters, `alloc_filtered`, tags, optional `alloc_tagged`.
 8. Parallel collect into `_parquet_results`, then sequential Delta
@@ -39,13 +38,10 @@ Pools cap workers at `min(MaxThreads, task_count, 4)`.
 - `independent_input_builders` (3 tasks): `build_all_form_inputs`,
   `build_k1_and_related_inputs`, `build_pfic_snapshot`. Isolated `cfg`.
   No temp views in these three.
-- `output_collect`: AllocationInput, PFIC flowup, and one task per form
-  flowup table after a main-thread unblocked-footnote view.
-- `output_writes`: one Delta write per collected table, including
-  AllocationInput. Writer is constructed in each task.
-
-Do not add orchestrator `pfic_raw` after production `7a-2` `base_flowup`.
-Keep `pfic_flowup` after election deletes / Part V/VII.
+- `output_collect` (3 tasks): AllocationInput, PFIC flowup, all form
+  flowups.
+- `output_writes`: one Delta write per flow-up table after the sequential
+  AllocationInput commit. Writer is constructed in each task.
 
 Custom footnotes, hierarchy, shared views, and the PFIC flowup chain
 remain sequential.
@@ -56,6 +52,7 @@ remain sequential.
 | --- | --- |
 | `pfic_snapshot` | `checkpoint_V2` |
 | `alloc_input` | `checkpoint_V2` |
+| `pfic_raw` | `checkpoint_V2` |
 | `pfic_flowup` | `checkpoint_V2` |
 | `alloc_filtered` | `checkpoint_V2` |
 | `alloc_tagged` | `checkpoint_V2` when tag workflow is on |
