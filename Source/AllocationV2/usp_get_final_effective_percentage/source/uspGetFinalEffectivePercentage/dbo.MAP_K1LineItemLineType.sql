@@ -1,7 +1,0 @@
-CREATE TABLE [dbo].[MAP_K1LineItemLineType](
-	[MapID] INT IDENTITY(1,1) NOT NULL,
-	[K1LineItemID] INT NOT NULL,
-	[LineTypeID] INT NOT NULL
-)
-
-ALTER TABLE [dbo].[MAP_K1LineItemLineType] ADD PRIMARY KEY ([MapID])

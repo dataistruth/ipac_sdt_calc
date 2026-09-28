@@ -127,8 +127,7 @@ def build_dated_entities(
             )
             .join(
                 _tbl(spark, "QuarterDates", cfg).alias("D"),
-                F.coalesce(F.col("K.TransactionDate"), F.lit("1900-01-01").cast("timestamp"))
-                .between(F.col("D.StartDate"), F.col("D.EndDate")),
+                F.col("K.TransactionDate") == F.col("D.StartDate"),
             )
             .filter(F.col("L.LineTypeID") == k1_lt_id)
             .select(

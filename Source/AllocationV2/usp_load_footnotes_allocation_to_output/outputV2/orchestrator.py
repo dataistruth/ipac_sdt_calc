@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 import pyspark.sql.functions as F
@@ -16,6 +15,9 @@ from Common_V2.core.checkpoint_V2 import (
     resolve_checkpoint_mode,
 )
 from Common_V2.core.config import load_common_config
+from Common_V2.core.execution_profiles import resolve_execution_profile
+
+from .parallel_helpers import parse_enabled_groups, run_phase
 
 from ..output.allocation_704c import (
     apply_704c_deduction,
@@ -109,6 +111,22 @@ def _normalize_workers(max_threads=4, MaxThreads=None):
     return max(1, min(workers, 4))
 
 
+def _blank(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _as_int(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return int(value)
+
+
 @contextmanager
 def _timed(timings, step):
     started = time.time()
@@ -167,21 +185,40 @@ def run_load_footnotes_allocation_to_output(
     CatalogName: str = None,
     SchemaName: str = None,
     RankForRulePickup: int = None,
-    max_threads: int = 4,
+    max_threads: int = None,
     MaxThreads: int = None,
+    parallel_groups: str = "all",
+    ParallelGroups: str = None,
+    execution_profile: str = "low",
+    ExecutionProfile: str = None,
     profile_plan: bool = False,
     ProfilePlan=None,
     plan_checkpoint_threshold: int = 30,
     PlanCheckpointThreshold: int = None,
     checkpoint_mode: int = None,
     CheckpointMode: int = None,
+    SqlShufflePartitions=None,
     **kwargs,
 ):
     """Run production S1-S13 semantics with shared-V2 checkpoints."""
     del kwargs
     started = time.time()
     timings = []
-    workers = _normalize_workers(max_threads, MaxThreads)
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
+    profile_name = (
+        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    )
+    profile = resolve_execution_profile(profile_name)
+    workers = _normalize_workers(
+        max_threads=(
+            MaxThreads
+            if MaxThreads is not None
+            else max_threads
+            if max_threads is not None
+            else profile["max_threads"]
+        ),
+        MaxThreads=MaxThreads,
+    )
     mode = None
     profile_enabled = _as_bool(
         ProfilePlan if ProfilePlan is not None else profile_plan
@@ -201,7 +238,6 @@ def run_load_footnotes_allocation_to_output(
         "elapsed_seconds": 0,
         "sections_completed": 0,
     }
-    planning_pool = None
     plan_token = checkpoint_token = action_token = None
     builder_records = []
     checkpoint_records = []
@@ -219,9 +255,29 @@ def run_load_footnotes_allocation_to_output(
                     catalog=CatalogName,
                     schema=SchemaName,
                 )
+            shuffle_override = _as_int(SqlShufflePartitions)
+            if shuffle_override is None:
+                spark.conf.set(
+                    "spark.sql.shuffle.partitions",
+                    str(profile["shuffle_partitions"]),
+                )
+            else:
+                spark.conf.set(
+                    "spark.sql.shuffle.partitions",
+                    str(shuffle_override),
+                )
+            explicit_checkpoint = (
+                CheckpointMode
+                if CheckpointMode is not None
+                else checkpoint_mode
+            )
             mode = resolve_checkpoint_mode(
                 cfg,
-                checkpoint_mode=checkpoint_mode,
+                checkpoint_mode=(
+                    explicit_checkpoint
+                    if explicit_checkpoint is not None
+                    else profile["checkpoint_mode"]
+                ),
                 CheckpointMode=CheckpointMode,
             )
             cfg = {
@@ -234,6 +290,7 @@ def run_load_footnotes_allocation_to_output(
                 "plan_checkpoint_threshold": threshold,
                 "checkpoint_mode": mode,
                 "max_threads": workers,
+                "execution_profile": profile_name,
             }
             if RankForRulePickup is not None:
                 cfg["rank_for_rule_pickup"] = RankForRulePickup
@@ -242,7 +299,10 @@ def run_load_footnotes_allocation_to_output(
             )
             initialize_checkpoint_V2(cfg, mode)
             print(
-                f"[outputV2] CheckpointMode={mode} MaxThreads={workers} "
+                f"[outputV2] ExecutionProfile={profile_name} "
+                f"CheckpointMode={mode} shuffle="
+                f"{shuffle_override or profile['shuffle_partitions']} "
+                f"MaxThreads={workers} "
                 f"ProfilePlan={'on' if profile_enabled else 'off'}"
             )
             if profile_enabled:
@@ -267,33 +327,49 @@ def run_load_footnotes_allocation_to_output(
             status["status"] = "SKIPPED"
             return status
 
-        planning_pool = ThreadPoolExecutor(
-            max_workers=workers, thread_name_prefix="footnote-plan"
-        )
-        cost_future = planning_pool.submit(
-            build_cost_percentage_data, spark, cfg
-        )
-        initial = {
-            "book": planning_pool.submit(
-                build_temp_book_effective, spark, cfg
-            ),
-            "allocation": planning_pool.submit(
-                build_temp_allocation_input, spark, cfg
-            ),
-            "zero": planning_pool.submit(
-                build_zero_exclude_lines, spark, cfg
-            ),
-            "effective": planning_pool.submit(
-                build_temp_final_effective_pct, spark, cfg
-            ),
-        }
-        with _timed(timings, "S3 initial plans"):
-            df_temp_book_eff = initial["book"].result()
-            df_temp_alloc_input = initial["allocation"].result()
-            df_zero_exclude = broadcast_zero_exclude_lines(
-                initial["zero"].result()
+        def _cost_snapshot():
+            snapshot, _lazy_types = build_cost_percentage_data(spark, cfg)
+            return snapshot
+
+        with _timed(timings, "S3-S5 plans"):
+            planned = dict(
+                run_phase(
+                    "s3_s5_plans",
+                    [
+                        (
+                            "book",
+                            build_temp_book_effective,
+                            (spark, cfg),
+                            {},
+                        ),
+                        (
+                            "allocation",
+                            build_temp_allocation_input,
+                            (spark, cfg),
+                            {},
+                        ),
+                        (
+                            "zero",
+                            build_zero_exclude_lines,
+                            (spark, cfg),
+                            {},
+                        ),
+                        (
+                            "effective",
+                            build_temp_final_effective_pct,
+                            (spark, cfg),
+                            {},
+                        ),
+                        ("cost", _cost_snapshot, (), {}),
+                    ],
+                    workers,
+                    enabled_groups,
+                )
             )
-            df_temp_final_eff_pct = initial["effective"].result()
+            df_temp_book_eff = planned["book"]
+            df_temp_alloc_input = planned["allocation"]
+            df_zero_exclude = broadcast_zero_exclude_lines(planned["zero"])
+            df_temp_final_eff_pct = planned["effective"]
             status["sections_completed"] = 3
 
         with _timed(timings, "S4 quarter updates"):
@@ -325,13 +401,7 @@ def run_load_footnotes_allocation_to_output(
             status["sections_completed"] = 4
 
         with _timed(timings, "S5 cost"):
-            (
-                df_cost_pct_snapshot,
-                lazy_cost_underlying_types,
-            ) = cost_future.result()
-            planning_pool.shutdown(wait=True)
-            planning_pool = None
-            del lazy_cost_underlying_types
+            df_cost_pct_snapshot = planned["cost"]
             df_cost_pct_snapshot = _checkpoint(
                 spark, df_cost_pct_snapshot, "cost_snapshot", cfg
             )
@@ -493,36 +563,32 @@ def run_load_footnotes_allocation_to_output(
             else:
                 df_combined = None
 
-            if df_combined is not None and workers > 1:
-                with ThreadPoolExecutor(
-                    max_workers=2, thread_name_prefix="footnote-write"
-                ) as write_pool:
-                    output_future = write_pool.submit(
-                        write_allocation_output,
-                        spark,
-                        {**cfg},
-                        df_combined,
-                    )
-                    deduction_future = write_pool.submit(
-                        apply_deduction,
-                        spark,
-                        {**cfg},
-                        df_combined,
-                        df_alloc_input,
-                        df_fn_allocated_lines,
-                        df_zero_exclude,
-                    )
-                    output_future.result()
-                    deduction_future.result()
-            elif df_combined is not None:
-                write_allocation_output(spark, cfg, df_combined)
-                apply_deduction(
-                    spark,
-                    cfg,
-                    df_combined,
-                    df_alloc_input,
-                    df_fn_allocated_lines,
-                    df_zero_exclude,
+            if df_combined is not None:
+                run_phase(
+                    "s13_writes",
+                    [
+                        (
+                            "output",
+                            write_allocation_output,
+                            (spark, {**cfg}, df_combined),
+                            {},
+                        ),
+                        (
+                            "deduction",
+                            apply_deduction,
+                            (
+                                spark,
+                                {**cfg},
+                                df_combined,
+                                df_alloc_input,
+                                df_fn_allocated_lines,
+                                df_zero_exclude,
+                            ),
+                            {},
+                        ),
+                    ],
+                    min(workers, 2),
+                    enabled_groups,
                 )
             status["sections_completed"] = 13
     except Exception as exc:
@@ -531,8 +597,6 @@ def run_load_footnotes_allocation_to_output(
         logger.error("[FAIL] %s", exc, exc_info=True)
         raise
     finally:
-        if planning_pool is not None:
-            planning_pool.shutdown(wait=True, cancel_futures=True)
         if action_token is not None:
             finish_action_profile(action_token)
         if checkpoint_token is not None:

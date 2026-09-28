@@ -68,8 +68,9 @@ all succeed.
 
 The optimization target has been sub-50-second wall time for the measured
 RunID and cluster. This is a performance objective, not a reason to weaken
-correctness. The latest recorded outputV3 execution was `57.736s`, compared
-with `169.1s` for production in the same benchmark pass.
+correctness. The locked same-pass reference (2026-09-28) is outputV3
+`51.808s` versus production `155.7s`. Earlier `57.736s` / `169.1s` figures
+are historical only.
 
 <div style="page-break-after: always;"></div>
 
@@ -606,8 +607,9 @@ faster, or approximately 65.9 percent faster.
 
 ## Page 10 — Deployment, remaining work, and operating procedure
 
-The remaining gap to the 50-second objective is `7.736s` based on the latest
-run. The next work should be evidence-driven.
+The remaining gap to the 50-second objective is `1.808s` based on the locked
+2026-09-28 run (`51.808s`). Do not reopen promoted defaults to chase that
+gap without a new isolated experiment.
 
 ### First: activate already implemented shared-helper changes
 

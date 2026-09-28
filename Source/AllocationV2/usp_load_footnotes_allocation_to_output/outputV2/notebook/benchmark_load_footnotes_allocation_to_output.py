@@ -31,18 +31,32 @@ dbutils.widgets.text(
 dbutils.widgets.dropdown(
     "RankForRulePickup", "1", ["1", "2"], "10. Rule rank"
 )
-dbutils.widgets.text("MaxThreads", "4", "11. Max threads")
 dbutils.widgets.dropdown(
-    "ProfilePlan", "off", ["off", "on"], "12. Plan profile"
+    "ExecutionProfile",
+    "low",
+    ["low", "medium", "big"],
+    "11. Execution profile",
+)
+dbutils.widgets.text("MaxThreads", "", "12. Max threads (blank=profile)")
+dbutils.widgets.text(
+    "ParallelGroups", "all", "13. Parallel groups"
+)
+dbutils.widgets.dropdown(
+    "ProfilePlan", "off", ["off", "on"], "14. Plan profile"
 )
 dbutils.widgets.text(
-    "PlanCheckpointThreshold", "30", "13. Plan threshold"
+    "PlanCheckpointThreshold", "30", "15. Plan threshold"
 )
 dbutils.widgets.dropdown(
-    "CheckpointMode", "default", ["default", "1", "2", "3", "4"], "14. Checkpoint mode"
+    "CheckpointMode",
+    "default",
+    ["default", "1", "2", "3", "4"],
+    "16. Checkpoint mode (blank=profile)",
 )
 dbutils.widgets.text(
-    "SqlShufflePartitions", "4", "15. Shuffle partitions"
+    "SqlShufflePartitions",
+    "",
+    "17. Shuffle partitions (blank=profile)",
 )
 
 source_path = dbutils.widgets.get("source_path").strip()
@@ -57,12 +71,17 @@ run_id = int(dbutils.widgets.get("RunID"))
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
 rank = int(dbutils.widgets.get("RankForRulePickup"))
-max_threads = int(dbutils.widgets.get("MaxThreads").strip() or "4")
+execution_profile = (
+    dbutils.widgets.get("ExecutionProfile").strip() or "low"
+)
+max_threads_raw = dbutils.widgets.get("MaxThreads").strip()
+max_threads = int(max_threads_raw) if max_threads_raw else None
+parallel_groups = dbutils.widgets.get("ParallelGroups").strip() or "all"
 profile_plan = dbutils.widgets.get("ProfilePlan").lower() == "on"
 plan_threshold = int(
     dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
 )
-checkpoint_mode_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
+checkpoint_mode_raw = dbutils.widgets.get("CheckpointMode").strip()
 checkpoint_mode = (
     None if checkpoint_mode_raw in {"", "default"} else int(checkpoint_mode_raw)
 )
@@ -72,7 +91,7 @@ shuffle_partitions = dbutils.widgets.get(
 
 if number_of_runs < 1:
     raise ValueError("number_of_runs must be >= 1")
-if not 1 <= max_threads <= 4:
+if max_threads is not None and not 1 <= max_threads <= 4:
     raise ValueError("MaxThreads must be between 1 and 4")
 if shuffle_partitions:
     spark.conf.set("spark.sql.shuffle.partitions", shuffle_partitions)
@@ -168,13 +187,18 @@ def _run_variant(variant, pass_number, snapshot):
     if variant == "updated":
         kwargs.update(
             {
-                "MaxThreads": max_threads,
+                "ExecutionProfile": execution_profile,
+                "ParallelGroups": parallel_groups,
                 "ProfilePlan": profile_plan,
                 "PlanCheckpointThreshold": plan_threshold,
             }
         )
+        if max_threads is not None:
+            kwargs["MaxThreads"] = max_threads
         if checkpoint_mode is not None:
             kwargs["CheckpointMode"] = checkpoint_mode
+        if shuffle_partitions:
+            kwargs["SqlShufflePartitions"] = int(shuffle_partitions)
     started = time.time()
     result = runner.run_load_footnotes_allocation_to_output(
         spark, **kwargs

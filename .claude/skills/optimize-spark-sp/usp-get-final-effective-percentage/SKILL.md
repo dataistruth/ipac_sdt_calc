@@ -9,9 +9,17 @@ Use this skill only for:
 
 `AllocationV2/usp_get_final_effective_percentage`
 
-The production implementation is the correctness baseline. The optimized
-implementation is `outputV3`. Never improve benchmark results by weakening
-business logic, validation, output persistence, or exact result comparison.
+The production implementation is the correctness baseline. This SP-specific
+skill keeps the locked FEP candidate in `outputV3` / `outputV4`. Portable
+two-mode generation (Production inline `output/` vs Development `outputV2`
+A/B) lives in the parent [optimize-spark-sp](../SKILL.md) skill. On that
+path the **SP orchestrator** resolves `ExecutionProfile` from
+`Common_V2.core.execution_profiles`; `Common_V2.core.__init__` does not.
+Locked FEP `outputV3`/`outputV4` keep promoted defaults (`CheckpointMode=4`,
+shuffle 32, `MaxThreads=4`) which match profile `low`.
+
+Never improve benchmark results by weakening business logic, validation,
+output persistence, or exact result comparison.
 
 Read [SP_OPTIMIZATION_GUIDE.md](SP_OPTIMIZATION_GUIDE.md) before making a
 structural change or interpreting a benchmark.
@@ -203,9 +211,29 @@ Key evidence:
 - stage totals may sum concurrent work and exceed wall time;
 - output logs alone do not prove exact parity.
 
-The latest measured outputV3 wall time is `57.736s`, down from `67.980s`
-before the final optimization waves. The same-run production result was
-`169.1s`. Treat these as historical evidence, not permanent thresholds.
+The locked reference run is 2026-09-28, RunID `17376`, EntityID `4137`,
+modes `[1, 2, 3]`, CheckpointMode `4`, shuffle `32`, MaxThreads `4`,
+experiment `baseline`:
+
+- production `run_modes`: `155.7s`
+- outputV3 wall: `51.808s` (`103.9s` / `66.7%` faster)
+- gap to the 50s target: `1.808s`
+- `yearly_lines.isEmpty` present (`SkipYearlyEmptyProbe` off)
+- `tcp_post_et_m0`: `2.287s` (healthy; the 16s regression is not this run)
+- CPBT helper: `12.866s`
+- writes: all three tables
+
+Critical checkpoints from that run:
+
+- `tcp_post_tag_m0`: `4.273s`
+- `fn_input_lines_m2`: `3.820s`
+- `txfr_post_tag_m0`: `3.142s`
+- `all_ent_pre_tag_m0`: `2.760s`
+- `nde_pre_cpbt_m2`: `2.723s`
+- `tcp_post_et_m0`: `2.287s`
+
+Do not treat a slower later run as the new baseline. Earlier historical
+walls (`57.736s`, `67.980s`, `68.688s`) are superseded by this lock.
 
 ## Known bad experiments
 
@@ -217,6 +245,8 @@ Do not promote these without a new isolated experiment:
 - broad fused mode-preparation lineage;
 - candidate-claim CPBT rewrites;
 - removing parent, tag, transfer, or dated fan-out barriers;
+- `SkipYearlyEmptyProbe=True` (dropped `tcp_with_yearly_common`,
+  `tcp_post_et_m0` ~2.5s to ~16s, wall ~68.7s);
 - stacked experiments that prevent attribution.
 
 ## Deployment checks

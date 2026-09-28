@@ -3,9 +3,10 @@
 ## Scope
 
 This sibling package preserves the production
-`uspLoadFootnotesAllocationToOutput` S1-S13 flow and public
-`run_load_footnotes_allocation_to_output` entry. Migration changes only the
-module segment from `.output.orchestrator` to `.outputV2.orchestrator`.
+`uspLoadFootnotesAllocationToOutput` S1-S13 flow. Production helpers stay
+in `output/` and are imported as `..output.*`. Optimizations live only in
+`outputV2`. The orchestrator resolves `ExecutionProfile` (default `low`)
+at run start.
 
 The SP mutates two tables: it inserts generated footnote rows into
 `AllocationOutput` and deducts allocated amounts from the selected RunID

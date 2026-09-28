@@ -1,32 +1,30 @@
-# Databricks A/B benchmark reference
+# Databricks notebook reference
 
-Create a Databricks source notebook at:
+Two notebooks, one per mode. Do not mix them. Do not create
+`Source/AllocationV2/<sp>/notebooks/` or a package-root `benchmark_*.py`.
 
-```text
-Source/AllocationV2/<sp_name>/outputV2/notebook/benchmark_<sp_name>.py
-```
-
-Do not create `Source/AllocationV2/<sp_name>/notebooks/` or
-`Source/AllocationV2/<sp_name>/output/benchmark_*.py`.
-
-Default `source_path` widget:
+Default `source_path`:
 
 ```text
 /Workspace/Users/<user>/iPACSCore_SDT_Databricks/Source
 ```
 
-After a local edit, sync `Source/AllocationV2/<sp>/outputV2/` (and
-`Source/AllocationV2/plan_profiler/` if the profiler changed) to that workspace
-`Source/` tree. Do not sync optimized files into production `output/`.
+## Mode 1 — Production run notebook
 
-## Required widgets
+```text
+Source/AllocationV2/<sp_name>/output/notebook/run_<sp_name>.py
+```
 
-Use `dbutils.widgets.removeAll()` before defining:
+Runs **only** the live modified orchestrator:
+
+`AllocationV2.<sp>.output.<entry>`
+
+No original/updated pair. No `_pre_opt`. No ProfilePlan. No table-hash A/B.
+
+Widgets:
 
 ```text
 source_path
-number_of_runs
-ExecutionOrder             # alternate | original_first | updated_first
 EntityID
 ClientID
 TaxPeriodID
@@ -34,22 +32,50 @@ RunID
 CatalogName
 SchemaName
 ResultType
-VolumePath                 # only when the SP supports it
-MaxThreads                 # default 4
-ProfilePlan                # off | on; default off
-PlanCheckpointThreshold    # default 30
-CheckpointMode             # blank/default | 1 | 2 | 3 | 4
-SqlShufflePartitions       # blank means unchanged
+VolumePath                 # only if the SP supports it
+ExecutionProfile           # low | medium | big; default low
+MaxThreads                 # blank means profile value (4)
+ParallelGroups             # default all
+CheckpointMode             # blank means profile value
+SqlShufflePartitions       # blank means profile shuffle
 ```
 
-Add SP-specific widgets only when they map to real entry-function parameters.
-Default the widget to blank or `default`. Add `CheckpointMode` to the updated
-runner kwargs only when the widget contains `1`, `2`, `3`, or `4`. The common
-`DEFAULT_CHECKPOINT_MODE` remains the only runtime default.
+Flow: evict `AllocationV2.<sp>.output` and `Common_V2` from `sys.modules`,
+put `source_path` first on `sys.path`, import checkpoint V2, optionally
+purge this RunID, time one `run_*` call, print wall time, reported time,
+and per-table row counts.
 
-## Fresh import
+```text
+[run] production-inline wall=... reported=... rows=...
+```
 
-Workspace sync does not reload imported Python modules. Before each variant:
+## Mode 2 — Development A/B notebook
+
+```text
+Source/AllocationV2/<sp_name>/outputV2/notebook/benchmark_<sp_name>.py
+```
+
+| Variant | Module |
+|---|---|
+| Original | `AllocationV2.<sp>.output.<prod_entry>` |
+| Updated | `AllocationV2.<sp>.outputV2.<entry>` |
+
+Widgets: Mode 1 set **plus**
+
+```text
+number_of_runs
+ExecutionOrder             # alternate | original_first | updated_first
+ProfilePlan                # off | on; default off
+PlanCheckpointThreshold    # default 30
+```
+
+Pass `ExecutionProfile`, `MaxThreads`, `ParallelGroups`, `ProfilePlan`,
+`PlanCheckpointThreshold`, and explicit `CheckpointMode` **only** to the
+updated variant. The updated orchestrator resolves the profile; the
+notebook does not call `resolve_execution_profile`. Apply explicit
+`SqlShufflePartitions` to both variants when the widget is set.
+
+### Fresh import
 
 ```python
 import importlib
@@ -71,45 +97,26 @@ def clear_modules(package):
     importlib.invalidate_caches()
 ```
 
-Always move the selected `source_path` to the front of `sys.path`, even when it
-is already present, then `import Common_V2.core.checkpoint_V2` to prove V2 is
-on that path. Do **not** use `os.path.isfile` on `/Workspace/...` files;
-Databricks workspace files are importable via `sys.path` but often invisible
-to the local filesystem APIs. Evict cached `Common_V2*` modules so an older
-bundle package cannot hide the workspace copy.
+Evict both `AllocationV2.<sp>.output` and `...outputV2` plus `Common_V2`.
+Import `Common_V2.core.checkpoint_V2` after putting `source_path` first.
+Do not use `os.path.isfile` on `/Workspace/...` paths.
 
-Validate that the updated package contains at least:
+Validate `outputV2/` has entry module, `plan_profiler.py`,
+`output_reconcile.py`, and this notebook.
 
-```text
-Source/AllocationV2/<sp>/outputV2/__init__.py
-Source/AllocationV2/<sp>/outputV2/<entry_module>.py
-Source/AllocationV2/<sp>/outputV2/plan_profiler.py
-Source/AllocationV2/<sp>/outputV2/output_reconcile.py
-Source/AllocationV2/<sp>/outputV2/notebook/benchmark_<sp>.py
-```
-
-Original module: `AllocationV2.<sp>.output.<prod_entry>`
-Updated module: `AllocationV2.<sp>.outputV2.<entry>`
-
-## Fair execution
+### Fair execution
 
 For each pass:
 
-1. Choose order from `ExecutionOrder`; alternate order by pass when set to `alternate`.
+1. Choose order from `ExecutionOrder`.
 2. Purge only this RunID from every compared output table.
-3. Start wall timer immediately before calling the entry function.
-4. Capture returned reported timing independently from notebook wall time.
-5. Capture output metrics immediately after successful completion.
+3. Start the wall timer immediately before the entry function.
+4. Capture reported timing separately from notebook wall time.
+5. Capture **per-table hashes** immediately after success.
 6. Run the other variant with the same Spark settings and parameters.
-7. Compare fingerprints and print mismatches.
+7. Fail on the first mismatched table.
 
-Do not run another process for the same RunID during the benchmark.
-
-Apply `SqlShufflePartitions` to both variants. Pass `MaxThreads`, `ProfilePlan`,
-`PlanCheckpointThreshold`, and `CheckpointMode` (default `2`) only to the
-updated variant.
-
-## Output reconciliation
+### Per-table validation hash
 
 For each output table and RunID partition compare:
 
@@ -118,8 +125,6 @@ For each output table and RunID partition compare:
 - null counts for key columns when relevant
 - sums of numeric business amounts
 - order-independent row fingerprint
-
-A robust row fingerprint:
 
 ```python
 import pyspark.sql.functions as F
@@ -143,45 +148,33 @@ fingerprint = (
 )
 ```
 
-For floating-point amounts, compare both the exact row fingerprint and rounded business
-aggregates. Do not hide a mismatch behind a tolerance without documenting it.
+Display one row per table: `table`, `exact_match`, original hash fields,
+updated hash fields, mismatch detail. For floats, compare the exact
+fingerprint and rounded aggregates. Do not hide a mismatch behind an
+undocumented tolerance.
 
-## Required notebook reports
-
-Print:
+### Required reports (Mode 2)
 
 ```text
 [benchmark] pass N execution order: original -> updated
 [benchmark] original: wall=... reported=... rows=...
 [benchmark] updated: wall=... reported=... rows=...
 [reconcile] PASS N: all output fingerprints match
+[reconcile] table=<name> rows=... hash_sum=... match=PASS|FAIL
+[parallel] <phase>: tasks=... workers=... wall=...s
 ```
 
-The updated run must also emit:
+When `ProfilePlan` is on, also emit BUILDER / CHECKPOINT / ACTION reports.
 
-```text
-===== BUILDER-LEVEL PLAN PROFILE (where the plan grows) =====
-[PLAN REPORT BUILDER] ...
+Display DataFrames for runtime, per-table parity hashes, and optional
+profiler rankings.
 
-===== CHECKPOINT-LEVEL PLAN PROFILE (plan truncated at each checkpoint) =====
-[PLAN REPORT CHECKPOINT] ...
-```
+### Acceptance (Mode 2)
 
-Display summary DataFrames for:
-
-- pass, variant, order, wall time, reported time and status
-- original vs updated delta and percent improvement
-- per-table parity metrics
-- ranked builder profile
-- ranked checkpoint profile
-- checkpoint recommendations with evidence
-
-## Acceptance criteria
-
-An optimization is accepted only when:
-
-1. every required output table reconciles,
+1. every required output table hash matches,
 2. both execution orders pass when two runs are practical,
-3. the updated wall time improves beyond ordinary run-to-run variance,
-4. the profiler/recommendation output is present in notebook output and driver logs,
-5. failures identify the first mismatching table or failed parallel task.
+3. updated wall improves beyond ordinary variance,
+4. failures name the first mismatching table or failed parallel task.
+
+Mode 1 has no hash-acceptance gate; it is a production run harness only.
+Promote Development → Production only after Mode 2 hashes pass.

@@ -1,8 +1,0 @@
-CREATE TABLE [dbo].[Form8865Package](
-	[Form8865ID] INT IDENTITY(1,1) NOT NULL,
-	[K1PackageID] INT NOT NULL,
-	[ClientID] BIGINT NOT NULL,
-	[TaxPeriodID] INT NOT NULL
-)
-
-ALTER TABLE [dbo].[Form8865Package] ADD PRIMARY KEY ([Form8865ID])

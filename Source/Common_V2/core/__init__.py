@@ -4,3 +4,8 @@
 # may accept MaxThreads, but must never exceed this common safety cap.
 DEFAULT_MAX_THREADS = 4
 MAX_PARALLEL_THREADS = 4
+
+__all__ = [
+    "DEFAULT_MAX_THREADS",
+    "MAX_PARALLEL_THREADS",
+]

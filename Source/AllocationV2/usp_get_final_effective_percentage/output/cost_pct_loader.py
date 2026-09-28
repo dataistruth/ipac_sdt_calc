@@ -336,7 +336,6 @@ def build_cost_percentage_by_type(
     dated: DataFrame,
     transfers_adj: DataFrame,
     checkpoint_fn=None,
-    checkpoint_group_fn=None,
 ) -> tuple:
     """3-tier cost percentage loading + entity parent matching.
 
@@ -424,17 +423,6 @@ def build_cost_percentage_by_type(
             F.col("Tag"),
             F.col("TrackingKey"),
             F.col("_mode"),
-        )
-
-    def _anti_cost_keys(cp):
-        if not cfg.get("_output_v3_cpbt_narrow_anti_keys", False):
-            return cp
-        return cp.select(
-            "DealId",
-            "TypeId",
-            "TrackingKey",
-            "Tag",
-            "_mode",
         )
 
     def _anti_dedup(new_rows, existing):
@@ -603,65 +591,36 @@ def build_cost_percentage_by_type(
     # ═══════════════════════════════════════════════════════════
     # Phase 2a: include _mode so the unioned all_entities preserves the per-mode
     # tag through downstream parent-hierarchy and tag matching.
-    entity_columns = (
-        "UnderlyingEntityID",
-        "TypeID",
-        "TrackingKey",
-        "Tag",
-        "_mode",
-    )
-    if cfg.get("_output_v3_compact_all_entities", False):
-        # The original four-way union scans each dated/non-dated relation
-        # twice and performs redundant per-branch distincts. Generate the
-        # optional CostAllocationTypeID variant per row, then deduplicate once.
-        entity_base = dated.select(*entity_columns).unionByName(
-            non_dated.select(*entity_columns)
-        )
-        type_variants = F.when(
-            F.col("TypeID").isNotNull()
-            & (F.col("TypeID") != F.lit(cost_alloc_type_id)),
-            F.array(
-                F.col("TypeID"),
-                F.lit(cost_alloc_type_id).cast("int"),
-            ),
-        ).otherwise(F.array(F.col("TypeID")))
-        all_entities = (
-            entity_base
-            .withColumn("TypeID", F.explode(type_variants))
-            .distinct()
-        )
-    else:
-        dated_subset = dated.select(*entity_columns).distinct()
-        nondated_subset = non_dated.select(*entity_columns).distinct()
+    dated_subset = dated.select("UnderlyingEntityID", "TypeID", "TrackingKey", "Tag", "_mode").distinct()
+    nondated_subset = non_dated.select("UnderlyingEntityID", "TypeID", "TrackingKey", "Tag", "_mode").distinct()
 
-        all_entities = (
+    all_entities = (
+        dated_subset
+        .unionByName(nondated_subset)
+        # Also include CostAllocationTypeID versions where TypeID differs
+        .unionByName(
             dated_subset
-            .unionByName(nondated_subset)
-            # Also include CostAllocationTypeID versions where TypeID differs
-            .unionByName(
-                dated_subset
-                .filter(F.col("TypeID") != cost_alloc_type_id)
-                .withColumn("TypeID", F.lit(cost_alloc_type_id).cast("int"))
-            )
-            .unionByName(
-                nondated_subset
-                .filter(F.col("TypeID") != cost_alloc_type_id)
-                .withColumn("TypeID", F.lit(cost_alloc_type_id).cast("int"))
-            )
-            .distinct()
+            .filter(F.col("TypeID") != cost_alloc_type_id)
+            .withColumn("TypeID", F.lit(cost_alloc_type_id).cast("int"))
         )
+        .unionByName(
+            nondated_subset
+            .filter(F.col("TypeID") != cost_alloc_type_id)
+            .withColumn("TypeID", F.lit(cost_alloc_type_id).cast("int"))
+        )
+        .distinct()
+    )
 
     # Delete entities already matched in cost_pct
     # Phase 2a: add _mode equality so a mode-1 entity isn't suppressed by a
     # mode-2 cost_pct row (only meaningful in Phase 2b's fused execution).
-    matched_cost_keys = _anti_cost_keys(temp_cost_pct)
     all_entities = all_entities.join(
-        matched_cost_keys,
-        (all_entities["UnderlyingEntityID"] == matched_cost_keys["DealId"])
-        & (all_entities["TypeID"] == matched_cost_keys["TypeId"])
-        & (all_entities["TrackingKey"] == matched_cost_keys["TrackingKey"])
-        & (all_entities["Tag"] == matched_cost_keys["Tag"])
-        & (all_entities["_mode"] == matched_cost_keys["_mode"]),
+        temp_cost_pct,
+        (all_entities["UnderlyingEntityID"] == temp_cost_pct["DealId"])
+        & (all_entities["TypeID"] == temp_cost_pct["TypeId"])
+        & (all_entities["TrackingKey"] == temp_cost_pct["TrackingKey"])
+        & (all_entities["Tag"] == temp_cost_pct["Tag"])
+        & (all_entities["_mode"] == temp_cost_pct["_mode"]),
         "left_anti",
     )
 
@@ -780,17 +739,8 @@ def build_cost_percentage_by_type(
     # add _mode equality + project _mode through.
     if transfers_adj is not None:
         parent_ordered_adj = parent_ordered  # same hierarchy
-        transfer_tk_source = transfers_adj
-        if cfg.get("_output_v3_cpbt_transfer_prefilter", False):
-            transfer_tk_source = transfer_tk_source.filter(
-                (F.col("TrackingKey") == "")
-                & (
-                    F.coalesce(F.col("TrackingKeyMatch"), F.lit(""))
-                    != ""
-                )
-            )
         adj_match_tk = (
-            transfer_tk_source.alias("C")
+            transfers_adj.alias("C")
             .join(
                 parent_ordered_adj.alias("E"),
                 (
@@ -832,14 +782,13 @@ def build_cost_percentage_by_type(
 
     # Delete matched from parent_ordered
     # Phase 2a: include _mode in the anti-join key.
-    matched_cost_keys = _anti_cost_keys(temp_cost_pct)
     parent_ordered = parent_ordered.join(
-        matched_cost_keys,
-        (parent_ordered["UnderlyingEntityId"] == matched_cost_keys["DealId"])
-        & (parent_ordered["TypeID"] == matched_cost_keys["TypeId"])
-        & (parent_ordered["TrackingKey"] == matched_cost_keys["TrackingKey"])
-        & (parent_ordered["Tag"] == matched_cost_keys["Tag"])
-        & (parent_ordered["_mode"] == matched_cost_keys["_mode"]),
+        temp_cost_pct,
+        (parent_ordered["UnderlyingEntityId"] == temp_cost_pct["DealId"])
+        & (parent_ordered["TypeID"] == temp_cost_pct["TypeId"])
+        & (parent_ordered["TrackingKey"] == temp_cost_pct["TrackingKey"])
+        & (parent_ordered["Tag"] == temp_cost_pct["Tag"])
+        & (parent_ordered["_mode"] == temp_cost_pct["_mode"]),
         "left_anti",
     )
 
@@ -883,17 +832,8 @@ def build_cost_percentage_by_type(
     temp_cost_pct = temp_cost_pct.unionByName(parent_match_notk, allowMissingColumns=True)
 
     if transfers_adj is not None:
-        transfer_notk_source = transfers_adj
-        if cfg.get("_output_v3_cpbt_transfer_prefilter", False):
-            transfer_notk_source = transfer_notk_source.filter(
-                (F.col("TrackingKey") == "")
-                & (
-                    F.coalesce(F.col("TrackingKeyMatch"), F.lit(""))
-                    == ""
-                )
-            )
         adj_match_notk = (
-            transfer_notk_source.alias("C")
+            transfers_adj.alias("C")
             .join(
                 parent_ordered.alias("E"),
                 (
@@ -952,25 +892,16 @@ def build_cost_percentage_by_type(
                 & (F.coalesce(F.col("TrackingKeyMatch"), F.lit("")) != "")
             )
         )
-    if cfg.get("_output_v3_cpbt_drop_tracking_match", False):
-        if "TrackingKeyMatch" in temp_cost_pct.columns:
-            temp_cost_pct = temp_cost_pct.drop("TrackingKeyMatch")
-        if (
-            transfers_adj is not None
-            and "TrackingKeyMatch" in transfers_adj.columns
-        ):
-            transfers_adj = transfers_adj.drop("TrackingKeyMatch")
 
     # Recompute remaining all_entities
     # Phase 2a: include _mode in the anti-join key.
-    matched_cost_keys = _anti_cost_keys(temp_cost_pct)
     all_entities = all_entities.join(
-        matched_cost_keys,
-        (all_entities["UnderlyingEntityID"] == matched_cost_keys["DealId"])
-        & (all_entities["TypeID"] == matched_cost_keys["TypeId"])
-        & (all_entities["TrackingKey"] == matched_cost_keys["TrackingKey"])
-        & (all_entities["Tag"] == matched_cost_keys["Tag"])
-        & (all_entities["_mode"] == matched_cost_keys["_mode"]),
+        temp_cost_pct,
+        (all_entities["UnderlyingEntityID"] == temp_cost_pct["DealId"])
+        & (all_entities["TypeID"] == temp_cost_pct["TypeId"])
+        & (all_entities["TrackingKey"] == temp_cost_pct["TrackingKey"])
+        & (all_entities["Tag"] == temp_cost_pct["Tag"])
+        & (all_entities["_mode"] == temp_cost_pct["_mode"]),
         "left_anti",
     )
 
@@ -1042,81 +973,22 @@ def build_cost_percentage_by_type(
     # ── Intermediate checkpoint: break DAG after tag matching ──
     if checkpoint_fn is not None:
         mode = cfg.get("_current_mode", 1)
-        if (
-            checkpoint_group_fn is not None
-            and transfers_adj is not None
-            and cfg.get(
-                "_output_v3_parallel_cpbt_post_tag", False
-            )
-        ):
-            post_tag = checkpoint_group_fn(
-                [
-                    (
-                        "temp_post_tag",
-                        checkpoint_fn,
-                        (
-                            spark,
-                            temp_cost_pct,
-                            f"tcp_post_tag_m{mode}",
-                            cfg,
-                        ),
-                        {},
-                    ),
-                    (
-                        "transfers_post_tag",
-                        checkpoint_fn,
-                        (
-                            spark,
-                            transfers_adj,
-                            f"txfr_post_tag_m{mode}",
-                            cfg,
-                        ),
-                        {},
-                    ),
-                ]
-            )
-            temp_cost_pct = post_tag["temp_post_tag"]
-            transfers_adj = post_tag["transfers_post_tag"]
-        else:
-            temp_cost_pct = checkpoint_fn(
-                spark,
-                temp_cost_pct,
-                f"tcp_post_tag_m{mode}",
-                cfg,
-            )
+        temp_cost_pct = checkpoint_fn(spark, temp_cost_pct, f"tcp_post_tag_m{mode}", cfg)
         logger.info("[CHECKPOINT] temp_cost_pct after tag matching")
-        # outputV3 can overlap the transfer lineage break with this existing
-        # temp checkpoint. The final caller checkpoint then materializes only
-        # the shallow nothing-match suffix.
+        # transfers_adj: skip checkpoint — caller checkpoints the return
+        # value. Saves ~1.5s Delta I/O.
 
     # Recompute remaining all_entities again
     # Phase 2a: include _mode in the anti-join key.
-    matched_cost_keys = _anti_cost_keys(temp_cost_pct)
     all_entities = all_entities.join(
-        matched_cost_keys,
-        (all_entities["UnderlyingEntityID"] == matched_cost_keys["DealId"])
-        & (all_entities["TypeID"] == matched_cost_keys["TypeId"])
-        & (all_entities["TrackingKey"] == matched_cost_keys["TrackingKey"])
-        & (all_entities["Tag"] == matched_cost_keys["Tag"])
-        & (all_entities["_mode"] == matched_cost_keys["_mode"]),
+        temp_cost_pct,
+        (all_entities["UnderlyingEntityID"] == temp_cost_pct["DealId"])
+        & (all_entities["TypeID"] == temp_cost_pct["TypeId"])
+        & (all_entities["TrackingKey"] == temp_cost_pct["TrackingKey"])
+        & (all_entities["Tag"] == temp_cost_pct["Tag"])
+        & (all_entities["_mode"] == temp_cost_pct["_mode"]),
         "left_anti",
     )
-
-    # outputV3 materializes this shared anti-join once because both nothing-
-    # match branches are consumed by separate concurrent output checkpoints.
-    # Keep the production path unchanged unless the outputV3 flag is present.
-    if (
-        checkpoint_fn is not None
-        and cfg.get("_output_v3_cpbt_post_tag_entity_break", False)
-    ):
-        mode = cfg.get("_current_mode", 1)
-        all_entities = checkpoint_fn(
-            spark,
-            all_entities,
-            f"all_ent_post_tag_m{mode}",
-            cfg,
-        )
-        logger.info("[CHECKPOINT] all_entities (post-tag remaining)")
 
     # ── Nothing matching: cost % TrackingKey = '' AND Tag = '' → input TrackingKey + Tag ──
     # Phase 2a: both C and E carry _mode; add _mode equality + project _mode.
