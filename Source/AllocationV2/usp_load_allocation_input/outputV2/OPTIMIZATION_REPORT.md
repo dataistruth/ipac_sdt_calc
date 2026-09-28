@@ -38,11 +38,14 @@ Pools cap workers at `min(MaxThreads, task_count, 4)`.
 - `independent_input_builders` (3 tasks): `build_all_form_inputs`,
   `build_k1_and_related_inputs`, `build_pfic_snapshot`. Isolated `cfg`.
   No temp views in these three.
-- `output_writes` (3 tasks): collect-only into isolated
-  `_parquet_results`, then merge. Disk flush stays ordered.
+- `output_collect` (3 tasks): collect-only into isolated
+  `_parquet_results`, then merge.
+- `output_writes` (one task per remaining table): Delta `replaceWhere`
+  RunID for PFIC and form flow-ups. AllocationInput stays sequential
+  and first. Writer is constructed in each task.
 
-Custom footnotes, hierarchy, shared views, PFIC flowup chain, and the
-Delta-then-Parquet flush remain sequential.
+Custom footnotes, hierarchy, shared views, and the PFIC flowup chain
+remain sequential.
 
 ## Checkpoint parity (orchestrator)
 

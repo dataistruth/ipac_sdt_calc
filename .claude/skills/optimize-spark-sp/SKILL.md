@@ -112,6 +112,17 @@ Source/AllocationV2/<sp_name>/
 Compare every output table: row count, schema, numeric sums, order-independent
 hash (`xxhash64` sum/min/max). Optional `ProfilePlan` (default off).
 
+Snapshot, purge, restore, and hash **only after reading the live table
+columns**. Never `WHERE RunID` unless `RunID` is in that table’s schema.
+Declare each compared table with its real key (`RunID`, `UpperTierRunID`,
+or ClientID+EntityID+TaxPeriodID). Skip missing tables. Do not put
+side-effect tables that lack the declared key on the RunID snapshot list.
+
+The Databricks notebook `source_path` must be the same Source tree that
+contains the `outputV2/` just generated. Evict `AllocationV2.<sp>` and
+`Common_V2` from `sys.modules` after putting that path first. Do not mix a
+new notebook with a stale workspace copy of `output_reconcile.py`.
+
 Do not add a `business/` folder unless this SP already uses that FEP-only
 pattern **and** the user asks for it.
 

@@ -93,7 +93,7 @@ def collect_output_frames_parallel(
         ],
         workers,
         activity,
-        "output_writes",
+        "output_collect",
         enabled_groups,
     )
     _merge_parquet_results(cfg, parts)
@@ -121,8 +121,50 @@ def _align(spark, cfg, df, tbl_name):
     return out.select(target_cols)
 
 
-def flush_collected_results(spark, cfg, client_id, entity_id, execution_id):
-    """Production Write 1 (AllocationInput Delta) then Write 2 (Parquet)."""
+def _write_one_table(spark, cfg, tbl_name, df, client_id, entity_id, execution_id):
+    """One distinct-table Delta write. Writer is built inside this task."""
+    local = isolated_cfg(cfg)
+    write_df = _align(spark, local, df, tbl_name)
+    if tbl_name in SMALL_TABLES:
+        write_df = write_df.coalesce(1)
+    prefix = table_prefix(local)
+    fqn = f"{prefix}.{tbl_name}"
+    result_type = local.get("result_type", "deltalake")
+    run_id = local["run_id"]
+    if result_type == "deltalake" and "RunID" in write_df.columns:
+        write_df.write.format("delta").mode("overwrite").option(
+            "replaceWhere", f"RunID = {run_id}"
+        ).saveAsTable(fqn)
+        print(f"   [ok] {tbl_name} (delta)")
+        return None
+    storer = GenericResultStorer(spark, None)
+    return storer.save_results(
+        result={tbl_name: write_df},
+        result_type=result_type,
+        catalog_name=local.get("catalog", ""),
+        database_name=local.get("schema", ""),
+        run_id=run_id,
+        client_id=client_id,
+        entity_id=entity_id,
+        execution_id=execution_id,
+        volume_path=local.get("volume_path") or "",
+        sql_url_path=local.get("sql_url_path", ""),
+        sql_username=local.get("sql_username", ""),
+        sql_password=local.get("sql_password", ""),
+    )
+
+
+def flush_collected_results(
+    spark,
+    cfg,
+    client_id,
+    entity_id,
+    execution_id,
+    workers,
+    activity,
+    enabled_groups,
+):
+    """AllocationInput first, then parallel distinct-table flow-up writes."""
     parquet_results = cfg.get("_parquet_results", {})
     run_id = cfg["run_id"]
     save_return_value = None
@@ -130,8 +172,6 @@ def flush_collected_results(spark, cfg, client_id, entity_id, execution_id):
         return save_return_value
 
     prefix = table_prefix(cfg)
-    volume_path = cfg.get("volume_path") or ""
-
     alloc_df = parquet_results.get("AllocationInput")
     if alloc_df is not None:
         alloc_df.write.format("delta").mode("overwrite").option(
@@ -139,40 +179,49 @@ def flush_collected_results(spark, cfg, client_id, entity_id, execution_id):
         ).saveAsTable(f"{prefix}.AllocationInput")
         print("   [ok] AllocationInput (delta)")
 
-    parquet_tables = {}
-    for tbl_name, df in parquet_results.items():
-        if tbl_name == "AllocationInput":
-            continue
-        write_df = _align(spark, cfg, df, tbl_name)
-        if tbl_name in SMALL_TABLES:
-            write_df = write_df.coalesce(1)
-        parquet_tables[tbl_name] = write_df
+    flowup_items = [
+        (tbl_name, df)
+        for tbl_name, df in parquet_results.items()
+        if tbl_name != "AllocationInput"
+    ]
+    if not flowup_items:
+        return save_return_value
 
-    if parquet_tables:
-        result_type = cfg.get("result_type", "deltalake")
-        print(
-            f"[store] Writing {len(parquet_tables)} Parquet tables: "
-            f"{datetime.now()}"
-        )
-        storer = GenericResultStorer(spark, None)
-        save_return_value = storer.save_results(
-            result=parquet_tables,
-            result_type=result_type,
-            catalog_name=cfg.get("catalog", ""),
-            database_name=cfg.get("schema", ""),
-            run_id=run_id,
-            client_id=client_id,
-            entity_id=entity_id,
-            execution_id=execution_id,
-            volume_path=volume_path,
-            sql_url_path=cfg.get("sql_url_path", ""),
-            sql_username=cfg.get("sql_username", ""),
-            sql_password=cfg.get("sql_password", ""),
-        )
-        print(
-            f"[done] Stored {len(parquet_tables)} Parquet tables: "
-            f"{datetime.now()}"
-        )
+    print(
+        f"[store] Writing {len(flowup_items)} flow-up tables in parallel: "
+        f"{datetime.now()}"
+    )
+    save_values = run_parallel(
+        [
+            (
+                tbl_name,
+                lambda tbl_name=tbl_name, df=df: _write_one_table(
+                    spark,
+                    cfg,
+                    tbl_name,
+                    df,
+                    client_id,
+                    entity_id,
+                    execution_id,
+                ),
+            )
+            for tbl_name, df in flowup_items
+        ],
+        workers,
+        activity,
+        "output_writes",
+        enabled_groups,
+    )
+    print(
+        f"[done] Stored {len(flowup_items)} flow-up tables: {datetime.now()}"
+    )
+    for value in save_values:
+        if (
+            value
+            and isinstance(value, str)
+            and value.strip().startswith("{")
+        ):
+            save_return_value = value
     return save_return_value
 
 

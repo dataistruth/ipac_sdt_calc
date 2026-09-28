@@ -6,6 +6,9 @@ import uuid
 
 import pyspark.sql.functions as F
 
+# Only tables whose live schema includes RunID. Do not list PFICUpdateAlert
+# or PFICAlertDetails here: those tables use AlertID/ClientID/EntityID/
+# TaxPeriodID and have no RunID.
 TABLE_SPECS = (
     ("AllocationInput", "RunID"),
     ("PFICFootnoteFlowup", "RunID"),
@@ -17,8 +20,6 @@ TABLE_SPECS = (
     ("AtRiskFlowup", "RunID"),
     ("CustomFootnoteFlowup", "RunID"),
     ("Form200616Flowup", "RunID"),
-    ("PFICUpdateAlert", "RunID"),
-    ("PFICAlertDetails", "RunID"),
     ("AllocationRunErrors", "RunID"),
 )
 MEASURE_COLUMNS = ("Amount", "Amount704b")
@@ -39,7 +40,7 @@ def _fqn(catalog, schema, table):
     return ".".join(_quote(value) for value in (catalog, schema, table))
 
 
-def _table_columns(spark, fqn):
+def _columns(spark, fqn):
     try:
         if not spark.catalog.tableExists(fqn):
             return []
@@ -48,130 +49,59 @@ def _table_columns(spark, fqn):
         return []
 
 
-def _scope_kind(columns, preferred):
-    if preferred in columns:
-        return "run"
-    if {"ClientID", "EntityID", "TaxPeriodID"}.issubset(set(columns)):
-        return "entity"
-    return "skip"
-
-
-def _sql_predicate(kind, columns, snapshot, preferred):
-    if kind == "run":
-        return f"{_quote(preferred)} = {int(snapshot['run_id'])}"
-    if kind == "entity":
-        parts = []
-        if "ClientID" in columns:
-            parts.append(f"{_quote('ClientID')} = {int(snapshot['client_id'])}")
-        if "EntityID" in columns:
-            parts.append(f"{_quote('EntityID')} = {int(snapshot['entity_id'])}")
-        if "TaxPeriodID" in columns:
-            parts.append(
-                f"{_quote('TaxPeriodID')} = {int(snapshot['tax_period_id'])}"
-            )
-        return " AND ".join(parts) if parts else "1 = 0"
-    return "1 = 0"
-
-
-def _filter_df(df, kind, preferred, snapshot):
-    if kind == "run":
-        return df.filter(F.col(preferred) == int(snapshot["run_id"]))
-    if kind == "entity":
-        out = df
-        if "ClientID" in df.columns:
-            out = out.filter(F.col("ClientID") == int(snapshot["client_id"]))
-        if "EntityID" in df.columns:
-            out = out.filter(F.col("EntityID") == int(snapshot["entity_id"]))
-        if "TaxPeriodID" in df.columns:
-            out = out.filter(
-                F.col("TaxPeriodID") == int(snapshot["tax_period_id"])
-            )
-        return out
-    return df.limit(0)
-
-
-def create_benchmark_snapshot(
-    spark,
-    catalog,
-    schema,
-    run_id,
-    client_id=None,
-    entity_id=None,
-    tax_period_id=None,
-):
+def create_benchmark_snapshot(spark, catalog, schema, run_id, **_kwargs):
     snapshot = {
         "catalog": catalog,
         "schema": schema,
         "run_id": int(run_id),
-        "client_id": int(client_id) if client_id is not None else None,
-        "entity_id": int(entity_id) if entity_id is not None else None,
-        "tax_period_id": (
-            int(tax_period_id) if tax_period_id is not None else None
-        ),
         "tables": {},
     }
-    for table, preferred in TABLE_SPECS:
+    for table, run_column in TABLE_SPECS:
         source = _fqn(catalog, schema, table)
-        columns = _table_columns(spark, source)
+        columns = _columns(spark, source)
         if not columns:
             snapshot["tables"][table] = {
                 "exists": False,
-                "run_column": preferred,
-                "kind": "missing",
+                "run_column": run_column,
                 "backup": None,
             }
-            print(f"[reconcile] snapshot skip {table}: missing")
             continue
-        kind = _scope_kind(columns, preferred)
-        if kind == "entity" and (
-            snapshot["client_id"] is None
-            or snapshot["entity_id"] is None
-            or snapshot["tax_period_id"] is None
-        ):
-            kind = "skip"
-        if kind == "skip":
+        if run_column not in columns:
             snapshot["tables"][table] = {
                 "exists": True,
-                "run_column": preferred,
-                "kind": "skip",
+                "run_column": run_column,
                 "backup": None,
             }
             print(
-                f"[reconcile] snapshot skip {table}: "
-                f"no {preferred}; columns={columns[:12]}"
+                f"[reconcile] skip snapshot {table}: no {run_column}; "
+                f"columns={columns[:12]}"
             )
             continue
         backup = (
             f"_benchmark_lai_{table.lower()[:16]}_"
             f"{int(run_id)}_{uuid.uuid4().hex[:8]}"
         )
-        predicate = _sql_predicate(kind, columns, snapshot, preferred)
         spark.sql(
             f"CREATE TABLE {_fqn(catalog, schema, backup)} USING DELTA AS "
-            f"SELECT * FROM {source} WHERE {predicate}"
+            f"SELECT * FROM {source} "
+            f"WHERE {_quote(run_column)} = {int(run_id)}"
         )
         snapshot["tables"][table] = {
             "exists": True,
-            "run_column": preferred,
-            "kind": kind,
+            "run_column": run_column,
             "backup": backup,
         }
-        print(f"[reconcile] snapshot {table} kind={kind}")
     return snapshot
 
 
 def _replace_from_snapshot(spark, snapshot, table):
     spec = snapshot["tables"][table]
-    if not spec.get("exists") or not spec.get("backup"):
+    if not spec["exists"] or not spec.get("backup"):
         return
     target = _fqn(snapshot["catalog"], snapshot["schema"], table)
     backup = _fqn(snapshot["catalog"], snapshot["schema"], spec["backup"])
-    columns = _table_columns(spark, target)
-    predicate = _sql_predicate(
-        spec.get("kind") or "run",
-        columns,
-        snapshot,
-        spec["run_column"],
+    predicate = (
+        f"{_quote(spec['run_column'])} = {int(snapshot['run_id'])}"
     )
     spark.sql(f"DELETE FROM {target} WHERE {predicate}")
     spark.sql(f"INSERT INTO {target} SELECT * FROM {backup}")
@@ -179,41 +109,33 @@ def _replace_from_snapshot(spark, snapshot, table):
 
 def reset_before_variant(spark, snapshot):
     for table, _ in TABLE_SPECS:
-        spec = snapshot["tables"].get(table) or {}
-        if spec.get("kind") in {None, "missing", "skip"}:
+        spec = snapshot["tables"][table]
+        if not spec.get("backup"):
             continue
         target = _fqn(snapshot["catalog"], snapshot["schema"], table)
-        columns = _table_columns(spark, target)
-        if not columns:
-            continue
-        predicate = _sql_predicate(
-            spec.get("kind") or "run",
-            columns,
-            snapshot,
-            spec.get("run_column") or "RunID",
+        spark.sql(
+            f"DELETE FROM {target} WHERE {_quote(spec['run_column'])} "
+            f"= {int(snapshot['run_id'])}"
         )
-        spark.sql(f"DELETE FROM {target} WHERE {predicate}")
 
 
 def restore_original_state(spark, snapshot):
     for table, _ in TABLE_SPECS:
-        spec = snapshot["tables"].get(table) or {}
+        spec = snapshot["tables"][table]
         if spec.get("backup"):
             _replace_from_snapshot(spark, snapshot, table)
             continue
-        if spec.get("kind") in {"missing", "skip"}:
+        if not spec["exists"]:
             continue
         target = _fqn(snapshot["catalog"], snapshot["schema"], table)
-        columns = _table_columns(spark, target)
-        if not columns:
+        columns = _columns(spark, target)
+        run_column = spec["run_column"]
+        if run_column not in columns:
             continue
-        predicate = _sql_predicate(
-            spec.get("kind") or "run",
-            columns,
-            snapshot,
-            spec.get("run_column") or "RunID",
+        spark.sql(
+            f"DELETE FROM {target} WHERE {_quote(run_column)} "
+            f"= {int(snapshot['run_id'])}"
         )
-        spark.sql(f"DELETE FROM {target} WHERE {predicate}")
     print(
         f"[reconcile] restored all affected tables "
         f"for RunID={snapshot['run_id']}"
@@ -229,35 +151,14 @@ def drop_benchmark_snapshot(spark, snapshot):
             )
 
 
-def fingerprint_table(
-    spark, catalog, schema, table, run_column, snapshot_or_run_id
-):
-    if isinstance(snapshot_or_run_id, dict):
-        snapshot = snapshot_or_run_id
-        run_id = snapshot["run_id"]
-        kind_hint = (snapshot.get("tables") or {}).get(table, {}).get("kind")
-    else:
-        snapshot = {
-            "run_id": int(snapshot_or_run_id),
-            "client_id": None,
-            "entity_id": None,
-            "tax_period_id": None,
-        }
-        run_id = int(snapshot_or_run_id)
-        kind_hint = None
+def fingerprint_table(spark, catalog, schema, table, run_column, run_id):
     fqn = _fqn(catalog, schema, table)
-    columns = _table_columns(spark, fqn)
+    columns = _columns(spark, fqn)
     if not columns:
         return {"table": table, "exists": False}
-    kind = kind_hint or _scope_kind(columns, run_column)
-    if kind == "skip":
-        return {
-            "table": table,
-            "exists": True,
-            "skipped": True,
-            "rows": None,
-        }
-    df = _filter_df(spark.table(fqn), kind, run_column, snapshot)
+    if run_column not in columns:
+        return {"table": table, "exists": True, "skipped": True}
+    df = spark.table(fqn).filter(F.col(run_column) == int(run_id))
     ordered = sorted(df.columns)
     row_hash = F.xxhash64(
         *[
@@ -302,28 +203,10 @@ def fingerprint_table(
     }
 
 
-def capture_metrics(
-    spark,
-    catalog,
-    schema,
-    run_id,
-    client_id=None,
-    entity_id=None,
-    tax_period_id=None,
-    snapshot=None,
-):
-    context = snapshot or {
-        "run_id": int(run_id),
-        "client_id": int(client_id) if client_id is not None else None,
-        "entity_id": int(entity_id) if entity_id is not None else None,
-        "tax_period_id": (
-            int(tax_period_id) if tax_period_id is not None else None
-        ),
-        "tables": {},
-    }
+def capture_metrics(spark, catalog, schema, run_id, **_kwargs):
     return {
         table: fingerprint_table(
-            spark, catalog, schema, table, run_column, context
+            spark, catalog, schema, table, run_column, run_id
         )
         for table, run_column in TABLE_SPECS
     }
@@ -356,46 +239,14 @@ def summarize_metrics(metrics):
     }
 
 
-def create_run_snapshots(
-    spark,
-    catalog,
-    schema,
-    run_id,
-    client_id=None,
-    entity_id=None,
-    tax_period_id=None,
-):
+def create_run_snapshots(spark, catalog, schema, run_id, **kwargs):
     return create_benchmark_snapshot(
-        spark,
-        catalog,
-        schema,
-        run_id,
-        client_id=client_id,
-        entity_id=entity_id,
-        tax_period_id=tax_period_id,
+        spark, catalog, schema, run_id, **kwargs
     )
 
 
-def capture_outputs(
-    spark,
-    catalog,
-    schema,
-    run_id,
-    client_id=None,
-    entity_id=None,
-    tax_period_id=None,
-    snapshot=None,
-):
-    return capture_metrics(
-        spark,
-        catalog,
-        schema,
-        run_id,
-        client_id=client_id,
-        entity_id=entity_id,
-        tax_period_id=tax_period_id,
-        snapshot=snapshot,
-    )
+def capture_outputs(spark, catalog, schema, run_id, **kwargs):
+    return capture_metrics(spark, catalog, schema, run_id, **kwargs)
 
 
 def compare_outputs(original, updated):

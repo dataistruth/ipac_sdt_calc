@@ -426,6 +426,9 @@ def run_load_allocation_input(
                     cfg.get("client_id", client_id),
                     cfg.get("entity_id", entity_id),
                     cfg.get("execution_id", execution_id) or "1",
+                    workers,
+                    parallel_activity,
+                    enabled_groups,
                 ),
                 cfg,
             )

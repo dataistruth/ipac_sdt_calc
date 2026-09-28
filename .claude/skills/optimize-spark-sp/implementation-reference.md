@@ -255,7 +255,7 @@ sequential / keep-PFIC-chain-sequential rules, unless this SP has the
 same contract.
 
 Do not port load-allocation-input `independent_input_builders` (forms /
-K1 / PFIC snapshot) or collect-then-Delta-then-Parquet `output_writes`
+K1 / PFIC snapshot), `output_collect`, or per-table `output_writes`
 unless this SP uses the same `_parquet_results` flush.
 
 Port only phasing, isolation, checkpoint V2, profiling, pruning,

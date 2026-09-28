@@ -109,7 +109,9 @@ Validate `outputV2/` has entry module, `plan_profiler.py`,
 For each pass:
 
 1. Choose order from `ExecutionOrder`.
-2. Purge only this RunID from every compared output table.
+2. Purge only this RunID from compared tables **that have a RunID
+   column**. Read `spark.table(fqn).columns` first. Skip (do not fail)
+   tables without that column.
 3. Start the wall timer immediately before the entry function.
 4. Capture reported timing separately from notebook wall time.
 5. Capture **per-table hashes** immediately after success.
@@ -118,7 +120,11 @@ For each pass:
 
 ### Per-table validation hash
 
-For each output table and RunID partition compare:
+`output_reconcile.py` must inspect live schemas before `CREATE TABLE …
+WHERE <key>`. A guessed `RunID` on `PFICUpdateAlert` (AlertID / ClientID /
+EntityID / TaxPeriodID only) fails snapshot creation.
+
+For each compared table and its **declared** key partition compare:
 
 - row count
 - schema (names and data types)

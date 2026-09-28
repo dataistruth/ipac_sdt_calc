@@ -29,14 +29,15 @@ PFIC flowup pipeline, `pfic_raw`, XML alert, election deletes, Part V/VII,
 Collect three disjoint `_parquet_results` groups, merge, then:
 
 1. AllocationInput Delta `replaceWhere` RunID
-2. remaining tables via GenericResultStorer
+2. remaining distinct flow-up tables in `output_writes` (up to 4 workers)
 
 ## Parallel groups
 
 | Group | Tasks |
 |---|---|
 | `independent_input_builders` | forms, K1-related, PFIC snapshot |
-| `output_writes` | collect AllocationInput / PFIC flowup / form flowups |
+| `output_collect` | collect AllocationInput / PFIC flowup / form flowups |
+| `output_writes` | one disk write per distinct flow-up table |
 
 Orchestrator applies `ExecutionProfile` at start, default `low`.
 
@@ -44,3 +45,14 @@ Orchestrator applies `ExecutionProfile` at start, default `low`.
 
 Development: `outputV2/` importing `output/` via `parent.py`. Collect
 helpers live in `write_helpers.py`.
+
+## A/B reconcile (do not regress on regenerate)
+
+- List snapshot tables from writers / `_parquet_results` keys that use
+  `RunID`, not from every `_collect_result` table.
+- `output_reconcile.py` reads live columns before `WHERE RunID`.
+- Notebook purge uses the same column check.
+- `PFICUpdateAlert` / `PFICAlertDetails` are not RunID-scoped.
+- Databricks must import the same generated `outputV2/` as the notebook;
+  a stale workspace copy of `output_reconcile.py` is a sync failure, not
+  a reason to inline snapshot SQL in the notebook.

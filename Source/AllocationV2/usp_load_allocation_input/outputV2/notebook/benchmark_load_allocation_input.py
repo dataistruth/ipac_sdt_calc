@@ -241,9 +241,6 @@ def _run_variant(name):
         common_args["CatalogName"],
         common_args["SchemaName"],
         common_args["RunID"],
-        client_id=common_args["ClientID"],
-        entity_id=common_args["EntityID"],
-        tax_period_id=common_args["TaxPeriodID"],
     )
     parsed_result = result
     if isinstance(parsed_result, str):
@@ -294,9 +291,6 @@ snapshots = create_run_snapshots(
     common_args["CatalogName"],
     common_args["SchemaName"],
     common_args["RunID"],
-    client_id=common_args["ClientID"],
-    entity_id=common_args["EntityID"],
-    tax_period_id=common_args["TaxPeriodID"],
 )
 try:
     for iteration in range(1, number_of_runs + 1):

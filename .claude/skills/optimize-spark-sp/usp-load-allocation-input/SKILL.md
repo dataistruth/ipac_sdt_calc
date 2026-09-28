@@ -47,14 +47,18 @@ Public entry:
 
 1. Treat production `output` behavior as authoritative. Keep stage order
    of business results even when independent builders run concurrently.
-2. Compared tables (snapshot and hash all that exist):
-   - `AllocationInput`
-   - `PFICFootnoteFlowup`
-   - `PFICFootnoteFlowupWithTrackingKey`
-   - `Form926Flowup`, `Form199AFlowup`, `Form8865Flowup`, `Form8886Flowup`
-   - `AtRiskFlowup`, `CustomFootnoteFlowup`
-   - `PFICUpdateAlert`, `PFICAlertDetails`
-   - `AllocationRunErrors`
+2. Compared tables (snapshot and hash when the table exists **and** the
+   declared key is on the live schema):
+   - `AllocationInput` (`RunID`)
+   - `PFICFootnoteFlowup` (`RunID`)
+   - `PFICFootnoteFlowupWithTrackingKey` (`RunID`)
+   - `Form926Flowup`, `Form199AFlowup`, `Form8865Flowup`, `Form8886Flowup` (`RunID`)
+   - `AtRiskFlowup`, `CustomFootnoteFlowup`, `Form200616Flowup` (`RunID`)
+   - `AllocationRunErrors` (`RunID`)
+   Do **not** snapshot `PFICUpdateAlert` or `PFICAlertDetails` with
+   `WHERE RunID`. Those tables have no `RunID`. Inspect columns first;
+   skip if the key is absent. Sync the Databricks `source_path` tree
+   (notebook + `output_reconcile.py`) before running A/B.
 3. Require exact fingerprints: schema, row count, key nulls, decimal
    sums, order-independent `xxhash64`.
 4. FAIL when `RunStatus=FAIL` or validations return False. Do not write
@@ -70,8 +74,11 @@ Public entry:
    view `_cf_latest_txn_*`) stay **sequential**.
 7. PFIC flowup, election deletes, Part V/VII flags, filters, and tags
    stay **sequential**.
-8. Disk flush stays **sequential**: AllocationInput Delta `replaceWhere`
-   first, then GenericResultStorer Parquet. Do not invert that order.
+8. `AllocationInput` Delta `replaceWhere` stays **first**. The remaining
+   distinct flow-up tables (`PFICFootnoteFlowup`, form flowups, etc.)
+   write in `output_writes` (cap 4). Do not invert AllocationInput vs
+   flow-ups. Do not batch them through one `GenericResultStorer.save_results`
+   call.
 9. Never use a runtime improvement from a failed or non-parity run.
 10. Do not leave `__pycache__` or `.pyc` files in the repository.
 11. Mode 1 Production: no plan profiler. Mode 2 Development: slim profiler
@@ -85,6 +92,7 @@ Public entry:
 - `MaxThreads=4`
 - ParallelGroups `all` includes:
   - `independent_input_builders`
+  - `output_collect`
   - `output_writes`
 - production orchestrator checkpoints: **keep**
 - FEP / footnotes / look-through-only flags: **do not apply**
@@ -111,9 +119,12 @@ Resolve `ExecutionProfile` in the orchestrator at run start (default
 - **`independent_input_builders`**: after validations,
   `build_all_form_inputs`, `build_k1_and_related_inputs`, and
   `build_pfic_snapshot`. Isolated `cfg`. No temp views in these three.
-- **`output_writes`**: after tags, collect frames for AllocationInput,
+- **`output_collect`**: after tags, collect frames for AllocationInput,
   PFIC flowup tables, and form flowups on isolated `_parquet_results`,
-  then merge. Then flush Delta then Parquet on the main thread.
+  then merge.
+- **`output_writes`**: after AllocationInput Delta commit, write each
+  remaining distinct flow-up table concurrently. Writer constructed
+  in-task. `replaceWhere RunID` when the frame has `RunID`.
 
 Wave time is `max(task)`. Cap workers 1..4.
 
@@ -128,7 +139,9 @@ Reject if any table hash differs.
   `alloc_filtered` without a new A/B;
 - parallelizing `build_custom_footnote_input` or `build_entity_hierarchy`;
 - parallelizing the PFIC flowup / election-delete chain;
-- running Parquet storer concurrently with the AllocationInput Delta write;
+- running Parquet/flow-up writes **before** the AllocationInput Delta write;
+- batching the eight flow-up tables through one sequential
+  `GenericResultStorer.save_results` call;
 - copying FEP SkipYearlyEmptyProbe or footnotes plan-breaks.
 
 ## Completion report
