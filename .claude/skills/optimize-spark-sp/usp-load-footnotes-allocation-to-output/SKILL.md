@@ -147,7 +147,8 @@ coalesce/repartition solely to shrink a checkpoint. No hot-path drop.
 - **S6–S12**: stay sequential; later stages consume earlier DataFrames.
 - **S13**: when `workers > 1` and `df_combined` is not None, write
   `AllocationOutput` and apply `AllocationInput` deduction in parallel
-  (2 workers, isolated `cfg` copies). Distinct tables only.
+  (2 workers, isolated `cfg` copies). Distinct tables only. This is the
+  `output_writes` phase from the parent skill.
 
 Wave time is `max(task)`, not the sum.
 

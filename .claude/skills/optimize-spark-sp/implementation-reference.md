@@ -169,9 +169,16 @@ business logic.
 | `independent_validations` | Non-gating warnings; no early-abort coupling |
 | `output_writes` | Distinct tables (or proven-safe distinct partitions) |
 
+Always add `output_writes` when two or more result tables append
+independently after gating validation. Example: LookThroughAllocationInput,
+SchKTaxableIncome, and PFICtoK1IncomeAttributePercentages. Do not fold a
+post-write `.count()` onto another table’s critical path; keep it inside
+that table’s task if the production log requires it.
+
 Keep sequential: gating `isEmpty`/`first` that abort the run, builders that
 consume a sibling's DataFrame, same-table writes, temp views that reference
-each other, unordered writes to the same `cfg` key.
+each other, unordered writes to the same `cfg` key, AllocationRun /
+error-table updates that depend on validation outcome.
 
 ### Coordinator
 
@@ -232,7 +239,7 @@ reproduce production union/order exactly.
 Pass Spark sessions as the process session; do not create extra sessions
 per thread.
 
-### What not to copy from FEP or footnotes
+### What not to copy from FEP, footnotes, or look-through input
 
 Do not port FEP CPBT `_mode` fusion, footnote PFIC batching, state-pass
 collapse, or hierarchy WHILE rewrites unless this SP has the same SQL
@@ -242,8 +249,14 @@ Do not port footnotes `cost_snapshot` / `entity_levels` /
 `alloc_pass1`–`alloc_pass4` or two-table AllocationInput deduction
 reconcile unless this SP has the same S1–S13 contract.
 
+Do not port look-through allocation input `independent_early_loads` /
+`independent_input_builders` / `output_writes` table list, or keep-FX-
+sequential / keep-PFIC-chain-sequential rules, unless this SP has the
+same contract.
+
 Port only phasing, isolation, checkpoint V2, profiling, pruning,
-and bounded broadcasts.
+bounded broadcasts, and distinct-table `output_writes` when the tables
+are actually independent.
 
 ## Safe sequential fallback
 

@@ -56,6 +56,7 @@ and notebooks. Use the child skill when the work is that SP:
 |---|---|
 | `usp_get_final_effective_percentage` | [usp-get-final-effective-percentage/SKILL.md](usp-get-final-effective-percentage/SKILL.md) |
 | `usp_load_footnotes_allocation_to_output` | [usp-load-footnotes-allocation-to-output/SKILL.md](usp-load-footnotes-allocation-to-output/SKILL.md) |
+| `usp_load_lookthrough_allocation_input` | [usp-load-lookthrough-allocation-input/SKILL.md](usp-load-lookthrough-allocation-input/SKILL.md) |
 
 The child skill owns SP-only checkpoints, extra tables, and locked
 timings. Do not copy those into other SPs.
@@ -139,6 +140,10 @@ pattern **and** the user asks for it.
    override the profile. Do not set AQE from a profile.
 4. Parallelize only independent work, in **phases**. Cap workers **1..4**.
    Observe every future. Wave time is `max(task)`, not the sum.
+   Parallelize **distinct-table writes** in an `output_writes` phase whenever
+   tables (or proven-safe partitions) do not depend on each other. Keep
+   same-table writes, gating validation, and AllocationRun status updates
+   sequential. Build each Spark writer inside its task.
 5. No `output/*_updated.py`. No SP-root `notebooks/`.
 6. Mode 1: no plan profiler code at all. Mode 2: slim profiler only, off
    unless the notebook sets ProfilePlan on.
@@ -159,7 +164,7 @@ pattern **and** the user asks for it.
 | RunID / ClientID / TaxPeriodID prune | When columns exist |
 | Bounded broadcast | Proven-small lookups only |
 | DataFrame reuse / persist | Persist only for multi-action; unpersist in `finally` |
-| Concurrent distinct-table writes | Different tables only |
+| Concurrent distinct-table writes | Required `output_writes` phase when tables are independent; isolated `cfg`; writer constructed in-task |
 | Execution profile `low`/`medium`/`big` | Orchestrator resolves shuffle, checkpoint mode, MaxThreads=4 |
 
 Do not copy FEP CPBT/footnote/state rewrites into other SPs.
@@ -172,7 +177,8 @@ Do not put AQE in the profile; it stays at the cluster default (`true`).
 1. Map the DAG (stages, actions, `cfg`, checkpoints, writes).
 2. Apply phasing + Checkpoint V2 + portable read optimizations in the
    mode’s target package. The orchestrator resolves the execution profile
-   at start. Logic stays equivalent.
+   at start. Parallelize independent distinct-table writes. Logic stays
+   equivalent.
 3. Mode 1: add `output/notebook/run_<sp>.py`. Mode 2: add
    `outputV2/notebook/benchmark_<sp>.py` plus reconcile hashes.
 4. Syntax-check. Mode 2: require per-table hash parity before claiming a win.
