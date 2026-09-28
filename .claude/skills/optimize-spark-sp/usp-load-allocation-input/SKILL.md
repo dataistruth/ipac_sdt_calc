@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-load-allocation-input
-description: Optimizes the Spark implementation of uspLoadAllocationInput by applying Checkpoint V2 on production seams, parallel form/K1/PFIC-snapshot builders, and an output_writes collect phase before the sequential Delta-then-Parquet flush. Use when implementing, benchmarking, diagnosing, or extending performance work for this specific SP.
+description: Optimizes the Spark implementation of uspLoadAllocationInput by applying Checkpoint V2 on production seams, parallel form/K1/PFIC-snapshot builders, a parallel output_collect phase, and parallel per-table flow-up writes after the AllocationInput Delta commit. Use when implementing, benchmarking, diagnosing, or extending performance work for this specific SP.
 ---
 
 # Optimize uspLoadAllocationInput
@@ -128,7 +128,50 @@ Resolve `ExecutionProfile` in the orchestrator at run start (default
 
 Wave time is `max(task)`. Cap workers 1..4.
 
-### 4. Validate
+### 4. Parallel flow-up writes (required)
+
+Production batches the flow-up tables through one
+`GenericResultStorer.save_results` call, which writes them one after
+another. Replace that batch in `outputV2/write_helpers.py`:
+
+1. Write `AllocationInput` first (Delta `replaceWhere RunID`), on the main
+   thread. It must commit before any flow-up table.
+2. Then submit one task per remaining `_parquet_results` table under
+   `output_writes`:
+   - `PFICFootnoteFlowup`
+   - `PFICFootnoteFlowupWithTrackingKey`
+   - `Form926Flowup`
+   - `Form199AFlowup`
+   - `Form8865Flowup`
+   - `Form8886Flowup`
+   - `AtRiskFlowup`
+   - `CustomFootnoteFlowup`
+   - plus `Form200616Flowup`, `PFICUpdateAlert`, `PFICAlertDetails` when
+     present in `_parquet_results`
+3. Each task aligns to the target schema, applies `coalesce(1)` for
+   production `SMALL_TABLES`, and builds its own writer. Use Delta
+   `replaceWhere RunID` when the frame has `RunID`; otherwise fall back to
+   a single-table `GenericResultStorer.save_results` call.
+4. Observe every future. Raise after all tasks finish if any failed.
+
+Evidence: the 2026-09-28 A/B run (RunID `16560`) passed parity at 63.4s
+with the batched storer. The eight flow-up tables took ~14s end to end
+(`20:34:17` to `20:34:31`). Parallel writes target that segment.
+
+Expected log shape after the change:
+
+```text
+   [ok] AllocationInput (delta)
+[store] Writing 8 flow-up tables in parallel: ...
+[parallel] START phase=output_writes task=Form926Flowup ...
+[parallel] output_writes: tasks=8 workers=4 wall=...s critical=max-task
+```
+
+If the log still shows `Storing to Delta Tables` with one checkmark per
+table from a single storer call, the Databricks `source_path` is running a
+stale `write_helpers.py`.
+
+### 5. Validate
 
 Syntax-check. Run the Databricks A/B notebook on an isolated RunID.
 Reject if any table hash differs.
@@ -148,3 +191,5 @@ Reject if any table hash differs.
 
 Report production vs outputV2 wall times, per-table hash result, which
 parallel groups ran, checkpoint names, and ExecutionProfile loaded.
+Include the `output_writes` wall time next to the ~14s batched-storer
+baseline.
