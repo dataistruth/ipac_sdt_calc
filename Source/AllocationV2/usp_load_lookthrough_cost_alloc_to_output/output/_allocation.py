@@ -1,4 +1,4 @@
-﻿"""Input preparation, validation, and allocation processing.
+"""Input preparation, validation, and allocation processing.
 
 Consolidates: prepare_lookthrough_input, allocation validation,
 offset handling, and the three allocation processors (by-amount,

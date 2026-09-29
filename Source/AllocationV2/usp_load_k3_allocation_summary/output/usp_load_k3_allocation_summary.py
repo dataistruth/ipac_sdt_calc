@@ -40,9 +40,20 @@ from pyspark.sql import SparkSession
 
 from Common_V2.core.helpers import read_table, get_logger, log_timing
 from Common_V2.core.config import load_common_config
-from Common_V2.core.checkpoint import checkpoint, drop_checkpoints
+from Common_V2.core.checkpoint_V2 import (
+    checkpoint_V2 as checkpoint,
+    drop_checkpoints_V2,
+    initialize_checkpoint_V2,
+    resolve_checkpoint_mode,
+)
+from Common_V2.core.execution_profiles import resolve_execution_profile
 from Common_V2.core.generic_result_storer import GenericResultStorer
 
+from .parallel_helpers import (
+    normalize_workers,
+    parse_enabled_groups,
+    run_parallel,
+)
 from ._prep import (
     build_country_sic_lines,
     build_income_attr_rounding_import,
@@ -60,6 +71,86 @@ from ._finalize import finalize_summary
 logger = get_logger(__name__)
 
 _OUTPUT_TABLE = "K3AllocationSummary"
+
+
+def _blank(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _as_int(value):
+    if _blank(value) is None:
+        return None
+    return int(value)
+
+
+def _checkpoint_frame(spark, df, name, cfg):
+    if df is None:
+        return None
+    if not hasattr(df, "columns"):
+        return df
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = checkpoint(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    return result
+
+
+def _apply_execution_profile(
+    spark,
+    cfg,
+    profile_name,
+    profile,
+    workers,
+    checkpoint_mode,
+    CheckpointMode,
+    SqlShufflePartitions,
+):
+    shuffle_override = _as_int(SqlShufflePartitions)
+    if shuffle_override is None:
+        spark.conf.set(
+            "spark.sql.shuffle.partitions",
+            str(profile["shuffle_partitions"]),
+        )
+    else:
+        spark.conf.set(
+            "spark.sql.shuffle.partitions",
+            str(shuffle_override),
+        )
+    explicit_checkpoint = (
+        CheckpointMode if CheckpointMode is not None else checkpoint_mode
+    )
+    mode = resolve_checkpoint_mode(
+        cfg,
+        checkpoint_mode=(
+            explicit_checkpoint
+            if _blank(explicit_checkpoint) is not None
+            else profile["checkpoint_mode"]
+        ),
+        CheckpointMode=CheckpointMode,
+    )
+    cfg.update(
+        {
+            "checkpoint_mode": mode,
+            "max_threads": workers,
+            "execution_profile": profile_name,
+        }
+    )
+    initialize_checkpoint_V2(cfg, mode)
+    print(
+        f"[uspLoadK3AllocationSummary] ExecutionProfile={profile_name} "
+        f"CheckpointMode={mode} shuffle="
+        f"{shuffle_override or profile['shuffle_partitions']} "
+        f"MaxThreads={workers}"
+    )
+    return mode
 
 
 # ---------------------------------------------------------------------------
@@ -188,13 +279,19 @@ def run_usp_load_k3_allocation_summary(
     ExecutionID: str = None,
     cfg: dict = None,
     verbose: bool = False,
+    max_threads: int = None,
+    MaxThreads: int = None,
+    parallel_groups: str = "all",
+    ParallelGroups: str = None,
+    execution_profile: str = "low",
+    ExecutionProfile: str = None,
+    checkpoint_mode: int = None,
+    CheckpointMode: int = None,
+    SqlShufflePartitions=None,
     **kwargs,
 ) -> dict:
-    """Execute the full SP conversion pipeline.
-
-    Mode 1 (Job) / Mode 2 (Orchestrator): caller passes cfg=cfg_dict.
-    Mode 3 (Standalone): no cfg -> loads its own config via load_common_config.
-    """
+    """Execute the full SP conversion pipeline."""
+    del kwargs
     entity_id = EntityID
     client_id = ClientID
     tax_period_id = TaxPeriodID
@@ -206,9 +303,24 @@ def run_usp_load_k3_allocation_summary(
     volume_path = VolumePath
     execution_id = ExecutionID
     t0 = time.time()
-
+    parallel_activity = []
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
+    profile_name = (
+        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    )
+    profile = resolve_execution_profile(profile_name)
+    workers = normalize_workers(
+        max_threads=(
+            MaxThreads
+            if MaxThreads is not None
+            else max_threads
+            if max_threads is not None
+            else profile["max_threads"]
+        ),
+        MaxThreads=MaxThreads,
+    )
+    mode = None
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
-
     status = {
         "sp_name": "uspLoadK3AllocationSummary",
         "run_id": run_id,
@@ -217,115 +329,182 @@ def run_usp_load_k3_allocation_summary(
         "error": None,
         "elapsed_seconds": 0,
         "FilePathInfo": "",
+        "skip_reason": None,
     }
-
-    if cfg is None:
-        cfg = load_common_config(
-            spark,
-            entity_id=entity_id,
-            client_id=client_id,
-            tax_period_id=tax_period_id,
-            run_id=run_id,
-            catalog=catalog_name,
-            schema=schema_name,
-            call_from=call_from,
-        )
-    elif call_from is not None:
-        cfg["call_from"] = call_from
-
-    cfg = {**cfg, "_checkpoint_tables": cfg.get("_checkpoint_tables", [])}
-    cfg.setdefault("result_type", result_type)
-    cfg["verbose"] = verbose
-    if volume_path is not None:
-        cfg["volume_path"] = volume_path
-    if execution_id is not None:
-        cfg["execution_id"] = execution_id
-
-    status["run_id"] = cfg.get("run_id")
-    status["entity_id"] = cfg.get("entity_id")
     save_result = ""
 
     try:
-        # Framework guard: bail on a failed run (not in the T-SQL; see logic_review).
+        if cfg is None:
+            cfg = load_common_config(
+                spark,
+                entity_id=entity_id,
+                client_id=client_id,
+                tax_period_id=tax_period_id,
+                run_id=run_id,
+                catalog=catalog_name,
+                schema=schema_name,
+                call_from=call_from,
+            )
+        elif call_from is not None:
+            cfg["call_from"] = call_from
+        cfg = {
+            **cfg,
+            "_checkpoint_tables": list(cfg.get("_checkpoint_tables") or []),
+        }
+        cfg.setdefault("result_type", result_type)
+        cfg["verbose"] = verbose
+        if volume_path is not None:
+            cfg["volume_path"] = volume_path
+        if execution_id is not None:
+            cfg["execution_id"] = execution_id
+        cfg.setdefault("_checkpoint_paths", [])
+        cfg.setdefault("_checkpoint_v2_activity", [])
+        mode = _apply_execution_profile(
+            spark,
+            cfg,
+            profile_name,
+            profile,
+            workers,
+            checkpoint_mode,
+            CheckpointMode,
+            SqlShufflePartitions,
+        )
+        status["run_id"] = cfg.get("run_id")
+        status["entity_id"] = cfg.get("entity_id")
         if (cfg.get("run_status") or "").upper() == "FAIL":
             logger.warning("[EARLY_EXIT] run_status=FAIL — nothing to do.")
+            status["skip_reason"] = "run_status_fail"
             return status
-
         cfg = load_sp_config(spark, cfg)
 
-        # --- S2-S5: inputs ---
-        country_sic = build_country_sic_lines(spark, cfg)
-        income_attr_import = build_income_attr_rounding_import(spark, cfg)
-
-        k3_detail = build_k3_detail(spark, cfg)
-        rounding_flags = build_rounding_flags(spark, cfg, k3_detail, income_attr_import)
-        mapped_lines = build_mapped_lines(spark, cfg)
-        has_mapped = has_mapped_lines(cfg, mapped_lines)
-        k1_amounts = build_k1_summary_amounts(spark, cfg, country_sic, mapped_lines, has_mapped)
-
-        # --- S6-S7: rounded summary + difference ---
-        s6 = build_k3_summary_rounded(
-            spark, cfg, k3_detail, rounding_flags, mapped_lines, has_mapped, k1_amounts
+        holder = {}
+        run_parallel(
+            [
+                (
+                    "country_sic",
+                    lambda: holder.__setitem__(
+                        "country_sic",
+                        build_country_sic_lines(spark, cfg),
+                    ),
+                ),
+                (
+                    "income_attr_import",
+                    lambda: holder.__setitem__(
+                        "income_attr_import",
+                        build_income_attr_rounding_import(spark, cfg),
+                    ),
+                ),
+            ],
+            workers,
+            parallel_activity,
+            "independent_early_loads",
+            enabled_groups,
         )
-        k3_summary = s6["summary"]
+        run_parallel(
+            [
+                (
+                    "k3_detail",
+                    lambda: holder.__setitem__(
+                        "k3_detail", build_k3_detail(spark, cfg)
+                    ),
+                ),
+                (
+                    "mapped_lines",
+                    lambda: holder.__setitem__(
+                        "mapped_lines", build_mapped_lines(spark, cfg)
+                    ),
+                ),
+            ],
+            workers,
+            parallel_activity,
+            "independent_inputs",
+            enabled_groups,
+        )
+        country_sic = holder["country_sic"]
+        income_attr_import = holder["income_attr_import"]
+        k3_detail = holder["k3_detail"]
+        mapped_lines = holder["mapped_lines"]
+
+        rounding_flags = build_rounding_flags(
+            spark, cfg, k3_detail, income_attr_import
+        )
+        has_mapped = has_mapped_lines(cfg, mapped_lines)
+        k1_amounts = build_k1_summary_amounts(
+            spark, cfg, country_sic, mapped_lines, has_mapped
+        )
+        s6 = build_k3_summary_rounded(
+            spark,
+            cfg,
+            k3_detail,
+            rounding_flags,
+            mapped_lines,
+            has_mapped,
+            k1_amounts,
+        )
+        k3_summary = _checkpoint_frame(spark, s6["summary"], "k3_summary", cfg)
         temp6a = s6["temp6a"]
         temp6b = s6["temp6b"]
-
-        # Materialize the summary ONCE. It fans out to S7 (rounding_diff), S9/S8, and S10
-        # with self-joins + window functions, so without this the chain recomputes per
-        # consumer — measured slower than the checkpoint round-trip. Delta checkpoint
-        # (localCheckpoint is not reliable on Databricks Serverless). The standalone
-        # k3_detail checkpoint is dropped: it only feeds the summary build, so it is
-        # materialized as part of this checkpoint's upstream (one fewer round-trip).
-        k3_summary = checkpoint(spark, k3_summary, "k3_summary", cfg)
-        rounding_diff = build_rounding_difference(spark, cfg, k3_summary, k1_amounts)
-
-        # --- S8 / S9: rounding-difference plug ---
-        is_country_level = (cfg.get("flag_country_level_rounding_logic") or "").strip().upper() == "C"
+        rounding_diff = build_rounding_difference(
+            spark, cfg, k3_summary, k1_amounts
+        )
+        is_country_level = (
+            (cfg.get("flag_country_level_rounding_logic") or "")
+            .strip()
+            .upper()
+            == "C"
+        )
         if is_country_level:
-            # S8 reads k3_detail / k1_amounts / rounding_diff across its own per-rank
-            # checkpoints — checkpoint them here too so repeated reads don't recompute
-            # the shared upstream chain each time.
-            k3_detail = checkpoint(spark, k3_detail, "k3_detail", cfg)
-            k1_amounts = checkpoint(spark, k1_amounts, "k1_amounts", cfg)
-            rounding_diff = checkpoint(spark, rounding_diff, "rounding_diff", cfg)
+            k3_detail = _checkpoint_frame(spark, k3_detail, "k3_detail", cfg)
+            k1_amounts = _checkpoint_frame(spark, k1_amounts, "k1_amounts", cfg)
+            rounding_diff = _checkpoint_frame(
+                spark, rounding_diff, "rounding_diff", cfg
+            )
             k3_summary = apply_country_level_rounding(
-                spark, cfg, k3_summary, k3_detail, rounding_diff, k1_amounts,
-                mapped_lines, has_mapped,
+                spark,
+                cfg,
+                k3_summary,
+                k3_detail,
+                rounding_diff,
+                k1_amounts,
+                mapped_lines,
+                has_mapped,
             )
         else:
             k3_summary = apply_standard_rounding(
-                spark, cfg, k3_summary, rounding_diff, rounding_flags,
-                mapped_lines, has_mapped, temp6a, temp6b,
+                spark,
+                cfg,
+                k3_summary,
+                rounding_diff,
+                rounding_flags,
+                mapped_lines,
+                has_mapped,
+                temp6a,
+                temp6b,
             )
-
-        # --- S10: finalize ---
-        k3_summary = finalize_summary(spark, cfg, k3_summary, rounding_flags, mapped_lines, has_mapped)
-
-        # --- S11: write output ---
+        k3_summary = finalize_summary(
+            spark, cfg, k3_summary, rounding_flags, mapped_lines, has_mapped
+        )
         output_tables = {_OUTPUT_TABLE: _build_output(cfg, k3_summary)}
         t_save = time.time()
-        return_value = _save_results(spark, cfg, output_tables)
+        save_result = _save_results(spark, cfg, output_tables)
         log_timing("save_results", t_save, logger)
-
     except Exception as e:
         status["status"] = "FAIL"
         status["error"] = str(e)
-        logger.error(f"[FAIL] {e}", exc_info=True)
+        logger.error("[FAIL] %s", e, exc_info=True)
         raise
     finally:
         status["elapsed_seconds"] = round(time.time() - t0, 1)
-        drop_checkpoints(spark, cfg)
+        if isinstance(cfg, dict):
+            drop_checkpoints_V2(spark, cfg)
 
     logger.info(
-        f"[DONE] uspLoadK3AllocationSummary | {status['elapsed_seconds']}s | "
-        f"RunID={cfg.get('run_id')} EntityID={cfg.get('entity_id')}"
+        "[DONE] uspLoadK3AllocationSummary | %ss | RunID=%s EntityID=%s",
+        status["elapsed_seconds"],
+        cfg.get("run_id"),
+        cfg.get("entity_id"),
     )
-    # If GenericResultStorer returned a value (JSON string for Parquet mode,
-    # "SUCCESS" for Delta/SQL), propagate it directly so the task runtime can
-    # parse ResultFilePath/ResultFileName for DataBrickExecutionStatus (same
-    # pattern as the other converted SPs, e.g. uspApplyPFICDistribution).
-    return return_value if return_value else status
+    return save_result if save_result else status
 
 
 # ════════════════════════════════════════════════════════════════

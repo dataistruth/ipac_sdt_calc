@@ -9,7 +9,7 @@ Functions:
 from pyspark.sql import SparkSession, DataFrame
 import pyspark.sql.functions as F
 from Common_V2.core.helpers import read_table, ns, ns0, sql_round, table_prefix
-from Common_V2.core.checkpoint import checkpoint
+from Common_V2.core.checkpoint_V2 import checkpoint_V2 as checkpoint
 from Common_V2.core.observability import log_section, log_timing
 from Common_V2.core.assertions import warn_if_empty
 import logging

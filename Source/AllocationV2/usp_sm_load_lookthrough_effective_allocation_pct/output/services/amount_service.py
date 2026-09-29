@@ -11,7 +11,20 @@ import pyspark.sql.functions as F
 import logging
 import time
 
-from Common_V2.core.helpers import read_table, ns, ns0, table_prefix, checkpoint
+from Common_V2.core.helpers import read_table, ns, ns0, table_prefix
+from Common_V2.core.checkpoint_V2 import checkpoint_V2 as _checkpoint_v2_impl
+
+def checkpoint(spark, df, name, cfg):
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = _checkpoint_v2_impl(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    return result
+
 from Common_V2.core.observability import log_section, log_timing
 from Common_V2.core.assertions import warn_if_empty
 

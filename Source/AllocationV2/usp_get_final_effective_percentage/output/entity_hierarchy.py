@@ -26,6 +26,13 @@ def _log_timing(name, start):
     logger.info(f"[TIMING] {name}: {time.time() - start:.1f}s")
 
 
+def _local_cp(df: DataFrame, name: str) -> DataFrame:
+    """Eager localCheckpoint used only by the outputV2 hierarchy path."""
+    logger.info(f"[CHECKPOINT] {name} (localCheckpoint)")
+    cp = df.localCheckpoint(eager=True)
+    return cp.toDF(*cp.columns)
+
+
 # ---------------------------------------------------------------------------
 # build_entity_partners
 # SQL lines: 1820-1835 (udf_PE_GetPartnersListForReports inlined)
@@ -240,6 +247,12 @@ def build_entity_hierarchy(
         )
         .select("LowerTierEntityID", "UpperTierEntityID")
     )
+    materialize = bool(cfg.get("_output_v3_hierarchy_materialize", False))
+    if materialize:
+        # One filtered relationship scan is reused by the seed and every
+        # expansion pass. Broadcast it after the break so later joins do
+        # not rescan EntityRelationship.
+        entity_rel = F.broadcast(_local_cp(entity_rel, "entity_rel_hierarchy"))
 
     # Seed: SQL lines 2372-2392
     hierarchy = (
@@ -279,6 +292,8 @@ def build_entity_hierarchy(
         )
         .distinct()
     )
+    if materialize:
+        hierarchy = _local_cp(hierarchy, "entity_hierarchy_seed")
 
     # Iterative expansion — exact equivalent of SQL WHILE (1=1) ... IF
     # @@ROWCOUNT = 0 BREAK at SQL lines 2402-2430. No depth cap (SQL has
@@ -332,6 +347,10 @@ def build_entity_hierarchy(
             break
 
         hierarchy = hierarchy.unionByName(new_rows)
+        if materialize:
+            hierarchy = _local_cp(
+                hierarchy, f"entity_hierarchy_d{depth + 1}"
+            )
         depth += 1
         if depth % 50 == 0:
             logger.warning(

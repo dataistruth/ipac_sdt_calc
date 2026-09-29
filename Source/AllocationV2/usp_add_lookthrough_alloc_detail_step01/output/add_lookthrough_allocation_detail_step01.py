@@ -42,8 +42,115 @@ from Common_V2.core.observability import log_section, log_timing
 from Common_V2.core.config import load_common_config
 from Common_V2.core.writers import write_output, collect_parquet_result
 from Common_V2.core.generic_result_storer import GenericResultStorer
+from Common_V2.core.checkpoint_V2 import (
+    checkpoint_V2 as checkpoint,
+    drop_checkpoints_V2,
+    initialize_checkpoint_V2,
+    resolve_checkpoint_mode,
+)
+from Common_V2.core.execution_profiles import resolve_execution_profile
+
+from .parallel_helpers import (
+    normalize_workers,
+    parse_enabled_groups,
+    run_parallel,
+)
 
 logger = get_logger("add_lookthrough_allocation_detail_step01")
+
+
+def _blank(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _as_int(value):
+    if _blank(value) is None:
+        return None
+    return int(value)
+
+
+def _checkpoint_frame(spark, df, name, cfg):
+    if df is None:
+        return None
+    if not hasattr(df, "columns"):
+        return df
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = checkpoint(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    return result
+
+
+def _apply_execution_profile(
+    spark,
+    cfg,
+    profile_name,
+    profile,
+    workers,
+    checkpoint_mode,
+    CheckpointMode,
+    SqlShufflePartitions,
+):
+    shuffle_override = _as_int(SqlShufflePartitions)
+    if shuffle_override is None:
+        spark.conf.set(
+            "spark.sql.shuffle.partitions",
+            str(profile["shuffle_partitions"]),
+        )
+    else:
+        spark.conf.set(
+            "spark.sql.shuffle.partitions",
+            str(shuffle_override),
+        )
+    explicit_checkpoint = (
+        CheckpointMode if CheckpointMode is not None else checkpoint_mode
+    )
+    mode = resolve_checkpoint_mode(
+        cfg,
+        checkpoint_mode=(
+            explicit_checkpoint
+            if _blank(explicit_checkpoint) is not None
+            else profile["checkpoint_mode"]
+        ),
+        CheckpointMode=CheckpointMode,
+    )
+    cfg.update(
+        {
+            "checkpoint_mode": mode,
+            "max_threads": workers,
+            "execution_profile": profile_name,
+        }
+    )
+    initialize_checkpoint_V2(cfg, mode)
+    print(
+        f"[lt-detail-step01] ExecutionProfile={profile_name} "
+        f"CheckpointMode={mode} shuffle="
+        f"{shuffle_override or profile['shuffle_partitions']} "
+        f"MaxThreads={workers}"
+    )
+    return mode
+
+
+def _isolated_cfg(cfg):
+    local = {**cfg}
+    local["_parquet_results"] = {}
+    return local
+
+
+def _merge_parquet_results(target, branch):
+    for key, df in (branch or {}).items():
+        if key in target:
+            target[key] = target[key].unionByName(df)
+        else:
+            target[key] = df
 
 
 def _log_timing(section_name, start):
@@ -960,12 +1067,19 @@ def run_add_lookthrough_allocation_detail_step01(
     ResultType: str = "Parquet",
     VolumePath: str = None,
     ExecutionID: str = None,
+    max_threads: int = None,
+    MaxThreads: int = None,
+    parallel_groups: str = "all",
+    ParallelGroups: str = None,
+    execution_profile: str = "low",
+    ExecutionProfile: str = None,
+    checkpoint_mode: int = None,
+    CheckpointMode: int = None,
+    SqlShufflePartitions=None,
     **kwargs,
 ):
-    """
-    Loads lookthrough allocated amounts into detail tables.
-    UBTI/UBTI-DF logic is excluded.
-    """
+    """Loads lookthrough allocated amounts into detail tables."""
+    del kwargs
     entity_id = EntityID
     client_id = ClientID
     tax_period_id = TaxPeriodID
@@ -976,14 +1090,25 @@ def run_add_lookthrough_allocation_detail_step01(
     result_type = ResultType
     volume_path = VolumePath
     execution_id = ExecutionID
-
     t0 = time.time()
-
-    if verbose:
-        logger.setLevel(logging.DEBUG)
-    else:
-        logger.setLevel(logging.INFO)
-
+    parallel_activity = []
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
+    profile_name = (
+        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    )
+    profile = resolve_execution_profile(profile_name)
+    workers = normalize_workers(
+        max_threads=(
+            MaxThreads
+            if MaxThreads is not None
+            else max_threads
+            if max_threads is not None
+            else profile["max_threads"]
+        ),
+        MaxThreads=MaxThreads,
+    )
+    mode = None
+    logger.setLevel(logging.DEBUG if verbose else logging.INFO)
     status = {
         "sp_name": "uspAddLookThroughAllocationDetail_Step_01",
         "run_id": run_id,
@@ -992,50 +1117,59 @@ def run_add_lookthrough_allocation_detail_step01(
         "error": None,
         "elapsed_seconds": 0,
         "sections_completed": 0,
+        "skip_reason": None,
     }
-
-    # Mode 3 (Standalone): load common config when no cfg was supplied.
-    # Mode 1/2 (Job/Orchestrator): caller passes cfg with all scalars pre-resolved.
-    if cfg is None:
-        cfg = load_common_config(
-            spark,
-            run_id=run_id,
-            entity_id=entity_id,
-            client_id=client_id,
-            tax_period_id=tax_period_id,
-            catalog=catalog,
-            schema=schema,
-            call_from=call_from,
-        )
-    elif call_from is not None:
-        cfg["call_from"] = call_from
-
-    # Copy checkpoint list so parallel SPs don't interfere; pass through output options.
-    cfg = {**cfg, "_checkpoint_tables": []}
-    if result_type is not None:
-        cfg.setdefault("result_type", result_type)
-    if volume_path is not None:
-        cfg["volume_path"] = volume_path
-    if execution_id is not None:
-        cfg["execution_id"] = execution_id
-
-    status["run_id"] = cfg.get("run_id")
-    status["entity_id"] = cfg.get("entity_id")
+    save_return_value = ""
 
     try:
-        # Section 1: Config
+        if cfg is None:
+            cfg = load_common_config(
+                spark,
+                run_id=run_id,
+                entity_id=entity_id,
+                client_id=client_id,
+                tax_period_id=tax_period_id,
+                catalog=catalog,
+                schema=schema,
+                call_from=call_from,
+            )
+        elif call_from is not None:
+            cfg["call_from"] = call_from
+        cfg = {**cfg, "_checkpoint_tables": []}
+        if result_type is not None:
+            cfg.setdefault("result_type", result_type)
+        if volume_path is not None:
+            cfg["volume_path"] = volume_path
+        if execution_id is not None:
+            cfg["execution_id"] = execution_id
+        cfg.setdefault("_parquet_results", {})
+        cfg.setdefault("_checkpoint_paths", [])
+        cfg.setdefault("_checkpoint_v2_activity", [])
+        mode = _apply_execution_profile(
+            spark,
+            cfg,
+            profile_name,
+            profile,
+            workers,
+            checkpoint_mode,
+            CheckpointMode,
+            SqlShufflePartitions,
+        )
+        status["run_id"] = cfg.get("run_id")
+        status["entity_id"] = cfg.get("entity_id")
         _load_config(spark, cfg)
-
         if cfg.get("run_status") == "FAIL":
-            logger.error(f"RunStatus=FAIL — aborting. RunID={cfg['run_id']}, "
-                         f"EntityID={cfg['entity_id']}")
+            logger.error(
+                "RunStatus=FAIL — aborting. RunID=%s EntityID=%s",
+                cfg["run_id"],
+                cfg["entity_id"],
+            )
             status["status"] = "FAIL"
             status["error"] = "RunStatus=FAIL at entry"
+            status["skip_reason"] = "run_status_fail"
             return status
-
         status["sections_completed"] = 1
 
-        # PBI 377585: Read LookThroughAllocationOutput once instead of reading 10 times
         base_lt_out = (
             _tbl(spark, "LookThroughAllocationOutput", cfg)
             .filter(
@@ -1043,86 +1177,88 @@ def run_add_lookthrough_allocation_detail_step01(
                 & (F.col("ClientID") == cfg["client_id"])
             )
         )
-        cfg["_base_lt_out"] = base_lt_out
+        cfg["_base_lt_out"] = _checkpoint_frame(
+            spark, base_lt_out, "base_lt_out", cfg
+        )
 
-        # Section 2-11: Allocation detail writes
-        _write_m1_sidepocket(spark, cfg)
-        status["sections_completed"] = 2
+        def _wrap(name, fn):
+            def task():
+                local = _isolated_cfg(cfg)
+                fn(spark, local)
+                return dict(local.get("_parquet_results") or {})
 
-        _write_book(spark, cfg)
-        status["sections_completed"] = 3
+            return name, task
 
-        _write_book_k1_adjustment(spark, cfg)
-        status["sections_completed"] = 4
+        def _dated_pair(spark_session, local):
+            _write_dated_transfer(spark_session, local)
+            _write_dated_transfer_without_adj(spark_session, local)
 
-        _write_offset(spark, cfg)
-        status["sections_completed"] = 5
-
-        _write_dated_transfer(spark, cfg)
-        status["sections_completed"] = 6
-
-        _write_dated_transfer_without_adj(spark, cfg)
-        status["sections_completed"] = 7
-
-        _write_special_allocation(spark, cfg)
-        status["sections_completed"] = 8
-
-        _write_m1_residual(spark, cfg)
-        status["sections_completed"] = 9
-
-        _write_box_jkl(spark, cfg)
-        status["sections_completed"] = 10
-
-        _write_k1_complete(spark, cfg)
-        status["sections_completed"] = 11
-
-        # Section 12: CY Adjustment
-        _write_cy_adjustment(spark, cfg)
-        status["sections_completed"] = 12
-
-        # Section 13: K1 Text Allocation Detail
-        _write_k1_text_allocation_detail(spark, cfg)
+        write_tasks = [
+            _wrap("m1_sidepocket", _write_m1_sidepocket),
+            _wrap("book", _write_book),
+            _wrap("book_k1_adjustment", _write_book_k1_adjustment),
+            _wrap("offset", _write_offset),
+            _wrap("dated_transfer_pair", _dated_pair),
+            _wrap("special_allocation", _write_special_allocation),
+            _wrap("m1_residual", _write_m1_residual),
+            _wrap("box_jkl", _write_box_jkl),
+            _wrap("k1_complete", _write_k1_complete),
+            _wrap("cy_adjustment", _write_cy_adjustment),
+            _wrap("k1_text", _write_k1_text_allocation_detail),
+        ]
+        branches = run_parallel(
+            write_tasks,
+            workers,
+            parallel_activity,
+            "output_writes",
+            enabled_groups,
+        )
+        merged = {}
+        for branch in branches:
+            _merge_parquet_results(merged, branch)
+        cfg["_parquet_results"] = merged
         status["sections_completed"] = 13
 
+        parquet_results = {
+            key: value
+            for key, value in cfg.get("_parquet_results", {}).items()
+            if value.limit(1).first() is not None
+        }
+        if parquet_results:
+            result_storer = GenericResultStorer(spark, None)
+            save_return_value = result_storer.save_results(
+                result=parquet_results,
+                result_type=cfg.get("result_type", "deltalake"),
+                catalog_name=cfg["catalog"],
+                database_name=cfg["schema"],
+                run_id=cfg["run_id"],
+                client_id=cfg["client_id"],
+                entity_id=cfg["entity_id"],
+                execution_id=cfg.get("execution_id", "1"),
+                volume_path=cfg.get("volume_path", ""),
+                sql_url_path=None,
+                sql_username=None,
+                sql_password=None,
+            )
+        status["elapsed_seconds"] = round(time.time() - t0, 1)
     except Exception as e:
         status["status"] = "FAIL"
         status["error"] = str(e)
-        logger.error(f"[FAIL] {e}", exc_info=True)
+        logger.error("[FAIL] %s", e, exc_info=True)
         raise
     finally:
         status["elapsed_seconds"] = round(time.time() - t0, 1)
-        _drop_checkpoints(spark, cfg)
+        if isinstance(cfg, dict):
+            drop_checkpoints_V2(spark, cfg)
+            _drop_checkpoints(spark, cfg)
 
-    logger.info(f"[DONE] add_lookthrough_allocation_detail_step01 | "
-                f"{status['elapsed_seconds']}s | RunID={cfg['run_id']} "
-                f"EntityID={cfg['entity_id']}")
-
-    # Write collected DataFrames to parquet via GenericResultStorer
-    parquet_results = cfg.get("_parquet_results", {})
-    # Filter out empty DataFrames — avoids writing empty tables to Delta/Parquet
-    parquet_results = {k: v for k, v in parquet_results.items() if v.limit(1).first() is not None}
-    return_value = ""
-    if parquet_results:
-        result_storer = GenericResultStorer(spark, None)
-        return_value = result_storer.save_results(
-            result=parquet_results,
-            result_type=cfg.get("result_type", "deltalake"),
-            catalog_name=cfg["catalog"],
-            database_name=cfg["schema"],
-            run_id=cfg["run_id"],
-            client_id=cfg["client_id"],
-            entity_id=cfg["entity_id"],
-            execution_id=cfg.get("execution_id", "1"),
-            volume_path=cfg.get("volume_path", ""),
-            sql_url_path=None,
-            sql_username=None,
-            sql_password=None,
-        )
-    # If GenericResultStorer returned a value (JSON string for Parquet mode,
-    # "SUCCESS" for Delta/SQL), propagate it directly so the task runtime can
-    # parse ResultFilePath/ResultFileName for DataBrickExecutionStatus (same
-    # pattern as uspGetFinalEffectivePercentage's run_mode).
-    return return_value if return_value else status
+    logger.info(
+        "[DONE] add_lookthrough_allocation_detail_step01 | %ss | RunID=%s EntityID=%s",
+        status["elapsed_seconds"],
+        cfg["run_id"],
+        cfg["entity_id"],
+    )
+    return save_return_value if save_return_value else status
 
 # ---------------------------------------------------------------------------
 # Checkpoint cleanup (even though no checkpoints are used here,

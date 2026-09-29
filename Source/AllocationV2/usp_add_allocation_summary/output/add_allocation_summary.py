@@ -30,9 +30,116 @@ import json
 from Common_V2.core.helpers import read_table, ns, ns0, table_prefix, tbl_name
 from Common_V2.core.config import load_common_config
 from Common_V2.core.generic_result_storer import GenericResultStorer
-from Common_V2.core.checkpoint import checkpoint, drop_checkpoints
+from Common_V2.core.checkpoint_V2 import (
+    checkpoint_V2 as checkpoint,
+    drop_checkpoints_V2,
+    initialize_checkpoint_V2,
+    resolve_checkpoint_mode,
+)
+from Common_V2.core.execution_profiles import resolve_execution_profile
+
+from .parallel_helpers import (
+    normalize_workers,
+    parse_enabled_groups,
+    run_parallel,
+)
 
 logger = logging.getLogger("AllocationV2.usp_add_allocation_summary")
+
+_MULTI_CONSUMER_FRAMES = (
+    "allocation_output_summary",
+    "allocation_output",
+    "k1_workflow",
+    "lower_tier_funds",
+    "at_risk_workflow",
+    "partner_pfic",
+)
+
+
+def _blank(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _as_int(value):
+    if _blank(value) is None:
+        return None
+    return int(value)
+
+
+def _checkpoint_frame(spark, df, name, cfg):
+    if df is None:
+        return None
+    if not hasattr(df, "columns"):
+        return df
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = checkpoint(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    return result
+
+
+def _apply_execution_profile(
+    spark,
+    cfg,
+    profile_name,
+    profile,
+    workers,
+    checkpoint_mode,
+    CheckpointMode,
+    SqlShufflePartitions,
+):
+    shuffle_override = _as_int(SqlShufflePartitions)
+    if shuffle_override is None:
+        spark.conf.set(
+            "spark.sql.shuffle.partitions",
+            str(profile["shuffle_partitions"]),
+        )
+    else:
+        spark.conf.set(
+            "spark.sql.shuffle.partitions",
+            str(shuffle_override),
+        )
+    explicit_checkpoint = (
+        CheckpointMode if CheckpointMode is not None else checkpoint_mode
+    )
+    mode = resolve_checkpoint_mode(
+        cfg,
+        checkpoint_mode=(
+            explicit_checkpoint
+            if _blank(explicit_checkpoint) is not None
+            else profile["checkpoint_mode"]
+        ),
+        CheckpointMode=CheckpointMode,
+    )
+    cfg.update(
+        {
+            "checkpoint_mode": mode,
+            "max_threads": workers,
+            "execution_profile": profile_name,
+        }
+    )
+    initialize_checkpoint_V2(cfg, mode)
+    print(
+        f"[uspAddAllocationSummary] ExecutionProfile={profile_name} "
+        f"CheckpointMode={mode} shuffle="
+        f"{shuffle_override or profile['shuffle_partitions']} "
+        f"MaxThreads={workers}"
+    )
+    return mode
+
+
+def _isolated_cfg(cfg):
+    local = {**cfg}
+    local["_result_file_infos"] = []
+    return local
 
 
 # ---------------------------------------------------------------------------
@@ -937,7 +1044,7 @@ def write_pfic_footnote_allocation_text(spark: SparkSession, cfg: dict, pfic_rec
     ).distinct()
 
     # Materialize: parallel write to the same table causes a read-own-writes race.
-    df = checkpoint(spark, df, "pfic_alloc_text", cfg)
+    df = _checkpoint_frame(spark, df, "pfic_alloc_text", cfg)
     _store_result_table(spark, cfg, target_table, df)
 
 
@@ -1671,82 +1778,109 @@ def run_add_allocation_summary(
     ResultType: str = "None",
     VolumePath: str = None,
     ExecutionID: str = None,
+    max_threads: int = None,
+    MaxThreads: int = None,
+    parallel_groups: str = "all",
+    ParallelGroups: str = None,
+    execution_profile: str = "low",
+    ExecutionProfile: str = None,
+    checkpoint_mode: int = None,
+    CheckpointMode: int = None,
+    SqlShufflePartitions=None,
     **kwargs,
 ) -> dict:
-    """Main entry point for uspAddAllocationSummary conversion.
-
-    Args:
-        spark: SparkSession (Databricks Connect or cluster)
-        EntityID, ClientID, TaxPeriodID, RunID: SP parameters
-        CatalogName, SchemaName: Unity Catalog target
-        cfg: Optional pre-built config dict (from orchestrator)
-        ResultType, VolumePath, ExecutionID: GenericResultStorer output options
-            (rule 48 — propagated to cfg so the storer reads them downstream).
-
-    Returns:
-        dict with execution status and timing.
-    """
-    # Map CamelCase params to snake_case for use in function body
+    """Main entry point for uspAddAllocationSummary conversion."""
+    del kwargs
     entity_id = EntityID
     client_id = ClientID
     tax_period_id = TaxPeriodID
     run_id = RunID
     catalog = CatalogName
     schema = SchemaName
-
     t0 = time.time()
-
+    parallel_activity = []
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
+    profile_name = (
+        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    )
+    profile = resolve_execution_profile(profile_name)
+    workers = normalize_workers(
+        max_threads=(
+            MaxThreads
+            if MaxThreads is not None
+            else max_threads
+            if max_threads is not None
+            else profile["max_threads"]
+        ),
+        MaxThreads=MaxThreads,
+    )
+    mode = None
     status = {
         "sp_name": "uspAddAllocationSummary",
         "run_id": run_id,
         "entity_id": entity_id,
         "status": "SUCCESS",
         "elapsed_seconds": 0,
+        "skip_reason": None,
     }
-
-    # Build or reuse config.
-    # Mode 3 (Standalone): no cfg → load it.
-    # Mode 1/2 (Job/Orchestrator): cfg passed in with all scalars pre-resolved.
-    if cfg is None:
-        cfg = load_common_config(
-            spark, entity_id=entity_id, client_id=client_id,
-            tax_period_id=tax_period_id, run_id=run_id,
-            catalog=catalog, schema=schema,
-        )
-
-    # GenericResultStorer output options — set only when the caller provided
-    # a value (setdefault preserves any orchestrator-supplied cfg entry).
-    if ResultType is not None:  cfg.setdefault("result_type", ResultType)
-    if VolumePath is not None:  cfg["volume_path"] = VolumePath
-    if ExecutionID is not None: cfg["execution_id"] = ExecutionID
-
-    # Reset the parquet JSON accumulator for this run (populated per table by
-    # _store_result_table, merged into the return value below).
-    cfg["_result_file_infos"] = []
-
-    # AllocationRun scalars (run_status, phase_id, partner_workflow_id,
-    # partner_transaction_id, foreign_currency_rate_txn_id) are already on cfg
-    # from load_common_config — no extra read needed here.
-
-    # Early exit on FAIL
-    if cfg.get("run_status") == "FAIL":
-        logger.warning("Run status is FAIL — exiting early")
-        return {"status": "SKIPPED", "reason": "RunStatus=FAIL", "elapsed_seconds": time.time() - t0}
+    payload = status
 
     try:
-        # Section 1: Load SP-specific config
+        if cfg is None:
+            cfg = load_common_config(
+                spark,
+                entity_id=entity_id,
+                client_id=client_id,
+                tax_period_id=tax_period_id,
+                run_id=run_id,
+                catalog=catalog,
+                schema=schema,
+            )
+        cfg = {**cfg, "_checkpoint_tables": []}
+        if ResultType is not None:
+            cfg.setdefault("result_type", ResultType)
+        if VolumePath is not None:
+            cfg["volume_path"] = VolumePath
+        if ExecutionID is not None:
+            cfg["execution_id"] = ExecutionID
+        cfg["_result_file_infos"] = []
+        cfg.setdefault("_checkpoint_paths", [])
+        cfg.setdefault("_checkpoint_v2_activity", [])
+        mode = _apply_execution_profile(
+            spark,
+            cfg,
+            profile_name,
+            profile,
+            workers,
+            checkpoint_mode,
+            CheckpointMode,
+            SqlShufflePartitions,
+        )
+        status["run_id"] = cfg.get("run_id")
+        status["entity_id"] = cfg.get("entity_id")
+        if cfg.get("run_status") == "FAIL":
+            logger.warning("Run status is FAIL — exiting early")
+            status["status"] = "SKIPPED"
+            status["skip_reason"] = "run_status_fail"
+            status["reason"] = "RunStatus=FAIL"
+            status["elapsed_seconds"] = round(time.time() - t0, 1)
+            return status
+
         load_sp_config(spark, cfg)
         cfg["allow_pe_book_inserts"] = _should_insert_pe_book(cfg)
 
-        # Section 2: Build working tables
         tables = build_working_tables(spark, cfg)
-
-        # Build partner PFIC for custom footnotes (needed later)
         partner_wf_id = cfg.get("partner_workflow_id")
         partner_txn_id = cfg.get("partner_transaction_id")
         partner_pfic = read_table(spark, "Partner_Snapshot", cfg).filter(
-            (F.coalesce(F.col("WorkFlowID"), F.col("TransactionID")) ==
-             F.lit(partner_wf_id if partner_wf_id is not None else partner_txn_id).cast("int"))
+            (
+                F.coalesce(F.col("WorkFlowID"), F.col("TransactionID"))
+                == F.lit(
+                    partner_wf_id
+                    if partner_wf_id is not None
+                    else partner_txn_id
+                ).cast("int")
+            )
             & (F.col("EntityID") == cfg["entity_id"])
             & (F.col("ClientID") == cfg["client_id"])
         ).select(
@@ -1754,46 +1888,164 @@ def run_add_allocation_summary(
             F.col("PartnerNumber"),
         ).distinct()
         tables["partner_pfic"] = partner_pfic
+        for frame_name in _MULTI_CONSUMER_FRAMES:
+            frame = tables.get(frame_name)
+            if frame is not None and hasattr(frame, "columns"):
+                tables[frame_name] = _checkpoint_frame(
+                    spark, frame, frame_name, cfg
+                )
+        partner_pfic = tables["partner_pfic"]
 
-        # Sections 3-5: Simple summary inserts
-        write_k1_allocation_summary(spark, cfg, tables)
-        write_m1_adj_allocation_summary(spark, cfg, tables)
-        write_box_jkl_allocation_summary(spark, cfg, tables)
+        builder_holder = {}
 
-        # Sections 6-8: Form summary inserts with tracking key
-        write_form926_allocation_summary(spark, cfg, tables)
-        write_form8865_allocation_summary(spark, cfg, tables)
-        write_form199a_allocation_summary(spark, cfg, tables)
+        def _pfic_task():
+            builder_holder["pfic_reclass"] = build_pfic_reclass_data(
+                spark, cfg, tables
+            )
 
-        # Sections 9-11: PFIC
-        pfic_reclass_df = build_pfic_reclass_data(spark, cfg, tables)
-        write_pfic_footnote_allocation_summary(spark, cfg, tables)
-        write_pfic_footnote_allocation_text(spark, cfg, pfic_reclass_df)
+        def _cf_task():
+            builder_holder["cf_data"] = build_custom_footnote_transactions(
+                spark, cfg, tables
+            )
 
-        # Sections 12-13: Custom Footnotes
-        cf_data = build_custom_footnote_transactions(spark, cfg, tables)
-        write_custom_footnote_allocation_summary(spark, cfg, tables, cf_data, partner_pfic)
+        run_parallel(
+            [
+                ("pfic_reclass", _pfic_task),
+                ("custom_footnote_txns", _cf_task),
+            ],
+            workers,
+            parallel_activity,
+            "independent_builders",
+            enabled_groups,
+        )
+        pfic_reclass_df = builder_holder["pfic_reclass"]
+        cf_data = builder_holder["cf_data"]
 
-        # Sections 14-16: Simple summary inserts
-        write_line18a_allocation_summary(spark, cfg, tables)
-        write_ubti_allocation_summary(spark, cfg, tables)
-        write_passive_income_allocation_summary(spark, cfg, tables)
+        infos = []
 
-        # Sections 17-21: Form + special summary inserts
-        write_form200616_allocation_summary(spark, cfg, tables)
-        write_form8886_allocation_summary(spark, cfg, tables)
-        write_at_risk_allocation_summary(spark, cfg, tables)
-        write_gaap_to_tax_allocation(spark, cfg, tables)
-        write_adjustment_allocation_summary(spark, cfg, tables)
+        def _wrap(name, fn):
+            def task():
+                local = _isolated_cfg(cfg)
+                fn(local)
+                return list(local.get("_result_file_infos") or [])
 
-        elapsed = time.time() - t0
-        logger.info("uspAddAllocationSummary completed in %.1fs", elapsed)
+            return name, task
 
-        # Merge every table's save_results JSON blob into one payload so the
-        # Orchestrator can populate ResultFilePath/ResultFileName. Each blob is
-        # {"ResultFilePath": "<client>/<run>/<exec>/", "<TableName>": [parts...]};
-        # ResultFilePath is identical across tables (same client/run/exec), so a
-        # flat dict.update merge is safe (mirrors apply_investment_level_rounding).
+        write_tasks = [
+            _wrap(
+                "k1",
+                lambda local: write_k1_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "m1",
+                lambda local: write_m1_adj_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "box_jkl",
+                lambda local: write_box_jkl_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "form926",
+                lambda local: write_form926_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "form8865",
+                lambda local: write_form8865_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "form199a",
+                lambda local: write_form199a_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "pfic_summary",
+                lambda local: write_pfic_footnote_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "pfic_text",
+                lambda local: write_pfic_footnote_allocation_text(
+                    spark, local, pfic_reclass_df
+                ),
+            ),
+            _wrap(
+                "custom_footnote",
+                lambda local: write_custom_footnote_allocation_summary(
+                    spark, local, tables, cf_data, partner_pfic
+                ),
+            ),
+            _wrap(
+                "line18a",
+                lambda local: write_line18a_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "ubti",
+                lambda local: write_ubti_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "passive_income",
+                lambda local: write_passive_income_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "form200616",
+                lambda local: write_form200616_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "form8886",
+                lambda local: write_form8886_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "at_risk",
+                lambda local: write_at_risk_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "gaap_to_tax",
+                lambda local: write_gaap_to_tax_allocation(
+                    spark, local, tables
+                ),
+            ),
+            _wrap(
+                "adjustment",
+                lambda local: write_adjustment_allocation_summary(
+                    spark, local, tables
+                ),
+            ),
+        ]
+        branch_infos = run_parallel(
+            write_tasks,
+            workers,
+            parallel_activity,
+            "output_writes",
+            enabled_groups,
+        )
+        for blob_list in branch_infos:
+            infos.extend(blob_list or [])
+        cfg["_result_file_infos"] = infos
+
         merged = {}
         for blob in cfg.get("_result_file_infos", []):
             try:
@@ -1804,18 +2056,18 @@ def run_add_allocation_summary(
         if result_json:
             print(f"[PARQUET] Return JSON: {result_json}")
         status["elapsed_seconds"] = round(time.time() - t0, 1)
-        # If GenericResultStorer returned a value (JSON string for Parquet mode,
-        # "SUCCESS" for Delta/SQL), propagate it directly so the task runtime can
-        # parse ResultFilePath/ResultFileName for DataBrickExecutionStatus (same
-        # pattern as uspGetFinalEffectivePercentage's run_mode).
-        return result_json if result_json else status
-
+        payload = result_json if result_json else status
+        logger.info(
+            "uspAddAllocationSummary completed in %.1fs",
+            status["elapsed_seconds"],
+        )
     except Exception as e:
-        elapsed = time.time() - t0
-        logger.error("uspAddAllocationSummary FAILED after %.1fs: %s", elapsed, str(e))
+        logger.error("uspAddAllocationSummary FAILED: %s", e)
         raise
     finally:
-        drop_checkpoints(spark, cfg)
+        if isinstance(cfg, dict):
+            drop_checkpoints_V2(spark, cfg)
+    return payload
 
 
 # ════════════════════════════════════════════════════════════════

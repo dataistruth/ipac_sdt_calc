@@ -22,12 +22,23 @@ Usage (reuse shared config from a workflow):
 
 from pyspark.sql import SparkSession, DataFrame, Window
 import pyspark.sql.functions as F
+from contextlib import contextmanager
 from datetime import datetime
 import logging
 import time
 
 from Common_V2.core.helpers import read_table, table_prefix, ns, ns0, sql_round, safe_divide
-from Common_V2.core.checkpoint import checkpoint, drop_checkpoints
+from Common_V2.core.checkpoint_V2 import (
+    checkpoint_V2 as checkpoint,
+    drop_checkpoints_V2 as drop_checkpoints,
+    initialize_checkpoint_V2,
+    resolve_checkpoint_mode,
+)
+from Common_V2.core.execution_profiles import resolve_execution_profile
+try:
+    from parallel_helpers import normalize_workers, parse_enabled_groups, run_parallel
+except ImportError:
+    from .parallel_helpers import normalize_workers, parse_enabled_groups, run_parallel
 from Common_V2.core.observability import get_logger, log_section, log_timing
 from Common_V2.core.config import load_common_config, validate_run_status
 from Common_V2.core.generic_result_storer import GenericResultStorer
@@ -35,6 +46,49 @@ from Common_V2.domain.udf_cost_percentage_details import get_cost_percentage_det
 from Common_V2.domain.udf_partners_list_for_allocations import get_partners_list_for_allocations
 
 logger = get_logger(__name__)
+
+
+def _blank(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _as_int(value):
+    if _blank(value) is None:
+        return None
+    return int(value)
+
+
+def _checkpoint(spark, df, name, cfg):
+    if df is None:
+        return None
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = checkpoint(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    return result
+
+
+@contextmanager
+def use_v2_production_checkpoint():
+    """Route module-level checkpoint() to Checkpoint V2 helper."""
+    import sys
+    mod = sys.modules[__name__]
+    original = mod.checkpoint
+    mod.checkpoint = _checkpoint
+    try:
+        yield
+    finally:
+        mod.checkpoint = original
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -1991,13 +2045,19 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
     ResultType: str = "Parquet",
     VolumePath: str = None,
     ExecutionID: str = None,
+    max_threads: int = None,
+    MaxThreads: int = None,
+    parallel_groups: str = "all",
+    ParallelGroups: str = None,
+    execution_profile: str = "low",
+    ExecutionProfile: str = None,
+    checkpoint_mode: int = None,
+    CheckpointMode: int = None,
+    SqlShufflePartitions=None,
     **kwargs,
 ):
-    """Main entry point — works with all three execution modes.
-
-    Converted from: dbo.usp_SM_LoadLookThroughCostAllocationToOutput
-    """
-    # Map CamelCase params to snake_case for use in function body
+    """Main entry point — Checkpoint V2 seams, sequential SM Output then Input."""
+    del kwargs
     entity_id = EntityID
     client_id = ClientID
     tax_period_id = TaxPeriodID
@@ -2011,6 +2071,21 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
     execution_id = ExecutionID
 
     t0 = time.time()
+    parallel_activity = []
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
+    profile_name = _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    profile = resolve_execution_profile(profile_name)
+    workers = normalize_workers(
+        max_threads=(
+            MaxThreads
+            if MaxThreads is not None
+            else max_threads
+            if max_threads is not None
+            else profile["max_threads"]
+        ),
+        MaxThreads=MaxThreads,
+    )
+    mode = None
 
     if verbose:
         logger.setLevel(logging.DEBUG)
@@ -2022,215 +2097,230 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
         "status": "SUCCESS",
         "error": None,
         "elapsed_seconds": 0,
+        "skip_reason": None,
     }
-
-    if cfg is None:
-        cfg = load_common_config(
-            spark, entity_id=entity_id, client_id=client_id,
-            tax_period_id=tax_period_id, run_id=run_id,
-            catalog=catalog, schema=schema, call_from=call_from,
-            rank_for_rule_pickup=rank_for_rule_pickup,
-        )
-
-    # Pass through output options
-    if result_type is not None:
-        cfg.setdefault("result_type", result_type)
-    if volume_path is not None:
-        cfg["volume_path"] = volume_path
-    if execution_id is not None:
-        cfg["execution_id"] = execution_id
-
-    logger.debug(f"ResultType={cfg.get('result_type')}, VolumePath={cfg.get('volume_path')}, ExecutionID={cfg.get('execution_id')}")
-
-    status["run_id"] = cfg.get("run_id")
     return_value = None
 
-    status["entity_id"] = cfg.get("entity_id")
-
     try:
-        # S1-S2: Load SP config
-        load_sp_config(spark, cfg)
+        if cfg is None:
+            cfg = load_common_config(
+                spark,
+                entity_id=entity_id,
+                client_id=client_id,
+                tax_period_id=tax_period_id,
+                run_id=run_id,
+                catalog=catalog,
+                schema=schema,
+                call_from=call_from,
+                rank_for_rule_pickup=rank_for_rule_pickup,
+            )
+        cfg = {**cfg, "_checkpoint_tables": []}
+        if result_type is not None:
+            cfg.setdefault("result_type", result_type)
+        if volume_path is not None:
+            cfg["volume_path"] = volume_path
+        if execution_id is not None:
+            cfg["execution_id"] = execution_id
+        cfg.setdefault("_parquet_results", {})
+        cfg.setdefault("_checkpoint_paths", [])
+        cfg.setdefault("_checkpoint_v2_activity", [])
 
-        # Pre-read shared lookup tables once — avoids redundant Delta scans
+        shuffle_override = _as_int(SqlShufflePartitions)
+        if shuffle_override is None:
+            spark.conf.set(
+                "spark.sql.shuffle.partitions",
+                str(profile["shuffle_partitions"]),
+            )
+        else:
+            spark.conf.set(
+                "spark.sql.shuffle.partitions",
+                str(shuffle_override),
+            )
+        explicit_checkpoint = (
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        )
+        mode = resolve_checkpoint_mode(
+            cfg,
+            checkpoint_mode=(
+                explicit_checkpoint
+                if _blank(explicit_checkpoint) is not None
+                else profile["checkpoint_mode"]
+            ),
+            CheckpointMode=CheckpointMode,
+        )
+        cfg.update(
+            {
+                "checkpoint_mode": mode,
+                "max_threads": workers,
+                "execution_profile": profile_name,
+            }
+        )
+        initialize_checkpoint_V2(cfg, mode)
+        logger.info(
+            f"[profile] ExecutionProfile={profile_name} CheckpointMode={mode} "
+            f"MaxThreads={workers}"
+        )
+
+        load_sp_config(spark, cfg)
+        status["run_id"] = cfg.get("run_id")
+        status["entity_id"] = cfg.get("entity_id")
         dar_txn_id = cfg["dar_txn_id"]
         global_dar_txn_id = cfg["global_dar_txn_id"]
         cfg["_sm_state_lines"] = F.broadcast(
-            _tbl(spark, "SM_StateLines", cfg)
-            .select("StateFieldID", "StateID", "TransactionDate")
+            _tbl(spark, "SM_StateLines", cfg).select(
+                "StateFieldID", "StateID", "TransactionDate"
+            )
         )
         cfg["_dar_setup"] = F.broadcast(
             _tbl(spark, "DefaultAllocationRuleSetup", cfg)
             .filter(F.col("TransactionID").isin(dar_txn_id, global_dar_txn_id))
-            .select("RuleID", "UnderlyingTypeID", "RuleTypeID", "AllocationByID", "AllocationPercentageTypeID")
+            .select(
+                "RuleID",
+                "UnderlyingTypeID",
+                "RuleTypeID",
+                "AllocationByID",
+                "AllocationPercentageTypeID",
+            )
         )
-        cfg["_enu_allocation_by"] = F.broadcast(
-            _tbl(spark, "ENU_AllocationBy", cfg)
-        )
+        cfg["_enu_allocation_by"] = F.broadcast(_tbl(spark, "ENU_AllocationBy", cfg))
         cfg["_enu_custom_allocations"] = F.broadcast(
-            _tbl(spark, "ENU_CustomAllocations", cfg)
-            .select("AllocationTypeID", "AllocationType")
+            _tbl(spark, "ENU_CustomAllocations", cfg).select(
+                "AllocationTypeID", "AllocationType"
+            )
         )
-        # Enum/lookup tables read once — used by functions 5, 10, 12
         cfg["_enu_underlying_type"] = F.broadcast(
             _tbl(spark, "Enu_Underlyingtype", cfg)
         )
         cfg["_entity_lookup"] = F.broadcast(
             _tbl(spark, "Entity", cfg).select("EntityID", "AssetClassID")
         )
-
-        # S3: Validate run status
         if not validate_run_status_for_sp(spark, cfg):
             status["status"] = "SKIPPED"
             status["error"] = "RunStatus=FAIL or entity type mismatch"
+            status["skip_reason"] = "run_status_or_entity_mismatch"
             return status
 
-        # S5: Book effective (small lookup — broadcast for passes 1-4)
-        book_effective = F.broadcast(build_book_effective(spark, cfg))
-        if verbose:
-            logger.info(f"[COUNT] book_effective: {book_effective.count()}")
-
-        # S6: Input data load — checkpoint once. It's consumed by
-        # all_underlyings_states + 4 passes (5+ reads). Checkpointing once
-        # avoids re-reading the underlying Delta table multiple times.
-        input_data_load = build_input_data_load(spark, cfg)
-        #input_data_load = checkpoint(spark, input_data_load, "input_data_load", cfg)
-        if verbose:
-            logger.info(f"[COUNT] input_data_load: {input_data_load.count()}")
-
-        # S7: Cost percentage snapshot + underlying types + asset class rel
-        cost_pct_snapshot = build_cost_percentage_snapshot(spark, cfg)
-        # cost_pct_snapshot has 3 consumers and Spark does NOT deduplicate
-        # the UDF subexpression — checkpoint is required to avoid 3× re-evaluation.
-        cost_pct_snapshot = checkpoint(spark, cost_pct_snapshot, "cost_pct_snapshot", cfg)
-        if verbose:
-            logger.info(f"[COUNT] cost_pct_snapshot: {cost_pct_snapshot.count()}")
-        cost_underlying_types = build_cost_underlying_types(spark, cfg, cost_pct_snapshot)
-        if verbose:
-            logger.info(f"[COUNT] cost_underlying_types: {cost_underlying_types.count()}")
-        entity_ac_rel = build_entity_asset_class_relationship(spark, cfg)
-        if verbose:
-            logger.info(f"[COUNT] entity_ac_rel: {entity_ac_rel.count()}")
-
-        # S8: Entity hierarchy + all underlyings combined
-        # Entity hierarchy only needed if cost_underlying_types has rows
-        if cost_underlying_types.isEmpty():
-            entity_hier = None
-            logger.info("[COUNT] entity_hier: SKIPPED (cost_underlying_types empty)")
-        else:
-            entity_hier = build_entity_hierarchy(spark, cfg, cost_underlying_types)
-            if verbose:
-                logger.info(f"[COUNT] entity_hier: {entity_hier.count()}")
-        all_underlyings = build_all_underlyings_combined(
-            spark, cfg, cost_underlying_types, cost_pct_snapshot, entity_hier,
-        )
-        if verbose:
-            logger.info(f"[COUNT] all_underlyings: {all_underlyings.count()}")
-
-        # S9: Asset class filter
-        all_underlyings = apply_asset_class_filter(
-            spark, cfg, all_underlyings, entity_ac_rel,
-        )
-        if verbose:
-            logger.info(f"[COUNT] all_underlyings (after AC filter): {all_underlyings.count()}")
-
-        # S10: DAR rule mapping + ranked underlyings states
-        states_dar_mapping = build_states_dar_rule_mapping(spark, cfg)
-        if verbose:
-            logger.info(f"[COUNT] states_dar_mapping: {states_dar_mapping.count()}")
-        all_underlyings_states = build_all_underlyings_states(
-            spark, cfg, all_underlyings, input_data_load, states_dar_mapping,
-        )
-        if verbose:
-            logger.info(f"[COUNT] all_underlyings_states: {all_underlyings_states.count()}")
-
-        # all_underlyings_states is consumed only by pass4 (left join).
-        # alloc_input_final checkpoint materializes it downstream — no separate
-        # checkpoint needed.
-
-        # S11-S14: 4-pass book effective matching → allocation input
-        # Use cost_pct_snapshot as cost_pct_base for pass 1 DELETE condition
-        alloc_input, remaining_input, remaining_be = build_allocation_input_pass1(
-            spark, cfg, input_data_load, book_effective, cost_pct_snapshot,
-        )
-        if verbose:
-            logger.info(f"[COUNT] pass1 — alloc_input: {alloc_input.count()}, remaining_input: {remaining_input.count()}, remaining_be: {remaining_be.count()}")
-
-        # remaining_input feeds pass2 only (single consumer).
-        # alloc_input_final checkpoint materializes the full chain.
-
-        alloc_input, remaining_input, remaining_be = build_allocation_input_pass2(
-            spark, cfg, remaining_input, remaining_be, alloc_input,
-        )
-        if verbose:
-            logger.info(f"[COUNT] pass2 — alloc_input: {alloc_input.count()}, remaining_input: {remaining_input.count()}, remaining_be: {remaining_be.count()}")
-        alloc_input, remaining_input, remaining_be = build_allocation_input_pass3(
-            spark, cfg, remaining_input, remaining_be, alloc_input,
-        )
-        if verbose:
-            logger.info(f"[COUNT] pass3 — alloc_input: {alloc_input.count()}, remaining_input: {remaining_input.count()}, remaining_be: {remaining_be.count()}")
-        alloc_input = build_allocation_input_pass4(
-            spark, cfg, remaining_input, remaining_be,
-            all_underlyings_states, alloc_input,
-        )
-        # Checkpoint breaks lineage from the 4-pass DAG — prevents recomputation
-        # when alloc_input is consumed by both by-amount and by-percentage paths.
-        alloc_input = checkpoint(spark, alloc_input, "alloc_input_final", cfg)
-        if verbose:
-            logger.info(f"[COUNT] pass4 — alloc_input: {alloc_input.count()}")
-
-        # S15-S16: Entity partners + effective percentages
-        # Only proceed if alloc_input has rows (matching SQL IF EXISTS check)
-        if not alloc_input.isEmpty():
-            entity_partners = build_entity_partners(spark, cfg)
-            if verbose:
-                logger.info(f"[COUNT] entity_partners: {entity_partners.count()}")
-            eff_pct = F.broadcast(build_final_effective_percentages(spark, cfg))
-            if verbose:
-                logger.info(f"[COUNT] eff_pct: {eff_pct.count()}")
-
-            # S17: By-amount allocation
-            by_amount_output = compute_by_amount_allocation(
-                spark, cfg, alloc_input, eff_pct, entity_partners,
+        with use_v2_production_checkpoint():
+            book_effective, input_data_load, cost_pct_snapshot, entity_ac_rel = (
+                run_parallel(
+                    [
+                        ("book_effective", lambda: build_book_effective(spark, cfg)),
+                        ("input_data_load", lambda: build_input_data_load(spark, cfg)),
+                        (
+                            "cost_pct_snapshot",
+                            lambda: build_cost_percentage_snapshot(spark, cfg),
+                        ),
+                        (
+                            "entity_ac_rel",
+                            lambda: build_entity_asset_class_relationship(spark, cfg),
+                        ),
+                    ],
+                    workers,
+                    parallel_activity,
+                    "independent_loads",
+                    enabled_groups,
+                )
             )
-            if verbose:
-                logger.info(f"[COUNT] by_amount_output: {by_amount_output.count()}")
-
-            # S18: Deduct amounts from input
-            alloc_input = apply_amount_deduction(
-                spark, cfg, alloc_input, by_amount_output,
+            book_effective = F.broadcast(book_effective)
+            input_data_load = _checkpoint(
+                spark, input_data_load, "temp_alloc_input", cfg
             )
-            if verbose:
-                logger.info(f"[COUNT] alloc_input (after deduction): {alloc_input.count()}")
-
-            # S19: By-percentage allocation
-            by_pct_output = compute_by_percentage_allocation(
-                spark, cfg, alloc_input, eff_pct, entity_partners,
+            cost_pct_snapshot = _checkpoint(
+                spark, cost_pct_snapshot, "cost_pct_snapshot", cfg
             )
-            if verbose:
-                logger.info(f"[COUNT] by_pct_output: {by_pct_output.count()}")
 
-            # Combine all output rows
-            alloc_output = by_amount_output.unionByName(by_pct_output)
-            # alloc_output is consumed twice (write_allocation_output +
-            # write_update_allocation_input). Both reads re-derive from
-            # alloc_input_final checkpoint — cheaper than a Delta checkpoint
-            # (~0.5s recompute × 2 vs ~3s checkpoint + drop).
-            if verbose:
-                logger.info(f"[COUNT] alloc_output (combined): {alloc_output.count()}")
+            cost_underlying_types = build_cost_underlying_types(
+                spark, cfg, cost_pct_snapshot
+            )
+            if cost_underlying_types.isEmpty():
+                entity_hier = None
+            else:
+                entity_hier = build_entity_hierarchy(
+                    spark, cfg, cost_underlying_types
+                )
+                entity_hier = _checkpoint(
+                    spark, entity_hier, "entity_hier_final", cfg
+                )
+            all_underlyings = build_all_underlyings_combined(
+                spark,
+                cfg,
+                cost_underlying_types,
+                cost_pct_snapshot,
+                entity_hier,
+            )
+            all_underlyings = apply_asset_class_filter(
+                spark, cfg, all_underlyings, entity_ac_rel
+            )
+            states_dar_mapping = build_states_dar_rule_mapping(spark, cfg)
+            all_underlyings_states = build_all_underlyings_states(
+                spark,
+                cfg,
+                all_underlyings,
+                input_data_load,
+                states_dar_mapping,
+            )
 
-            # S21: Build final output with AllocationType mapping
-            final_output = build_final_output(spark, cfg, alloc_output)
-            if verbose:
-                logger.info(f"[COUNT] final_output: {final_output.count()}")
+            alloc_input, remaining_input, remaining_be = build_allocation_input_pass1(
+                spark, cfg, input_data_load, book_effective, cost_pct_snapshot
+            )
+            alloc_input = _checkpoint(spark, alloc_input, "alloc_pass1", cfg)
+            alloc_input, remaining_input, remaining_be = build_allocation_input_pass2(
+                spark, cfg, remaining_input, remaining_be, alloc_input
+            )
+            alloc_input = _checkpoint(spark, alloc_input, "alloc_pass2", cfg)
+            alloc_input, remaining_input, remaining_be = build_allocation_input_pass3(
+                spark, cfg, remaining_input, remaining_be, alloc_input
+            )
+            alloc_input = _checkpoint(spark, alloc_input, "alloc_pass3", cfg)
+            alloc_input = build_allocation_input_pass4(
+                spark,
+                cfg,
+                remaining_input,
+                remaining_be,
+                all_underlyings_states,
+                alloc_input,
+            )
+            alloc_input = _checkpoint(
+                spark, alloc_input, "alloc_input_final", cfg
+            )
 
-            # S21: Write to SM_LookThroughAllocationOutput
-            return_value = write_allocation_output(spark, cfg, final_output)
-
-            # S22: Deduct allocated amounts from SM_LookThroughAllocationInput
-            write_update_allocation_input(spark, cfg, alloc_output)
-        else:
-            logger.warning("alloc_input is empty — skipping allocation logic")
-
+            if not alloc_input.isEmpty():
+                entity_partners = build_entity_partners(spark, cfg)
+                eff_pct = build_final_effective_percentages(spark, cfg)
+                eff_pct = _checkpoint(spark, eff_pct, "fep", cfg)
+                eff_pct = F.broadcast(eff_pct)
+                by_amount_output = compute_by_amount_allocation(
+                    spark, cfg, alloc_input, eff_pct, entity_partners
+                )
+                by_amount_output = _checkpoint(
+                    spark, by_amount_output, "alloc_pass1_amount", cfg
+                )
+                alloc_input = apply_amount_deduction(
+                    spark, cfg, alloc_input, by_amount_output
+                )
+                alloc_input = _checkpoint(
+                    spark, alloc_input, "alloc_pass2_deduct", cfg
+                )
+                by_pct_output = compute_by_percentage_allocation(
+                    spark, cfg, alloc_input, eff_pct, entity_partners
+                )
+                by_pct_output = _checkpoint(
+                    spark, by_pct_output, "alloc_pass4", cfg
+                )
+                alloc_output = by_amount_output.unionByName(by_pct_output)
+                alloc_output = _checkpoint(
+                    spark, alloc_output, "alloc_output", cfg
+                )
+                final_output = build_final_output(spark, cfg, alloc_output)
+                # Sequential SM Output then Input.
+                return_value = write_allocation_output(spark, cfg, final_output)
+                write_update_allocation_input(spark, cfg, alloc_output)
+            else:
+                logger.warning(
+                    "alloc_input is empty — skipping allocation logic"
+                )
+                status["skip_reason"] = "empty_alloc_input"
+        status["status"] = "SUCCESS"
     except Exception as e:
         status["status"] = "FAIL"
         status["error"] = str(e)
@@ -2238,19 +2328,23 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
         raise
     finally:
         status["elapsed_seconds"] = round(time.time() - t0, 1)
-        drop_checkpoints(spark, cfg)
+        if isinstance(cfg, dict):
+            drop_checkpoints(spark, cfg)
 
     logger.info(
         f"[DONE] run_sm_load_lookthrough_cost_allocation_to_output | "
         f"{status['elapsed_seconds']}s | "
         f"RunID={cfg['run_id']} EntityID={cfg['entity_id']}"
     )
-
-    # Return JSON string for Orchestrator parquet file tracking
-    if return_value and isinstance(return_value, str) and return_value not in ("SUCCESS", ""):
+    if (
+        return_value
+        and isinstance(return_value, str)
+        and return_value not in ("SUCCESS", "")
+    ):
         logger.info(f"[PARQUET] Return JSON: {return_value}")
         status["parquet_path"] = return_value
     return status
+
 
 
 # ════════════════════════════════════════════════════════════════

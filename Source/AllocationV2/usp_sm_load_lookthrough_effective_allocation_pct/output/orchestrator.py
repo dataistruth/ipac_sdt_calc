@@ -30,7 +30,18 @@ import pyspark.sql.functions as F
 
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import read_table
-from Common_V2.core.checkpoint import checkpoint, drop_checkpoints
+from Common_V2.core.checkpoint_V2 import (
+    checkpoint_V2 as checkpoint,
+    drop_checkpoints_V2 as drop_checkpoints,
+    initialize_checkpoint_V2,
+    resolve_checkpoint_mode,
+)
+from Common_V2.core.execution_profiles import resolve_execution_profile
+from contextlib import contextmanager
+try:
+    from parallel_helpers import normalize_workers, parse_enabled_groups, run_parallel
+except ImportError:
+    from .parallel_helpers import normalize_workers, parse_enabled_groups, run_parallel
 from Common_V2.core.observability import log_section, log_timing
 
 
@@ -53,8 +64,52 @@ from services.effective_pct_service import (
     apply_pe_book_unmapped_lines,
 )
 from services.writer_service import write_allocation_output, update_allocation_input
+try:
+    import services.amount_service as _amount_service
+except ImportError:
+    from .services import amount_service as _amount_service
 
 logger = logging.getLogger(__name__)
+
+
+def _blank(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _as_int(value):
+    if _blank(value) is None:
+        return None
+    return int(value)
+
+
+def _checkpoint(spark, df, name, cfg):
+    if df is None:
+        return None
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = checkpoint(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    return result
+
+
+@contextmanager
+def use_v2_amount_checkpoint():
+    original = getattr(_amount_service, "checkpoint", None)
+    _amount_service.checkpoint = _checkpoint
+    try:
+        yield
+    finally:
+        if original is not None:
+            _amount_service.checkpoint = original
+
 
 
 def run_sm_load_lt_effective_alloc_pct(
@@ -70,19 +125,19 @@ def run_sm_load_lt_effective_alloc_pct(
     ResultType: str = "Parquet",
     VolumePath: str = None,
     ExecutionID: str = None,
+    max_threads: int = None,
+    MaxThreads: int = None,
+    parallel_groups: str = "all",
+    ParallelGroups: str = None,
+    execution_profile: str = "low",
+    ExecutionProfile: str = None,
+    checkpoint_mode: int = None,
+    CheckpointMode: int = None,
+    SqlShufflePartitions=None,
     **kwargs,
 ):
-    """Main entry point for SM Load LookThrough Effective Allocation Percentage.
-
-    Converted from: dbo.usp_SM_LoadLookThroughEffectiveAllocationPercentage
-
-    Args:
-        spark: SparkSession
-        cfg: Pre-loaded config dict (Mode 1/2) or None (Mode 3)
-        verbose: If True, log row counts at every section boundary
-        **run_params: entity_id, client_id, tax_period_id, run_id, catalog, schema
-    """
-    # Map CamelCase params to snake_case for use in function body
+    """Main entry — Checkpoint V2 on multi-consumer frames; sequential writes."""
+    del kwargs
     entity_id = EntityID
     client_id = ClientID
     tax_period_id = TaxPeriodID
@@ -94,12 +149,28 @@ def run_sm_load_lt_effective_alloc_pct(
     execution_id = ExecutionID
 
     t0 = time.time()
+    parallel_activity = []
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
+    profile_name = _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    profile = resolve_execution_profile(profile_name)
+    workers = normalize_workers(
+        max_threads=(
+            MaxThreads
+            if MaxThreads is not None
+            else max_threads
+            if max_threads is not None
+            else profile["max_threads"]
+        ),
+        MaxThreads=MaxThreads,
+    )
+    mode = None
 
     if verbose:
         logger.setLevel(logging.DEBUG)
     else:
         logger.setLevel(logging.INFO)
 
+    rows = None
     status = {
         "sp_name": "usp_SM_LoadLookThroughEffectiveAllocationPercentage",
         "run_id": None,
@@ -108,125 +179,212 @@ def run_sm_load_lt_effective_alloc_pct(
         "error": None,
         "elapsed_seconds": 0,
         "sections_completed": 0,
+        "skip_reason": None,
     }
 
-    if cfg is None:
-        cfg = load_common_config(
-            spark,
-            run_id=run_id,
-            entity_id=entity_id,
-            client_id=client_id,
-            tax_period_id=tax_period_id,
-            catalog=catalog,
-            schema=schema,
-        )
-
-    # Copy checkpoint list for thread safety
-    cfg = {**cfg, "_checkpoint_tables": []}
-
-    # Pass through output options
-    if result_type is not None:
-        cfg.setdefault("result_type", result_type)
-    if volume_path is not None:
-        cfg["volume_path"] = volume_path
-    if execution_id is not None:
-        cfg["execution_id"] = execution_id
-
-    print(f"[DEBUG] ResultType={cfg.get('result_type')}, VolumePath={cfg.get('volume_path')}, ExecutionID={cfg.get('execution_id')}")
-    status["run_id"] = cfg.get("run_id")
-    status["entity_id"] = cfg.get("entity_id")
-
-    # S2: Load SP-specific config
-    cfg = load_sp_config(spark, cfg)
-
-    # S3: Validation gate
-    if not validate_allocation_type(spark, cfg):
-        status["status"] = "FAIL"
-        status["error"] = "Allocation logic not selected for the entity."
-        status["elapsed_seconds"] = round(time.time() - t0, 1)
-        return status
-
     try:
-        # S4: Build mapping data
-        mappings = build_mapping_data(spark, cfg)
-
-        # S5-S6: Flow-up partner pipeline (conditional)
-        # IF (@IsSidePocketFlowUpPartner = 1) OR EXISTS(SM_FlowUpPartnerLookThroughAllocationInput)
-        is_flowup = cfg.get("is_sidepocket_flowup_partner", False)
-        sm_fp_lt = read_table(spark, "SM_FlowUpPartnerLookThroughAllocationInput", cfg)
-        has_flowup_input = len(
-            sm_fp_lt.filter(F.col("RunID") == cfg["run_id"]).head(1)
-        ) > 0
-
-        fp_data = None
-        if is_flowup or has_flowup_input:
-            fp_data = build_flowup_k1_amounts(spark, cfg)
-            fp_total_amounts = compute_flowup_mapped_amounts(spark, cfg, fp_data, mappings)
-            fp_effective = compute_flowup_effective_amounts(
-                spark, cfg, fp_total_amounts, mappings["state_mapped_lines"],
+        if cfg is None:
+            cfg = load_common_config(
+                spark,
+                run_id=run_id,
+                entity_id=entity_id,
+                client_id=client_id,
+                tax_period_id=tax_period_id,
+                catalog=catalog,
+                schema=schema,
             )
-            write_flowup_allocation_output(spark, cfg, fp_effective)
+        cfg = {**cfg, "_checkpoint_tables": []}
+        if result_type is not None:
+            cfg.setdefault("result_type", result_type)
+        if volume_path is not None:
+            cfg["volume_path"] = volume_path
+        if execution_id is not None:
+            cfg["execution_id"] = execution_id
+        cfg.setdefault("_parquet_results", {})
+        cfg.setdefault("_checkpoint_paths", [])
+        cfg.setdefault("_checkpoint_v2_activity", [])
+
+        shuffle_override = _as_int(SqlShufflePartitions)
+        if shuffle_override is None:
+            spark.conf.set(
+                "spark.sql.shuffle.partitions",
+                str(profile["shuffle_partitions"]),
+            )
         else:
-            # Still need sidepocket data for later sections
-            fp_data = build_flowup_k1_amounts(spark, cfg)
-            logger.info("[SKIP] Flow-up partner pipeline: condition not met")
-
-        # S7: Pre-compute shared datasets
-        from services.amount_service import (
-            _build_sm_lt_input_and_state_lines,
+            spark.conf.set(
+                "spark.sql.shuffle.partitions",
+                str(shuffle_override),
+            )
+        explicit_checkpoint = (
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
         )
-        (
-            sm_lt_input, state_lines, fed_lines,
-            non_sp_fp, pruned_dm, pruned_ubti_dm,
-        ) = _build_sm_lt_input_and_state_lines(spark, cfg, mappings)
-
-        # S7-S8: K1 & UBTI amount aggregation
-        partner_alloc, total_input = build_k1_amounts(
-            spark, cfg, mappings,
-            fp_data["k1_sidepocket"], fp_data["k1_sidepocket_res"],
-            fed_lines, non_sp_fp,
+        mode = resolve_checkpoint_mode(
+            cfg,
+            checkpoint_mode=(
+                explicit_checkpoint
+                if _blank(explicit_checkpoint) is not None
+                else profile["checkpoint_mode"]
+            ),
+            CheckpointMode=CheckpointMode,
         )
-        partner_alloc_ubti, total_ubti_input = build_ubti_amounts(
-            spark, cfg, fed_lines, non_sp_fp,
+        cfg.update(
+            {
+                "checkpoint_mode": mode,
+                "max_threads": workers,
+                "execution_profile": profile_name,
+            }
         )
-
-        # S9: State-mapped amount calculation
-        total_amounts = compute_state_mapped_amounts(
-            spark, cfg, pruned_dm, pruned_ubti_dm,
-            partner_alloc, total_input,
-            partner_alloc_ubti, total_ubti_input,
-        )
-
-        # S10: Effective percentage calculation + CHECKPOINT
-        effective_amounts, temp_effective = compute_effective_percentages(
-            spark, cfg, total_amounts, sm_lt_input,
+        initialize_checkpoint_V2(cfg, mode)
+        logger.info(
+            f"[profile] ExecutionProfile={profile_name} CheckpointMode={mode} "
+            f"MaxThreads={workers}"
         )
 
-        # S11: Exclude-from-residual recalculation (conditional)
-        effective_amounts = apply_exclude_from_residual(
-            spark, cfg, effective_amounts, total_amounts,
-        )
+        cfg = load_sp_config(spark, cfg)
+        status["run_id"] = cfg.get("run_id")
+        status["entity_id"] = cfg.get("entity_id")
+        if not validate_allocation_type(spark, cfg):
+            status["status"] = "FAIL"
+            status["error"] = "Allocation logic not selected for the entity."
+            status["skip_reason"] = "allocation_type_invalid"
+            status["elapsed_seconds"] = round(time.time() - t0, 1)
+            return status
 
-        # S12: PE Book unmapped lines (conditional)
-        effective_amounts = apply_pe_book_unmapped_lines(
-            spark, cfg, effective_amounts, temp_effective,
-            sm_lt_input, mappings,
-        )
+        with use_v2_amount_checkpoint():
+            mappings = build_mapping_data(spark, cfg)
+            mappings["distinct_mappings"] = _checkpoint(
+                spark,
+                mappings["distinct_mappings"],
+                "distinct_mappings",
+                cfg,
+            )
+            mappings["distinct_ubti_mappings"] = _checkpoint(
+                spark,
+                mappings["distinct_ubti_mappings"],
+                "distinct_ubti_mappings",
+                cfg,
+            )
+            is_flowup = cfg.get("is_sidepocket_flowup_partner", False)
+            sm_fp_lt = read_table(
+                spark, "SM_FlowUpPartnerLookThroughAllocationInput", cfg
+            )
+            has_flowup_input = (
+                len(
+                    sm_fp_lt.filter(F.col("RunID") == cfg["run_id"]).head(1)
+                )
+                > 0
+            )
+            fp_data = None
+            if is_flowup or has_flowup_input:
+                fp_data = build_flowup_k1_amounts(spark, cfg)
+                fp_total_amounts = compute_flowup_mapped_amounts(
+                    spark, cfg, fp_data, mappings
+                )
+                fp_effective = compute_flowup_effective_amounts(
+                    spark,
+                    cfg,
+                    fp_total_amounts,
+                    mappings["state_mapped_lines"],
+                )
+                # Flow-up Output write stays before the main write.
+                write_flowup_allocation_output(spark, cfg, fp_effective)
+            else:
+                fp_data = build_flowup_k1_amounts(spark, cfg)
+                logger.info(
+                    "[SKIP] Flow-up partner pipeline: condition not met"
+                )
 
-        # S13: Final write & cleanup
-        partner_snap = read_table(spark, "Partner_Snapshot", cfg)
-        partner_snapshot = partner_snap.filter(
-            F.coalesce(F.col("WorkFlowID"), F.col("Transactionid"))
-            == cfg["partner_txn_or_wf_id"]
-        )
+            from services.amount_service import (
+                _build_sm_lt_input_and_state_lines,
+            )
+            (
+                sm_lt_input,
+                state_lines,
+                fed_lines,
+                non_sp_fp,
+                pruned_dm,
+                pruned_ubti_dm,
+            ) = _build_sm_lt_input_and_state_lines(spark, cfg, mappings)
+            sm_lt_input = _checkpoint(
+                spark, sm_lt_input, "temp_alloc_input", cfg
+            )
+            k1_pair, ubti_pair = run_parallel(
+                [
+                    (
+                        "k1_amounts",
+                        lambda: build_k1_amounts(
+                            spark,
+                            cfg,
+                            mappings,
+                            fp_data["k1_sidepocket"],
+                            fp_data["k1_sidepocket_res"],
+                            fed_lines,
+                            non_sp_fp,
+                        ),
+                    ),
+                    (
+                        "ubti_amounts",
+                        lambda: build_ubti_amounts(
+                            spark, cfg, fed_lines, non_sp_fp
+                        ),
+                    ),
+                ],
+                workers,
+                parallel_activity,
+                "independent_amounts",
+                enabled_groups,
+            )
+            partner_alloc, total_input = k1_pair
+            partner_alloc_ubti, total_ubti_input = ubti_pair
+            partner_alloc = _checkpoint(
+                spark, partner_alloc, "alloc_pass1", cfg
+            )
+            partner_alloc_ubti = _checkpoint(
+                spark, partner_alloc_ubti, "alloc_pass2", cfg
+            )
+            total_amounts = compute_state_mapped_amounts(
+                spark,
+                cfg,
+                pruned_dm,
+                pruned_ubti_dm,
+                partner_alloc,
+                total_input,
+                partner_alloc_ubti,
+                total_ubti_input,
+            )
+            total_amounts = _checkpoint(
+                spark, total_amounts, "alloc_pass3", cfg
+            )
+            effective_amounts, temp_effective = compute_effective_percentages(
+                spark, cfg, total_amounts, sm_lt_input
+            )
+            effective_amounts = apply_exclude_from_residual(
+                spark, cfg, effective_amounts, total_amounts
+            )
+            effective_amounts = apply_pe_book_unmapped_lines(
+                spark,
+                cfg,
+                effective_amounts,
+                temp_effective,
+                sm_lt_input,
+                mappings,
+            )
+            effective_amounts = _checkpoint(
+                spark, effective_amounts, "alloc_output", cfg
+            )
 
-        rows = write_allocation_output(spark, cfg, effective_amounts, partner_snapshot)
-        update_allocation_input(spark, cfg, effective_amounts)
-        status["sections_completed"] = 13
-
-        # Note: uspUpdateAllocationLog(@LogID, @EndDate) is handled
-        # by the workflow framework after this SP returns.
-
+            partner_snap = read_table(spark, "Partner_Snapshot", cfg)
+            partner_snapshot = partner_snap.filter(
+                F.coalesce(F.col("WorkFlowID"), F.col("Transactionid"))
+                == cfg["partner_txn_or_wf_id"]
+            )
+            # Sequential: write_allocation_output then update_allocation_input.
+            rows = write_allocation_output(
+                spark, cfg, effective_amounts, partner_snapshot
+            )
+            update_allocation_input(spark, cfg, effective_amounts)
+            status["sections_completed"] = 13
+            status["status"] = "SUCCESS"
     except Exception as e:
         status["status"] = "FAIL"
         status["error"] = str(e)
@@ -234,7 +392,8 @@ def run_sm_load_lt_effective_alloc_pct(
         raise
     finally:
         status["elapsed_seconds"] = round(time.time() - t0, 1)
-        drop_checkpoints(spark, cfg)
+        if isinstance(cfg, dict):
+            drop_checkpoints(spark, cfg)
 
     logger.info(
         f"[DONE] run_sm_load_lt_effective_alloc_pct | "
@@ -242,12 +401,11 @@ def run_sm_load_lt_effective_alloc_pct(
         f"RunID={cfg['run_id']} EntityID={cfg['entity_id']}"
     )
 
-    # Return JSON string for Orchestrator parquet file tracking
     if rows and isinstance(rows, str):
         print(f"[PARQUET] Return JSON: {rows}")
         return rows
-
     return status
+
 
 
 # ════════════════════════════════════════════════════════════════

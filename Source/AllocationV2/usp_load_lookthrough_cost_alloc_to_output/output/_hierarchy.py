@@ -7,7 +7,7 @@ from pyspark.sql import SparkSession, DataFrame, Window
 import pyspark.sql.functions as F
 
 from Common_V2.core.helpers import read_table, table_prefix, ns, ns0
-from Common_V2.core.checkpoint import checkpoint
+from Common_V2.core.checkpoint_V2 import checkpoint_V2 as checkpoint
 from Common_V2.core.observability import log_section, log_timing
 
 try:
@@ -18,28 +18,17 @@ except ImportError:  # graceful fallback
     logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Local checkpoint helper (SparkMigrate Rule 35 / O5)
-# ---------------------------------------------------------------------------
-# Set _USE_LOCAL_CHECKPOINT = True  to use localCheckpoint (in-memory, no Delta I/O)
-# Set _USE_LOCAL_CHECKPOINT = False to use Delta checkpoint   (durable, slower)
-_USE_LOCAL_CHECKPOINT = False   # localCheckpoint -- flip to False to revert to Delta
-
-
 def _checkpoint(spark: SparkSession, df: DataFrame, name: str, cfg: dict) -> DataFrame:
-    """In-pipeline materialization that breaks lineage.
-
-    Delta checkpoint costs 3-5s per call (write + read). localCheckpoint(eager=True)
-    costs ~0.5-1s. Per SparkMigrate Rule 35 / O5, prefer localCheckpoint for
-    intermediate materialization within a single pipeline run. The .toDF(*cp.columns)
-    re-wrap strips alias-qualifier metadata so downstream F.col("ALIAS.col")
-    references work correctly (lessons_learned §1.2 alias rule).
-    """
-    if _USE_LOCAL_CHECKPOINT:
-        logger.info(f"[CHECKPOINT] {name} (localCheckpoint)")
-        cp = df.localCheckpoint(eager=True)
-        return cp.toDF(*cp.columns)
-    return checkpoint(spark, df, name, cfg)
+    """Checkpoint V2 plan break; reset qualifiers after a local backend."""
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = checkpoint(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    return result
 
 
 def build_entity_hierarchy(spark: SparkSession, cfg: dict,

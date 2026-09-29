@@ -48,10 +48,18 @@ from Common_V2.core.helpers import (
     ns0 as _ns0,
     sql_round as _sql_round,
 )
-from Common_V2.core.checkpoint import (
-    checkpoint as _checkpoint,
-    drop_checkpoints as _drop_checkpoints,
+from Common_V2.core.checkpoint_V2 import (
+    checkpoint_V2 as _checkpoint_v2_impl,
+    drop_checkpoints_V2 as _drop_checkpoints,
+    initialize_checkpoint_V2,
+    resolve_checkpoint_mode,
 )
+from Common_V2.core.execution_profiles import resolve_execution_profile
+try:
+    from parallel_helpers import normalize_workers
+except ImportError:
+    from .parallel_helpers import normalize_workers
+
 from Common_V2.core.observability import (
     get_logger,
     log_section as _log_section,
@@ -65,6 +73,35 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # SP-Specific Config — SQL lines 53–310
 # ---------------------------------------------------------------------------
+
+def _blank(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _as_int(value):
+    if _blank(value) is None:
+        return None
+    return int(value)
+
+
+def _checkpoint(spark, df, name, cfg):
+    if df is None:
+        return None
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = _checkpoint_v2_impl(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    return result
+
+
 def _load_sp_config(spark, cfg):
     """Alias Common_V2 cfg scalars into SP-local legacy keys.
 
@@ -1816,14 +1853,19 @@ def run_load_lt_footnote_effective_allocation_pct(
     ExecutionID: str = None,
     call_from: str = None,
     verbose: bool = False,
+    max_threads: int = None,
+    MaxThreads: int = None,
+    parallel_groups: str = "all",
+    ParallelGroups: str = None,
+    execution_profile: str = "low",
+    ExecutionProfile: str = None,
+    checkpoint_mode: int = None,
+    CheckpointMode: int = None,
+    SqlShufflePartitions=None,
     **kwargs,
 ):
-    """Load LookThrough Footnote Effective Allocation Percentages.
-
-    Computes effective allocation percentages for Federal-to-Footnote mappings,
-    writes allocation output, and updates allocation input amounts.
-    """
-    # Map CamelCase params to snake_case for use in function body
+    """Load LookThrough Footnote Effective Allocation Percentages (Mode 1)."""
+    del kwargs, parallel_groups, ParallelGroups
     entity_id = EntityID
     client_id = ClientID
     tax_period_id = TaxPeriodID
@@ -1832,6 +1874,19 @@ def run_load_lt_footnote_effective_allocation_pct(
     schema = SchemaName
 
     t0 = time.time()
+    profile_name = _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    profile = resolve_execution_profile(profile_name)
+    workers = normalize_workers(
+        max_threads=(
+            MaxThreads
+            if MaxThreads is not None
+            else max_threads
+            if max_threads is not None
+            else profile["max_threads"]
+        ),
+        MaxThreads=MaxThreads,
+    )
+    mode = None
 
     if verbose:
         logger.setLevel(logging.DEBUG)
@@ -1846,246 +1901,194 @@ def run_load_lt_footnote_effective_allocation_pct(
         "error": None,
         "elapsed_seconds": 0,
         "sections_completed": 0,
+        "skip_reason": None,
     }
-
-    # Mode 3 standalone: build cfg from IDs via load_common_config.
-    # Modes 1/2 (Job/Orchestrator): cfg is passed in pre-built.
-    if cfg is None:
-        cfg = load_common_config(
-            spark,
-            entity_id=entity_id,
-            client_id=client_id,
-            tax_period_id=tax_period_id,
-            run_id=run_id,
-            catalog=catalog,
-            schema=schema,
-            call_from=call_from,
-        )
-    cfg = {**cfg, "_checkpoint_tables": []}
-
-    if call_from is not None:
-        cfg["call_from"] = call_from
-
-    # GenericResultStorer output options — propagate signature params to cfg
-    # so the storer reads them downstream (rule 48).
-    if ResultType is not None:  cfg.setdefault("result_type", ResultType)
-    if VolumePath is not None:  cfg["volume_path"] = VolumePath
-    if ExecutionID is not None: cfg["execution_id"] = ExecutionID
-
-    status["run_id"] = cfg.get("run_id")
-    status["entity_id"] = cfg.get("entity_id")
+    save_return_value = None
 
     try:
-        # §1 — Config & validation
-        _load_sp_config(spark, cfg)
+        if cfg is None:
+            cfg = load_common_config(
+                spark,
+                entity_id=entity_id,
+                client_id=client_id,
+                tax_period_id=tax_period_id,
+                run_id=run_id,
+                catalog=catalog,
+                schema=schema,
+                call_from=call_from,
+            )
+        cfg = {**cfg, "_checkpoint_tables": []}
+        if call_from is not None:
+            cfg["call_from"] = call_from
+        if ResultType is not None:
+            cfg.setdefault("result_type", ResultType)
+        if VolumePath is not None:
+            cfg["volume_path"] = VolumePath
+        if ExecutionID is not None:
+            cfg["execution_id"] = ExecutionID
+        cfg.setdefault("_parquet_results", {})
+        cfg.setdefault("_checkpoint_paths", [])
+        cfg.setdefault("_checkpoint_v2_activity", [])
 
+        shuffle_override = _as_int(SqlShufflePartitions)
+        if shuffle_override is None:
+            spark.conf.set(
+                "spark.sql.shuffle.partitions",
+                str(profile["shuffle_partitions"]),
+            )
+        else:
+            spark.conf.set(
+                "spark.sql.shuffle.partitions",
+                str(shuffle_override),
+            )
+        explicit_checkpoint = (
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        )
+        mode = resolve_checkpoint_mode(
+            cfg,
+            checkpoint_mode=(
+                explicit_checkpoint
+                if _blank(explicit_checkpoint) is not None
+                else profile["checkpoint_mode"]
+            ),
+            CheckpointMode=CheckpointMode,
+        )
+        cfg.update(
+            {
+                "checkpoint_mode": mode,
+                "max_threads": workers,
+                "execution_profile": profile_name,
+            }
+        )
+        initialize_checkpoint_V2(cfg, mode)
+        logger.info(
+            f"[profile] ExecutionProfile={profile_name} CheckpointMode={mode} "
+            f"MaxThreads={workers}"
+        )
+        status["run_id"] = cfg.get("run_id")
+        status["entity_id"] = cfg.get("entity_id")
+
+        _load_sp_config(spark, cfg)
         if (cfg.get("run_status") or "").upper() == "FAIL":
-            logger.error(f"RunStatus=FAIL — aborting.")
             status["status"] = "SKIPPED"
+            status["skip_reason"] = "run_status_fail"
             status["error"] = "RunStatus=FAIL"
             return status
-
         if (cfg.get("allocation_type_name") or "").lower() != "pe book allocation":
-            logger.info("AllocationTypeName != 'PE Book Allocation' — skipping.")
             status["status"] = "SKIPPED"
+            status["skip_reason"] = "not_pe_book_allocation"
             return status
-
         if not cfg.get("register_type_id"):
-            logger.info("RegisterTypeID is NULL/0 — skipping.")
             status["status"] = "SKIPPED"
+            status["skip_reason"] = "no_register_type_id"
             return status
 
-        # §2 — Load mappings
-        _t = time.time()
         mappings_df = load_mappings(spark, cfg)
-        if verbose:
-            logger.debug(f"[TIMING] load_mappings: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] load_mappings: {mappings_df.count()} rows")
-
-        # §3 — Expand Parent/Contributor K1 mappings
-        _t = time.time()
         mappings_df = expand_parent_k1_mappings(spark, cfg, mappings_df)
-        if verbose:
-            logger.debug(f"[TIMING] expand_parent_k1_mappings: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] expand_parent_k1_mappings: {mappings_df.count()} rows")
-
-        # §4 — Distinct mappings
-        _t = time.time()
         distinct_mappings_df = build_distinct_mappings(spark, cfg, mappings_df)
-        if verbose:
-            logger.debug(f"[TIMING] build_distinct_mappings: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] build_distinct_mappings: {distinct_mappings_df.count()} rows")
-
-        # PERF: redundant `distinct_mappings_df.isEmpty()` check removed —
-        # the K1 gate below (has_k1) already short-circuits on an empty DF
-        # and is the only required exit. Saves one Spark action (~2–5s).
-
-        # Finding 1: K1 gate. The original SP wraps §6–§16 (partners, FEP,
-        # LT allocation output, cost/book pct, single/multi, K1 amounts,
-        # final pct, allocation output writes) in `IF EXISTS (... SourceTypeID
-        # = @K1LineTypeID ...)`. If no K1 mapping is present, the whole K1
-        # path is skipped — the SP still succeeds. Without this gate the
-        # downstream functions would either fail or do empty work.
         has_k1 = not distinct_mappings_df.filter(
             F.col("SourceTypeID") == cfg["enu_k1_line_type_id"]
         ).limit(1).isEmpty()
         if not has_k1:
-            logger.info(
-                "K1 gate: no K1 SourceTypeID in distinct mappings — skipping "
-                "§6–§16 (partners, FEP, cost/book, K1 amounts, writes)."
-            )
             status["sections_completed"] = 5
             status["status"] = "OK_NO_K1"
+            status["skip_reason"] = "no_k1_mappings"
             return status
 
-        # §5 — Yearly effective percentages (conditional)
-        _t = time.time()
         total_amount_yearly_df, tmp_line_amounts_df = build_yearly_effective_pct(
             spark, cfg, distinct_mappings_df,
         )
-        if verbose:
-            logger.debug(f"[TIMING] build_yearly_effective_pct: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] build_yearly_effective_pct: total_amount_yearly={total_amount_yearly_df.count() if total_amount_yearly_df is not None else 0} rows, tmp_line_amounts={tmp_line_amounts_df.count() if tmp_line_amounts_df is not None else 0} rows")
+        del total_amount_yearly_df
+        tmp_line_amounts_df = _checkpoint(
+            spark, tmp_line_amounts_df, "yearly_line_amounts", cfg
+        )
+        partners_df = _checkpoint(
+            spark, load_partners(spark, cfg), "partners", cfg
+        )
+        final_eff_pct_df = _checkpoint(
+            spark, load_final_effective_percentages(spark, cfg), "fep", cfg
+        )
+        lt_output_df = _checkpoint(
+            spark,
+            build_lt_allocation_output(spark, cfg, distinct_mappings_df),
+            "lt_output",
+            cfg,
+        )
 
-        # §6 — Partners + FinalEffectivePercentages
-        _t = time.time()
-        partners_df = load_partners(spark, cfg)
-        if verbose:
-            logger.debug(f"[TIMING] load_partners: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] load_partners: {partners_df.count()} rows")
-        _t = time.time()
-        final_eff_pct_df = load_final_effective_percentages(spark, cfg)
-        # T1-1: no in-memory caching — no-op on Serverless. Consumed by
-        # §8 + §9. Source is a single filtered table read + broadcast join;
-        # AQE will reuse the scan across the two downstream consumers.
-        if verbose:
-            logger.debug(f"[TIMING] load_final_effective_percentages: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] load_final_effective_percentages: {final_eff_pct_df.count()} rows")
-
-        # §7 — LookThroughAllocationOutput (checkpoint — 3 consumers)
-        _t = time.time()
-        lt_output_df = build_lt_allocation_output(spark, cfg, distinct_mappings_df)
-        if verbose:
-            logger.debug(f"[DEBUG COUNT] build_lt_allocation_output: {lt_output_df.count()} rows")
-        lt_output_df = _checkpoint(spark, lt_output_df, "lt_output", cfg)
-        if verbose:
-            logger.debug(f"[TIMING] build_lt_allocation_output + checkpoint: {time.time() - _t:.1f}s")
-
-        # §8+§9 — Cost + Book effective percentages
-        _t = time.time()
-        cost_pct_df = build_cost_effective_pct(spark, cfg, lt_output_df, final_eff_pct_df)
-        if verbose:
-            logger.debug(f"[TIMING] build_cost_effective_pct: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] build_cost_effective_pct: {cost_pct_df.count()} rows")
-        _t = time.time()
-        book_pct_df = build_book_effective_pct(spark, cfg, lt_output_df, final_eff_pct_df)
-        if verbose:
-            logger.debug(f"[TIMING] build_book_effective_pct: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] build_book_effective_pct: {book_pct_df.count()} rows")
-        temp_final_eff_pct_df = cost_pct_df.unionByName(book_pct_df)
-        # T5: no checkpoint here. The union has 2 consumers (isEmpty marker +
-        # §11 build_single_multi_alloc_type), but both inputs come from
-        # already-checkpointed lt_output_df + a broadcast FEP scan, so the
-        # lineage above the union is shallow. AQE reuses the scan; an extra
-        # Delta write/read round-trip costs more than it saves on a Hard SP
-        # with the V-OPT-4 checkpoint budget already at 1.
-        if verbose:
-            logger.debug(f"[DEBUG COUNT] temp_final_eff_pct (cost+book union): {temp_final_eff_pct_df.count()} rows")
-
-        # §10 — TempAllocationInput
-        _t = time.time()
-        temp_alloc_input_df = load_temp_allocation_input(spark, cfg, distinct_mappings_df)
-        # T1-1: no in-memory caching on Serverless. This DF has 4 consumers
-        # (isEmpty, §11, §13, §14) but its lineage is shallow (single filtered
-        # Delta read + broadcast join), so recomputation cost is minimal vs.
-        # the checkpoint I/O round-trip. Checkpoint budget (V-OPT-4: 0–2 for
-        # Hard SP) is spent on the deeper lineages: lt_output_df and
-        # temp_final_eff_pct_df.
-        if verbose:
-            logger.debug(f"[TIMING] load_temp_allocation_input: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] load_temp_allocation_input: {temp_alloc_input_df.count()} rows")
-
+        cost_pct_df = build_cost_effective_pct(
+            spark, cfg, lt_output_df, final_eff_pct_df
+        )
+        book_pct_df = build_book_effective_pct(
+            spark, cfg, lt_output_df, final_eff_pct_df
+        )
+        temp_final_eff_pct_df = _checkpoint(
+            spark,
+            cost_pct_df.unionByName(book_pct_df),
+            "temp_final_eff_pct",
+            cfg,
+        )
+        temp_alloc_input_df = load_temp_allocation_input(
+            spark, cfg, distinct_mappings_df
+        )
+        # Gate on uncheckpointed temp input (Development seam order).
         if temp_alloc_input_df.isEmpty():
-            logger.info("No allocation input rows — exiting.")
             status["status"] = "SKIPPED"
+            status["skip_reason"] = "empty_temp_allocation_input"
             return status
+        distinct_mappings_df = _checkpoint(
+            spark, distinct_mappings_df, "distinct_mappings", cfg
+        )
+        temp_alloc_input_df = _checkpoint(
+            spark, temp_alloc_input_df, "temp_alloc_input", cfg
+        )
 
-        # SQL parity (lines 797–917): an empty #TempFinalEffectivePercentage
-        # only gates the inner #SinglePercent build (SQL `IF EXISTS` at line
-        # 801, END at line 909). The downstream K1 data path, #FinalEffective-
-        # Percentage build (incl. yearly INSERT) and allocation output writes
-        # run unconditionally.
-        # PERF: the outer `temp_final_eff_pct_df.isEmpty()` check has been
-        # removed — build_single_multi_alloc_type already does the same
-        # check internally and returns None on empty input, which every
-        # downstream consumer already handles. Saves one Spark action.
-
-        # §11 — Single/Multi allocation type classification
-        _t = time.time()
         single_percent_df = build_single_multi_alloc_type(
-            spark, cfg, temp_alloc_input_df, distinct_mappings_df,
+            spark,
+            cfg,
+            temp_alloc_input_df,
+            distinct_mappings_df,
             temp_final_eff_pct_df,
         )
-        if verbose:
-            logger.debug(f"[TIMING] build_single_multi_alloc_type: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] build_single_multi_alloc_type: {single_percent_df.count() if single_percent_df is not None else 0} rows")
-
-        # T1-1: no in-memory caching on Serverless. single_percent_df has 2
-        # consumers (§12, §13) but its lineage is dominated by joins to
-        # already-checkpointed temp_final_eff_pct_df and broadcast
-        # distinct_mappings, so re-execution is cheap.
-
-        # §12 — K1 data amounts
-        _t = time.time()
+        single_percent_df = _checkpoint(
+            spark, single_percent_df, "single_percent", cfg
+        )
         total_amount_pct_df, total_amounts_df = build_k1_data_amounts(
-            spark, cfg, lt_output_df, distinct_mappings_df, single_percent_df,
+            spark,
+            cfg,
+            lt_output_df,
+            distinct_mappings_df,
+            single_percent_df,
         )
-        if verbose:
-            logger.debug(f"[TIMING] build_k1_data_amounts: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] build_k1_data_amounts: total_amount_pct={total_amount_pct_df.count() if total_amount_pct_df is not None else 0} rows, total_amounts={total_amounts_df.count() if total_amounts_df is not None else 0} rows")
-
-        # §13 — Final effective percentages (3 INSERTs)
-        _t = time.time()
+        del total_amounts_df
+        total_amount_pct_df = _checkpoint(
+            spark, total_amount_pct_df, "k1_amount_pct", cfg
+        )
         final_pct_df = build_final_effective_pct(
-            spark, cfg, single_percent_df, temp_alloc_input_df,
-            total_amount_pct_df, tmp_line_amounts_df,
+            spark,
+            cfg,
+            single_percent_df,
+            temp_alloc_input_df,
+            total_amount_pct_df,
+            tmp_line_amounts_df,
         )
-        if verbose:
-            logger.debug(f"[TIMING] build_final_effective_pct: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] build_final_effective_pct: {final_pct_df.count() if final_pct_df is not None else 0} rows")
-
-        # §14 — Build allocation output
-        _t = time.time()
+        final_pct_df = _checkpoint(spark, final_pct_df, "final_pct", cfg)
         alloc_output_df, grouped_output_df = build_allocation_output(
-            spark, cfg, temp_alloc_input_df, final_pct_df, partners_df,
+            spark, cfg, temp_alloc_input_df, final_pct_df, partners_df
         )
-        if verbose:
-            logger.debug(f"[TIMING] build_allocation_output: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] build_allocation_output: alloc_output={alloc_output_df.count()} rows, grouped_output={grouped_output_df.count()} rows")
+        alloc_output_df = _checkpoint(
+            spark, alloc_output_df, "alloc_output", cfg
+        )
+        grouped_output_df = _checkpoint(
+            spark, grouped_output_df, "grouped_output", cfg
+        )
 
-        # V-OPT-4: checkpoint budget for Hard SP is 0–2 total. Already used
-        # on lt_output_df (§7, 3 consumers) and temp_final_eff_pct_df (§8+§9,
-        # 2 consumers). alloc_output_df and grouped_output_df each have a
-        # single downstream consumer (the write/update), so checkpointing
-        # them would exceed budget without enough re-computation savings.
-
-        # §15 — Write allocation output
-        if verbose:
-            logger.debug(f"[DEBUG COUNT] write_df: {alloc_output_df.count()} rows")
-        _t = time.time()
-        return_value = write_allocation_output(spark, cfg, alloc_output_df)
-        if verbose:
-            logger.debug(f"[TIMING] write_allocation_output: {time.time() - _t:.1f}s")
-
-        # §16 — Update allocation input
-        _t = time.time()
+        # Sequential Output then Input.
+        save_return_value = write_allocation_output(
+            spark, cfg, alloc_output_df
+        )
         update_allocation_input(spark, cfg, grouped_output_df)
-        if verbose:
-            logger.debug(f"[TIMING] update_allocation_input: {time.time() - _t:.1f}s")
-            logger.debug(f"[DEBUG COUNT] update_allocation_input: completed")
-
         status["sections_completed"] = 16
-
+        status["storer_return"] = save_return_value
     except Exception as e:
         status["status"] = "FAIL"
         status["error"] = str(e)
@@ -2093,18 +2096,16 @@ def run_load_lt_footnote_effective_allocation_pct(
         raise
     finally:
         status["elapsed_seconds"] = round(time.time() - t0, 1)
-        _drop_checkpoints(spark, cfg)
+        if isinstance(cfg, dict):
+            _drop_checkpoints(spark, cfg)
 
     logger.info(
         f"[DONE] run_load_lt_footnote_effective_allocation_pct | "
         f"{status['elapsed_seconds']}s | RunID={cfg['run_id']} "
         f"EntityID={cfg['entity_id']}"
     )
-    # If GenericResultStorer returned a value (JSON string for Parquet mode,
-    # "SUCCESS" for Delta/SQL), propagate it directly so the task runtime can
-    # parse ResultFilePath/ResultFileName for DataBrickExecutionStatus (same
-    # pattern as uspGetFinalEffectivePercentage's run_mode).
-    return return_value if return_value else status
+    return status
+
 
 
 # ════════════════════════════════════════════════════════════════
