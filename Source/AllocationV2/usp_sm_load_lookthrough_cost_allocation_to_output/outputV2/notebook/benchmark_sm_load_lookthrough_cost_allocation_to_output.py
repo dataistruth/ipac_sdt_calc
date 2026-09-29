@@ -1,7 +1,8 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # SM look-through cost allocation A/B
-# MAGIC LT QA identity. RankForRulePickup=0 hardcoded. Restore SM Output and Input.
+# MAGIC Defaults: Entity 4755 / Run 18266 / catalog qa7 / schema iPC_2025_QA7_15348.
+# MAGIC RankForRulePickup=0 hardcoded. Restore SM Output and Input.
 
 # COMMAND ----------
 
@@ -9,6 +10,7 @@ dbutils.widgets.removeAll()
 
 # COMMAND ----------
 
+# Frozen widget defaults (LT allocation QA identity)
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",

@@ -21,7 +21,22 @@ inline in `output/`.
 
 ## Notebook
 
-Frozen 10 widgets. LT identity 4755 / 18266 / qa7.
+Frozen 10 widgets. `removeAll()` in its own cell, then:
+
+| # | Name | Default |
+|---|---|---|
+| 1 | `source_path` | `/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source` |
+| 2 | `EntityID` | `4755` |
+| 3 | `ClientID` | `15348` |
+| 4 | `TaxPeriodID` | `1` |
+| 5 | `RunID` | `18266` |
+| 6 | `CatalogName` | `qa7` |
+| 7 | `SchemaName` | `iPC_2025_QA7_15348` |
+| 8 | `ExecutionProfile` | `low` |
+| 9 | `number_of_runs` | `1` |
+| 10 | `ProfilePlan` | `off` |
+
 Hardcode RankForRulePickup=0, ResultType `deltalake`, VolumePath
-`/Volumes/qa7/datavolume/databrickdata`. Restore both SM tables; do not
-purge Output.
+`/Volumes/qa7/datavolume/databrickdata`. Original then updated. Restore
+both SM tables; do not purge Output. Last display cell uses explicit
+Spark schemas.
