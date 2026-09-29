@@ -55,13 +55,18 @@ same way footnotes adds `cost_snapshot` / `temp_alloc_input` /
 | `grouped_output` | build output | Input overwrite |
 
 After a **local** Checkpoint V2 backend, `toDF(*columns)` like footnotes.
-Do not drop `lt_output`.
+Do not drop `lt_output`. Checkpoint `distinct_mappings` **after** the
+temp-input empty gate, not before. Gate `isEmpty` on the uncheckpointed
+temp-input frame.
 
 ## Writes
 
 Sequential: append `LookThroughAllocationOutput`, then overwrite
 `LookThroughAllocationInput` for the RunID. Restore both tables before
-each A/B variant (Output is also an input to §7).
+each A/B variant (Output is also an input to §7). Restore with
+`writeTo(...).overwrite(RunID)` plus `refreshTable` — never DELETE then
+INSERT (Spark caches the empty post-DELETE scan; updated then SKIPPED
+and fingerprints 0 Input rows while original wrote 24).
 
 ## Notebook widgets (frozen)
 
@@ -95,3 +100,5 @@ Updated always returns a status dict (`elapsed_seconds`, `skip_reason`).
 - Copying the production module into `outputV2/`
 - Dropping `lt_output`
 - FEP CPBT / footnotes `cost_snapshot` *rewrites* (extra **seams** are OK)
+- Checkpoint `distinct_mappings` before `load_temp_allocation_input`
+- A/B restore via `DELETE` + `INSERT` without `refreshTable`

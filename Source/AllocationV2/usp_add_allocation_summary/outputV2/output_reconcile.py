@@ -1,4 +1,4 @@
-"""Mutation-safe snapshot, restore, and parity fingerprints for one RunID."""
+"""Snapshot every mutated summary table that has RunID."""
 
 from __future__ import annotations
 
@@ -6,14 +6,31 @@ import uuid
 
 import pyspark.sql.functions as F
 
-# This SP appends LookThroughAllocationOutput and overwrites the
-# LookThroughAllocationInput RunID partition. Restore snapshots before
-# each variant — do not purge Output, because §7 reads existing Output.
 TABLE_SPECS = (
-    ("LookThroughAllocationOutput", "RunID"),
-    ("LookThroughAllocationInput", "RunID"),
+    ("K1AllocationSummary", "RunID"),
+    ("M1AdjAllocationSummary", "RunID"),
+    ("BoxJKLAllocationSummary", "RunID"),
+    ("Form926AllocationSummary", "RunID"),
+    ("Form8865AllocationSummary", "RunID"),
+    ("Form199AAllocationSummary", "RunID"),
+    ("PFICFootnoteAllocationSummary", "RunID"),
+    ("PFICFootnoteAllocationText", "RunID"),
+    ("CustomFootnoteAllocationSummary", "RunID"),
+    ("Line18AAllocationSummary", "RunID"),
+    ("UBTIAllocationSummary", "RunID"),
+    ("PassiveIncomeAllocationSummary", "RunID"),
+    ("Form200616AllocationSummary", "RunID"),
+    ("Form8886AllocationSummary", "RunID"),
+    ("AtRiskAllocationSummary", "RunID"),
+    ("GAAPToTaxAllocation", "RunID"),
+    ("AdjustmentAllocationSummary", "RunID"),
 )
-MEASURE_COLUMNS = ("Amount", "Amount704b")
+INPUT_RESTORE = frozenset()
+ALL_SPECS = TABLE_SPECS
+SNAPSHOT_PREFIX = "aas"
+
+
+MEASURE_COLUMNS = ("Amount", "Amount704b", "FlowupAmount")
 KEY_COLUMNS = (
     "EntityID",
     "ParentEntityID",
@@ -46,13 +63,14 @@ def create_benchmark_snapshot(spark, catalog, schema, run_id):
         "run_id": int(run_id),
         "tables": {},
     }
-    for table, run_column in TABLE_SPECS:
+    for table, run_column in ALL_SPECS:
         source = _fqn(catalog, schema, table)
         if not spark.catalog.tableExists(source):
             snapshot["tables"][table] = {
                 "exists": False,
                 "run_column": run_column,
                 "backup": None,
+                "kind": "input" if table in INPUT_RESTORE else "output",
             }
             continue
         columns = _columns(spark, source)
@@ -61,6 +79,7 @@ def create_benchmark_snapshot(spark, catalog, schema, run_id):
                 "exists": True,
                 "run_column": run_column,
                 "backup": None,
+                "kind": "input" if table in INPUT_RESTORE else "output",
             }
             print(
                 f"[reconcile] skip snapshot {table}: no {run_column}; "
@@ -68,7 +87,7 @@ def create_benchmark_snapshot(spark, catalog, schema, run_id):
             )
             continue
         backup = (
-            f"_benchmark_ltfn_{table.lower()[:16]}_"
+            f"_benchmark_{SNAPSHOT_PREFIX}_{table.lower()[:16]}_"
             f"{int(run_id)}_{uuid.uuid4().hex[:8]}"
         )
         spark.sql(
@@ -86,6 +105,7 @@ def create_benchmark_snapshot(spark, catalog, schema, run_id):
             "exists": True,
             "run_column": run_column,
             "backup": backup,
+            "kind": "input" if table in INPUT_RESTORE else "output",
         }
     return snapshot
 
@@ -105,9 +125,6 @@ def _replace_from_snapshot(spark, snapshot, table):
     backup = _fqn(snapshot["catalog"], snapshot["schema"], spec["backup"])
     run_id = int(snapshot["run_id"])
     run_column = spec["run_column"]
-    # One replaceWhere commit — do not DELETE then INSERT. The empty
-    # window after DELETE is what Spark cached, so updated then skipped
-    # with LookThroughAllocationInput rows=0 (original had written 24).
     (
         spark.table(backup)
         .writeTo(target)
@@ -123,18 +140,20 @@ def _replace_from_snapshot(spark, snapshot, table):
 
 
 def reset_before_variant(spark, snapshot):
-    """Restore pre-SP rows so Output remains readable by §7."""
-    for table, _ in TABLE_SPECS:
+    """Restore snapshots with overwrite+refresh. Never DELETE then INSERT."""
+    for table, _ in ALL_SPECS:
         _replace_from_snapshot(spark, snapshot, table)
 
 
 def restore_original_state(spark, snapshot):
-    for table, _ in TABLE_SPECS:
+    for table, _ in ALL_SPECS:
         spec = snapshot["tables"][table]
         if spec.get("backup"):
             _replace_from_snapshot(spark, snapshot, table)
             continue
         if not spec["exists"]:
+            continue
+        if spec.get("kind") == "input":
             continue
         target = _fqn(snapshot["catalog"], snapshot["schema"], table)
         columns = _columns(spark, target)

@@ -343,9 +343,6 @@ def run_load_lt_footnote_effective_allocation_pct(
                 status["skip_reason"] = "no_k1_mappings"
                 _v2("OK_NO_K1: no K1 SourceTypeID in distinct mappings")
                 return status
-            distinct_mappings_df = _checkpoint(
-                spark, distinct_mappings_df, "distinct_mappings", cfg
-            )
 
         with _timed(timings, "S3 yearly partners FEP and lt_output"):
             yearly_pair = build_yearly_effective_pct(
@@ -381,15 +378,28 @@ def run_load_lt_footnote_effective_allocation_pct(
             temp_alloc_input_df = load_temp_allocation_input(
                 spark, cfg, distinct_mappings_df
             )
-            temp_alloc_input_df = _checkpoint(
-                spark, temp_alloc_input_df, "temp_alloc_input", cfg
-            )
             if temp_alloc_input_df.isEmpty():
+                src_n = (
+                    _prod._tbl(spark, "LookThroughAllocationInput", cfg)
+                    .filter(F.col("RunID") == cfg["run_id"])
+                    .count()
+                )
+                dm_n = distinct_mappings_df.count()
                 logger.info("No allocation input rows — exiting.")
                 status["status"] = "SKIPPED"
                 status["skip_reason"] = "empty_temp_allocation_input"
-                _v2("SKIPPED: temp allocation input is empty")
+                _v2(
+                    "SKIPPED: temp allocation input is empty "
+                    f"(LookThroughAllocationInput={src_n} "
+                    f"distinct_mappings={dm_n})"
+                )
                 return status
+            distinct_mappings_df = _checkpoint(
+                spark, distinct_mappings_df, "distinct_mappings", cfg
+            )
+            temp_alloc_input_df = _checkpoint(
+                spark, temp_alloc_input_df, "temp_alloc_input", cfg
+            )
 
         with _timed(timings, "S5 classify k1 and allocation output"):
             single_percent_df = build_single_multi_alloc_type(

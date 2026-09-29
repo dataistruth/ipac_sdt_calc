@@ -107,6 +107,12 @@ For each pass:
 WHERE <key>`. A guessed `RunID` on `PFICUpdateAlert` (AlertID / ClientID /
 EntityID / TaxPeriodID only) fails snapshot creation.
 
+When a compared table is also an **input** (LookThroughAllocationInput /
+LookThroughAllocationOutput), restore with `writeTo.overwrite(key)` and
+`refreshTable`. Do not `DELETE` then `INSERT`: the empty window after
+DELETE is cached, so the second variant can SKIPPED and fingerprint 0
+rows.
+
 For each compared table and its **declared** key partition compare:
 
 - row count

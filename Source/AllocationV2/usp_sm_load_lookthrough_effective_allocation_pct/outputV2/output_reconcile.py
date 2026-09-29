@@ -6,12 +6,11 @@ import uuid
 
 import pyspark.sql.functions as F
 
-# This SP appends LookThroughAllocationOutput and overwrites the
-# LookThroughAllocationInput RunID partition. Restore snapshots before
-# each variant — do not purge Output, because §7 reads existing Output.
+# This SP appends SM_LookThroughAllocationOutput and updates
+# SM_LookThroughAllocationInput. Restore both — do not purge Output.
 TABLE_SPECS = (
-    ("LookThroughAllocationOutput", "RunID"),
-    ("LookThroughAllocationInput", "RunID"),
+    ("SM_LookThroughAllocationOutput", "RunID"),
+    ("SM_LookThroughAllocationInput", "RunID"),
 )
 MEASURE_COLUMNS = ("Amount", "Amount704b")
 KEY_COLUMNS = (
@@ -68,7 +67,7 @@ def create_benchmark_snapshot(spark, catalog, schema, run_id):
             )
             continue
         backup = (
-            f"_benchmark_ltfn_{table.lower()[:16]}_"
+            f"_benchmark_smep_{table.lower()[:16]}_"
             f"{int(run_id)}_{uuid.uuid4().hex[:8]}"
         )
         spark.sql(

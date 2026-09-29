@@ -6,21 +6,27 @@ import uuid
 
 import pyspark.sql.functions as F
 
-# This SP appends LookThroughAllocationOutput and overwrites the
-# LookThroughAllocationInput RunID partition. Restore snapshots before
-# each variant — do not purge Output, because §7 reads existing Output.
+# Rounding writes LookThrough summaries, AllocationSummary tables, and
+# updates IsRounded on LookThroughOffsetUnRoundedLines. Restore with
+# overwrite+refresh — do not DELETE then INSERT.
 TABLE_SPECS = (
-    ("LookThroughAllocationOutput", "RunID"),
-    ("LookThroughAllocationInput", "RunID"),
+    ("K1LookThroughAllocationSummary", "RunID"),
+    ("UBTILookThroughAllocationSummary", "RunID"),
+    ("PassiveIncomeAllocationSummary", "RunID"),
+    ("BOXJKLAllocationSummary", "RunID"),
+    ("AdjustmentLookThroughAllocationSummary", "RunID"),
+    ("K1AllocationSummary", "RunID"),
+    ("UBTIAllocationSummary", "RunID"),
+    ("AdjustmentAllocationSummary", "RunID"),
+    ("LookThroughOffsetUnRoundedLines", "RunID"),
 )
-MEASURE_COLUMNS = ("Amount", "Amount704b")
+MEASURE_COLUMNS = ("Amount", "FlowupAmount")
 KEY_COLUMNS = (
     "EntityID",
-    "ParentEntityID",
-    "LineTypeID",
-    "LineID",
-    "TrackingKey",
     "PartnerNumber",
+    "LineID",
+    "LineTypeID",
+    "ShareClass",
 )
 
 
@@ -68,7 +74,7 @@ def create_benchmark_snapshot(spark, catalog, schema, run_id):
             )
             continue
         backup = (
-            f"_benchmark_ltfn_{table.lower()[:16]}_"
+            f"_benchmark_ilr_{table.lower()[:16]}_"
             f"{int(run_id)}_{uuid.uuid4().hex[:8]}"
         )
         spark.sql(
@@ -105,9 +111,6 @@ def _replace_from_snapshot(spark, snapshot, table):
     backup = _fqn(snapshot["catalog"], snapshot["schema"], spec["backup"])
     run_id = int(snapshot["run_id"])
     run_column = spec["run_column"]
-    # One replaceWhere commit — do not DELETE then INSERT. The empty
-    # window after DELETE is what Spark cached, so updated then skipped
-    # with LookThroughAllocationInput rows=0 (original had written 24).
     (
         spark.table(backup)
         .writeTo(target)
@@ -123,7 +126,6 @@ def _replace_from_snapshot(spark, snapshot, table):
 
 
 def reset_before_variant(spark, snapshot):
-    """Restore pre-SP rows so Output remains readable by §7."""
     for table, _ in TABLE_SPECS:
         _replace_from_snapshot(spark, snapshot, table)
 

@@ -60,6 +60,12 @@ and notebooks. Use the child skill when the work is that SP:
 | `usp_load_lookthrough_footnote_effective_allocation_pct` | [usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md](usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md) |
 | `usp_load_lookthrough_cost_alloc` | [usp-load-lookthrough-cost-alloc/SKILL.md](usp-load-lookthrough-cost-alloc/SKILL.md) |
 | `usp_load_allocation_input` | [usp-load-allocation-input/SKILL.md](usp-load-allocation-input/SKILL.md) |
+| `usp_add_allocation_summary` | [usp-add-allocation-summary/SKILL.md](usp-add-allocation-summary/SKILL.md) |
+| `usp_add_lookthrough_alloc_detail_step01` | [usp-add-lookthrough-alloc-detail-step01/SKILL.md](usp-add-lookthrough-alloc-detail-step01/SKILL.md) |
+| `usp_apply_investment_level_rounding` | [usp-apply-investment-level-rounding/SKILL.md](usp-apply-investment-level-rounding/SKILL.md) |
+| `usp_load_k3_allocation_summary` | [usp-load-k3-allocation-summary/SKILL.md](usp-load-k3-allocation-summary/SKILL.md) |
+| `usp_sm_load_lookthrough_cost_allocation_to_output` | [usp-sm-load-lookthrough-cost-allocation-to-output/SKILL.md](usp-sm-load-lookthrough-cost-allocation-to-output/SKILL.md) |
+| `usp_sm_load_lookthrough_effective_allocation_pct` | [usp-sm-load-lookthrough-effective-allocation-pct/SKILL.md](usp-sm-load-lookthrough-effective-allocation-pct/SKILL.md) |
 
 The child skill owns SP-only checkpoints, extra tables, and locked
 timings. Do not copy those into other SPs. For
