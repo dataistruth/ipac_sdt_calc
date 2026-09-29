@@ -94,6 +94,10 @@ Extra Checkpoint V2 seams (reused frames; local backend `toDF`):
 `lower_tier_funds`, `reclass_k1`, `fx_rates`, `lower_tier_amount`,
 `pfic_mapped`, `alloc_input_box_jkl`, `alloc_input_pre_write`.
 
+PFIC `EffPercentage` in outputV2 uses a window total over
+EntityID/LineID/TrackingKey instead of aggregating `recalc_grouped`
+twice and joining. Production conversion service is unchanged.
+
 ## Telemetry
 
 `ProfilePlan=on` records and prints separate BUILDER, CHECKPOINT, and ACTION

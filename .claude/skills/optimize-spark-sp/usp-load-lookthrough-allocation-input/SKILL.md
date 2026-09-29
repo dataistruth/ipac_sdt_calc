@@ -90,6 +90,10 @@ them.
   breaks): `lower_tier_funds`, `reclass_k1`, `fx_rates`,
   `lower_tier_amount`, `pfic_mapped`, `alloc_input_box_jkl`,
   `alloc_input_pre_write`
+- PFIC `%` (`outputV2/pfic_income_attributes.py`): window
+  `sum(Amount)` over EntityID/LineID/TrackingKey instead of grouping
+  `recalc_grouped` twice and joining. Null join keys dropped to match
+  production inner join. Keep only if PFIC fingerprints PASS.
 - speculative broadcasts / extra caches: **off** unless measured
 - FEP / footnotes-only flags: **do not apply**
 
@@ -126,7 +130,8 @@ Production mode. In Development mode, `outputV2/` must:
 - import helpers via `parent.py` (`output_module("lt_…")`);
 - keep `run_load_lookthrough_allocation_input`;
 - copy **no** production business modules except orchestrator-local
-  helpers (`parallel_helpers.py`, `write_helpers.py`);
+  helpers (`parallel_helpers.py`, `write_helpers.py`,
+  `pfic_income_attributes.py`);
 - resolve `ExecutionProfile` in the orchestrator at run start (default
   `low`).
 
@@ -137,6 +142,7 @@ Required modules:
 - `parent.py`: live `output/` imports
 - `parallel_helpers.py`: bounded pools, START/DONE, observe every future
 - `write_helpers.py`: distinct-table appends for `output_writes`
+- `pfic_income_attributes.py`: window EffPercentage (no double group)
 - `output_reconcile.py`: snapshot / restore / hash all five tables;
   inspect live columns before `WHERE RunID`
 - `plan_profiler.py`: slim shim

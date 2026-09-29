@@ -27,6 +27,9 @@ from .plan_profiler import (
     track_checkpoint_plan,
     track_plan,
 )
+from .pfic_income_attributes import (
+    build_pfic_income_attributes as build_pfic_income_attributes_v2,
+)
 from .write_helpers import write_final_output_parallel
 
 _helpers = output_module("lt_helpers")
@@ -54,7 +57,7 @@ build_lt_flowup_m1 = _flowup.build_lt_flowup_m1
 build_pfic_elections = _pfic.build_pfic_elections
 build_pfic_mapped_lines = _pfic.build_pfic_mapped_lines
 build_pfic_conversion = _conversion.build_pfic_conversion
-build_pfic_income_attributes = _conversion.build_pfic_income_attributes
+build_pfic_income_attributes = build_pfic_income_attributes_v2
 build_box_jkl_input = _final.build_box_jkl_input
 apply_master_feed_exclusion = _final.apply_master_feed_exclusion
 apply_blocker_entity = _final.apply_blocker_entity
