@@ -7,7 +7,9 @@ description: Development outputV2 for uspLoadK3AllocationSummary. Use when gener
 
 Use this skill only for `AllocationV2/usp_load_k3_allocation_summary`.
 
-Public entry: `run_usp_load_k3_allocation_summary`. Production `output/` is unchanged. No `business/`.
+Public entry: `run_usp_load_k3_allocation_summary`. Production `output/`
+is unchanged in Development. Flat `outputV2/` (no nested `business/` or
+`tests/`). Production mode: inline in `output/`.
 
 The orchestrator resolves `ExecutionProfile` from
 `Common_V2.core.execution_profiles` at start (default **low**). Cap

@@ -25,7 +25,8 @@ Read [SP_OPTIMIZATION_GUIDE.md](SP_OPTIMIZATION_GUIDE.md) before making a
 structural change or interpreting a benchmark.
 
 Do not copy FEP CPBT / mode-prep / yearly / three-table FEP rewrites into
-this SP. Do not add a `business/` folder.
+this SP. Development: **flat** `outputV2/` (no `business/`, `tests/`,
+`updated/`). Production: **inline** in `output/`.
 
 ## Paths
 

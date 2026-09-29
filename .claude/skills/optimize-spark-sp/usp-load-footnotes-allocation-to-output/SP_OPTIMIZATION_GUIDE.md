@@ -68,11 +68,11 @@ Keep backup tables if restore fails.
 
 ## Packaging
 
-Development (default until the user asks Production): sibling
-`outputV2/` importing `..output` helpers. No `updated/`. No
-`business/`. No FEP `outputV3` layout.
+Development (default until the user asks Production): **flat** sibling
+`outputV2/` importing `..output` helpers. No `updated/`. No nested
+`business/` or `tests/`. No FEP helper-copy set unless this is FEP.
 
-Production mode: same logic inline in `output/` with
+Production mode: same logic **inline** in `output/` with
 `output/notebook/run_*.py` only — no profiler, no reconcile module.
 
 ## Historical walls

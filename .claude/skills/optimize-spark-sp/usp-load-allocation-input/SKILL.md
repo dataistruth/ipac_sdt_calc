@@ -22,7 +22,9 @@ Do not set AQE.
 Public entry: `run_load_allocation_input`. Adapter:
 `run_usp_load_allocation_input` in `usp_load_allocation_input.py`.
 
-Do not copy FEP / footnotes / look-through SP-only opts. No `business/`.
+Do not copy FEP / footnotes / look-through SP-only opts. Development:
+**flat** `outputV2/` (no `business/`, `tests/`, `updated/`). Production:
+**inline** in `output/`.
 
 ## Locked candidate (regenerate this)
 
@@ -60,9 +62,10 @@ Source/AllocationV2/usp_load_allocation_input/
         └── benchmark_load_allocation_input.py
 ```
 
-**Do not create:** `form_flowup_collect.py`, `business/`, `updated/`,
-`output/*_updated.py`, copies of `ai_*.py` inside `outputV2/`. Business
-services stay in production `output/` and are imported via `parent.py`.
+**Do not create:** `form_flowup_collect.py`, nested `business/`,
+`tests/`, `updated/`, `output/*_updated.py`, copies of `ai_*.py` inside
+`outputV2/`. Production services stay in `output/` and are imported via
+`parent.py`.
 
 `parent.py` must be:
 

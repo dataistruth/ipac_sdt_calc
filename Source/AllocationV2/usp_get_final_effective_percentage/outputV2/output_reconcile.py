@@ -20,11 +20,34 @@ def _fqn(catalog, schema, table):
     )
 
 
+def _refresh_table(spark, fqn):
+    try:
+        spark.catalog.refreshTable(fqn)
+    except Exception:
+        spark.sql(f"REFRESH TABLE {fqn}")
+
+
+def _columns(spark, fqn):
+    try:
+        return list(spark.table(fqn).columns)
+    except Exception:
+        return []
+
+
 def purge_run(spark, catalog, schema, run_id):
     for table in OUTPUT_TABLES:
         name = _fqn(catalog, schema, table)
-        if spark.catalog.tableExists(name):
-            spark.sql(f"DELETE FROM {name} WHERE RunID = {int(run_id)}")
+        if not spark.catalog.tableExists(name):
+            continue
+        columns = _columns(spark, name)
+        if "RunID" not in columns:
+            print(
+                f"[reconcile] skip purge {table}: no RunID; "
+                f"columns={columns[:12]}"
+            )
+            continue
+        spark.sql(f"DELETE FROM {name} WHERE RunID = {int(run_id)}")
+        _refresh_table(spark, name)
 
 
 def create_run_snapshots(spark, catalog, schema, run_id):
@@ -38,10 +61,20 @@ def create_run_snapshots(spark, catalog, schema, run_id):
                 f"_benchmark_fep_v3_{table.lower().replace('_', '')[:12]}_"
                 f"{int(run_id)}_{uuid.uuid4().hex[:8]}"
             )
+            columns = _columns(spark, source)
+            if "RunID" not in columns:
+                print(
+                    f"[reconcile] skip snapshot {table}: no RunID; "
+                    f"columns={columns[:12]}"
+                )
+                continue
             spark.sql(
                 f"CREATE TABLE {_fqn(catalog, schema, snapshot)} USING DELTA AS "
                 f"SELECT * FROM {source} WHERE RunID = {int(run_id)}"
             )
+            backup = _fqn(catalog, schema, snapshot)
+            n = spark.table(backup).count()
+            print(f"[reconcile] snapshot {table} rows={n} backup={snapshot}")
             snapshots[table] = snapshot
     except Exception:
         drop_run_snapshots(spark, catalog, schema, snapshots)
@@ -50,12 +83,22 @@ def create_run_snapshots(spark, catalog, schema, run_id):
 
 
 def restore_run_snapshots(spark, catalog, schema, run_id, snapshots):
-    purge_run(spark, catalog, schema, run_id)
+    run_id = int(run_id)
     for table, snapshot in snapshots.items():
-        spark.sql(
-            f"INSERT INTO {_fqn(catalog, schema, table)} "
-            f"SELECT * FROM {_fqn(catalog, schema, snapshot)}"
+        target = _fqn(catalog, schema, table)
+        backup = _fqn(catalog, schema, snapshot)
+        (
+            spark.table(backup)
+            .writeTo(target)
+            .overwrite(F.col("RunID") == run_id)
         )
+        _refresh_table(spark, target)
+        n = (
+            spark.table(target)
+            .filter(F.col("RunID") == run_id)
+            .count()
+        )
+        print(f"[reconcile] restored {table} rows={n}")
 
 
 def drop_run_snapshots(spark, catalog, schema, snapshots):
@@ -67,6 +110,10 @@ def fingerprint_table(spark, catalog, schema, table, run_id):
     name = _fqn(catalog, schema, table)
     if not spark.catalog.tableExists(name):
         return {"table": table, "exists": False}
+    _refresh_table(spark, name)
+    columns = _columns(spark, name)
+    if "RunID" not in columns:
+        return {"table": table, "exists": True, "skipped": True}
     df = spark.table(name).filter(F.col("RunID") == int(run_id))
     columns = sorted(df.columns)
     row_hash = F.xxhash64(

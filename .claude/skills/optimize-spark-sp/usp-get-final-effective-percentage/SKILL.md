@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-final-effective-percentage
-description: Optimizes the Spark implementation of uspGetFinalEffectivePercentage by creating or maintaining outputV3 from the production output baseline, applying the proven concurrency, checkpoint, CPBT, mode-preparation, effective-calculation, output-write, profiling, and exact-parity changes. Use when implementing, benchmarking, diagnosing, or extending performance work for this specific SP.
+description: Optimizes uspGetFinalEffectivePercentage in two packagings — Development flat outputV2 A/B, Production inline in output/ — keeping concurrency, Checkpoint V2, CPBT, mode-preparation, effective-calculation, and three-table write optimizations with exact parity. Use when implementing, benchmarking, or diagnosing this SP.
 ---
 
 # Optimize uspGetFinalEffectivePercentage
@@ -9,14 +9,22 @@ Use this skill only for:
 
 `AllocationV2/usp_get_final_effective_percentage`
 
-The production implementation is the correctness baseline. This SP-specific
-skill keeps the locked FEP candidate in `outputV3` / `outputV4`. Portable
-two-mode generation (Production inline `output/` vs Development `outputV2`
-A/B) lives in the parent [optimize-spark-sp](../SKILL.md) skill. On that
-path the **SP orchestrator** resolves `ExecutionProfile` from
-`Common_V2.core.execution_profiles`; `Common_V2.core.__init__` does not.
-Locked FEP `outputV3`/`outputV4` keep promoted defaults (`CheckpointMode=4`,
-shuffle 32, `MaxThreads=4`) which match profile `low`.
+The production `output/` implementation is the correctness baseline.
+Portable two-mode rules live in the parent
+[optimize-spark-sp](../SKILL.md) skill. The **SP orchestrator** resolves
+`ExecutionProfile` from `Common_V2.core.execution_profiles`;
+`Common_V2.core.__init__` does not. Promoted defaults
+(`CheckpointMode=4`, shuffle 32, `MaxThreads=4`) match profile `low`.
+
+**Packaging (keep every optimization in this skill):**
+
+| Mode | Where the optimizations live |
+|---|---|
+| **2 Development** | Flat `outputV2/`. Isolated orchestrator + pipeline. Optimized helper **copies** in the **same folder** (`cost_pct_loader.py`, `state_allocation.py`, `pfic_footnotes.py`, `effective_calc.py`, `entity_hierarchy.py`). Bind them onto the isolated production orchestrator. No `business/`, `tests/`, or `updated/`. A/B notebook + hashes. |
+| **1 Production** | **Inline** the same optimizations in `output/` (orchestrator and existing helper modules). No `outputV2/`, no profiler, no reconcile. |
+
+Historical log names `outputV3` / `outputV4` mean this locked candidate;
+generate **outputV2** (Development) or edit **output/** (Production).
 
 Never improve benchmark results by weakening business logic, validation,
 output persistence, or exact result comparison.
@@ -32,16 +40,14 @@ Presentation:
 
 ## Paths
 
-- Production baseline:
+- Production baseline / Production-mode target:
   `Source/AllocationV2/usp_get_final_effective_percentage/output/`
-- Optimized implementation:
-  `Source/AllocationV2/usp_get_final_effective_percentage/outputV3/`
+- Development candidate (flat):
+  `Source/AllocationV2/usp_get_final_effective_percentage/outputV2/`
 - Shared checkpoint implementation:
   `Source/Common_V2/core/checkpoint_V2.py`
 - Benchmark:
-  `Source/AllocationV2/usp_get_final_effective_percentage/outputV3/notebook/benchmark_final_effective_percentage.py`
-- Structure tests:
-  `Source/AllocationV2/usp_get_final_effective_percentage/outputV3/tests/test_structure.py`
+  `Source/AllocationV2/usp_get_final_effective_percentage/outputV2/notebook/benchmark_final_effective_percentage.py`
 
 ## Non-negotiable contracts
 
@@ -53,10 +59,13 @@ Presentation:
 3. Require exact fingerprints, schemas, row counts, and values.
 4. Preserve RunID-scoped writes and production error handling.
 5. Keep mode 4 on production control flow.
-6. Keep all optimizations outputV3-local or guarded by an
-   `_output_v3_*` flag that defaults to `False` in production.
+6. Keep **all** optimizations listed in this skill. Development: they live
+   in flat `outputV2/` (orchestrator/pipeline plus helper copies in that
+   folder), gated by `_output_v3_*` flags whose production-module defaults
+   stay off. Production mode: apply the same opts **inline** in `output/`.
 7. Never use a runtime improvement from a failed or non-parity run.
 8. Do not leave `__pycache__` or `.pyc` files in the repository.
+9. Do not nest `outputV2/business/` or `outputV2/tests/`.
 
 ## Target configuration
 
@@ -102,13 +111,14 @@ change. Record:
 Run production first. Capture wall time, reported time, row counts, schemas,
 and output fingerprints.
 
-### 2. Build or repair outputV3 isolation
+### 2. Build or repair isolation (Development) or inline (Production)
 
-If outputV3 is absent, create an isolated wrapper around the production
-orchestrator. Copy orchestration control flow only. Reuse production business
-helpers.
+**Development:** isolated wrapper in **flat** `outputV2/`. Copy
+orchestration control flow. Import unchanged production helpers via
+`parent.py`. Place optimized helper copies in the `outputV2/` root and
+bind them in `orchestrator.py`.
 
-Required modules:
+Required modules (all in `outputV2/`, not in a subpackage):
 
 - `orchestrator.py`: public API, bounded scheduler, timing, configuration
 - `pipeline.py`: optimized mode 1/2/3 control flow
@@ -117,7 +127,13 @@ Required modules:
 - `stages.py`: stage contracts
 - `parent.py`: isolated production loading
 - `plan_profiler.py`: optional plan metadata
-- `output_reconcile.py`: write coordination
+- `output_reconcile.py`: snapshot / restore / fingerprints
+- `cost_pct_loader.py`, `state_allocation.py`, `pfic_footnotes.py`,
+  `effective_calc.py`, `entity_hierarchy.py`: optimized copies
+
+**Production:** apply those same changes **inline** in
+`output/orchestrator.py` and the live helper modules. No `parent.py`,
+no profiler, no A/B notebook.
 
 ### 3. Apply proven common-stage changes
 
@@ -182,20 +198,9 @@ Required modules:
 
 ### 8. Validate
 
-Run:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
-  AllocationV2.usp_get_final_effective_percentage.outputV3.tests.test_structure
-git diff --check
-```
-
-Then run the Databricks benchmark:
-
-1. production;
-2. outputV3;
-3. exact comparison of all three tables;
-4. checkpoint and wave timing review.
+Syntax-check new or moved `outputV2` modules. Then run the Databricks
+benchmark: production, then outputV2, exact comparison of all three
+tables, checkpoint and wave timing review.
 
 Reject the candidate if any table differs.
 
@@ -216,7 +221,7 @@ modes `[1, 2, 3]`, CheckpointMode `4`, shuffle `32`, MaxThreads `4`,
 experiment `baseline`:
 
 - production `run_modes`: `155.7s`
-- outputV3 wall: `51.808s` (`103.9s` / `66.7%` faster)
+- Development outputV2 wall: `51.808s` (`103.9s` / `66.7%` faster)
 - gap to the 50s target: `1.808s`
 - `yearly_lines.isEmpty` present (`SkipYearlyEmptyProbe` off)
 - `tcp_post_et_m0`: `2.287s` (healthy; the 16s regression is not this run)
@@ -251,10 +256,11 @@ Do not promote these without a new isolated experiment:
 
 ## Deployment checks
 
-If a new outputV3 flag appears enabled but its checkpoint name is absent:
+If a new `_output_v3_*` flag appears enabled but its checkpoint name is absent:
 
-1. confirm the shared production helper file was deployed;
-2. purge both `output` and `outputV3` modules;
+1. confirm the helper copy in flat `outputV2/` (or inline `output/` in
+   Production mode) was deployed;
+2. purge both `output` and `outputV2` modules;
 3. inspect the loaded helper signature;
 4. rerun from a clean benchmark pass.
 
@@ -274,7 +280,7 @@ A/B order is original then updated. Pass `ExecutionProfile` and
 
 Report:
 
-- production and outputV3 wall times;
+- production and Development outputV2 wall times;
 - absolute and percentage improvement;
 - exact-parity result for each table;
 - critical checkpoint and parallel-wave timings;

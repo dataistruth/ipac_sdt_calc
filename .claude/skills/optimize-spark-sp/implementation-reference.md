@@ -4,17 +4,20 @@ Pipeline logic is identical in both modes. Packaging and profiler differ.
 
 ## Layout
 
-**Mode 1 Production** — edit live `output/`. No `outputV2/`, no `updated/`,
-no `business/`, no `_pre_opt/`, no `plan_profiler.py`.
+**Mode 1 Production** — edit live `output/` in place. Same optimizations
+as Development. No `outputV2/`, no `updated/`, no `business/`, no
+`tests/`, no `_pre_opt/`, no `plan_profiler.py`.
 
 ```text
 Source/AllocationV2/<sp>/output/
-├── orchestrator.py            # or the SP entry module
-├── parallel_helpers.py        # optional
+├── orchestrator.py            # or the SP entry module (inline edits)
+├── parallel_helpers.py        # optional; same folder
 └── notebook/run_<sp>.py
 ```
 
-**Mode 2 Development** — do not edit `output/`.
+**Mode 2 Development** — do not edit `output/`. Flat `outputV2/` only
+(every candidate `.py` in that directory). No nested `business/`,
+`tests/`, `updated/`, or `_pre_opt/`.
 
 ```text
 Source/AllocationV2/<sp>/outputV2/
@@ -23,8 +26,14 @@ Source/AllocationV2/<sp>/outputV2/
 ├── parallel_helpers.py
 ├── plan_profiler.py           # slim shim only
 ├── output_reconcile.py
+├── write_helpers.py           # optional
 └── notebook/benchmark_<sp>.py
 ```
+
+FEP Development also places optimized helper **copies** in that same
+folder (`cost_pct_loader.py`, `state_allocation.py`, `pfic_footnotes.py`,
+`effective_calc.py`, `entity_hierarchy.py`). Do not put them under
+`outputV2/business/`.
 
 Forbidden in both modes:
 
@@ -32,7 +41,10 @@ Forbidden in both modes:
 Source/AllocationV2/<sp>/output/*_updated.py
 Source/AllocationV2/<sp>/notebooks/
 Source/AllocationV2/<sp>/output/business/
+Source/AllocationV2/<sp>/outputV2/business/
+Source/AllocationV2/<sp>/outputV2/tests/
 Source/AllocationV2/<sp>/output/updated/
+Source/AllocationV2/<sp>/outputV2/updated/
 ```
 
 Shared profiler package (Development import only):

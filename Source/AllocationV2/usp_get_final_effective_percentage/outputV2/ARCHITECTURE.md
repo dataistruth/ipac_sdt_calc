@@ -1,13 +1,17 @@
 # outputV2 architecture
 
-`outputV2` is an isolated wrapper around unchanged production business
-modules. It executes the production orchestrator in a private namespace and
-forks only its `run_modes` control flow in `pipeline.py`. Checkpointing, timing,
-bounded scheduling, and result-table storage are infrastructure seams. Every
-DataFrame transformation, validation, and output builder remains a production
-business function by default. `orchestrator.py` contains three default-off
-copies of simple source relations whose only removed behavior is a warning-only
-`isEmpty` action.
+`outputV2` is an isolated wrapper around unchanged production helpers.
+Optimized copies of a few hot helpers live in the `outputV2/` root
+(`cost_pct_loader.py`, `state_allocation.py`, `pfic_footnotes.py`,
+`effective_calc.py`, `entity_hierarchy.py`) — there is no nested
+`business/` or `tests/` folder. It executes the production orchestrator
+in a private namespace and forks only its `run_modes` control flow in
+`pipeline.py`. Checkpointing, timing, bounded scheduling, and result-table
+storage are infrastructure seams. Every DataFrame transformation,
+validation, and output builder remains a production function by default
+unless the orchestrator binds an outputV2-root copy. `orchestrator.py`
+contains three default-off copies of simple source relations whose only
+removed behavior is a warning-only `isEmpty` action.
 
 ## Named stage contracts
 

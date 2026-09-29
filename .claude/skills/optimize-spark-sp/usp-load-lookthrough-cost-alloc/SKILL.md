@@ -11,7 +11,8 @@ Use this skill only for
 Production `output/` is the correctness baseline. `outputV2` imports
 `_data_loading`, `_hierarchy`, `_allocation`, and the production
 orchestrator helpers via `parent.py`. Do not copy those modules into
-`outputV2/`. No `business/`.
+`outputV2/`. Development: flat `outputV2/` (no `business/`, `tests/`).
+Production: inline in `output/`.
 
 Public entry: `run_load_lookthrough_cost_alloc`.
 

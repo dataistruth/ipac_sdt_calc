@@ -2,8 +2,12 @@
 
 This document explains the current Spark implementation of
 `uspGetFinalEffectivePercentage`, the performance behavior observed in
-Databricks, and the outputV3 changes used to reduce runtime while preserving
+Databricks, and the optimizations used to reduce runtime while preserving
 the production stored-procedure contract.
+
+**Packaging today:** Development = **flat** `outputV2/` (helper copies in
+that folder, not `outputV2/business/`). Production mode = **inline** in
+`output/`. Historical “outputV3” in this guide is that candidate.
 
 The document is intentionally divided into ten page-sized chapters. Pages
 1–5 introduce the SP and its current execution model. Pages 6–10 explain the
@@ -23,12 +27,12 @@ The implementation lives under:
 
 `Source/AllocationV2/usp_get_final_effective_percentage`
 
-The `output` package is the production baseline. The `outputV3` package is an
-optimized control-flow layer. Production remains the authority for business
-semantics. outputV3 may schedule independent work concurrently, materialize
-lineage at different safe boundaries, reuse common intermediates, or use
-equivalent relational expressions, but it must not change the resulting
-tables.
+The `output` package is the production baseline. Development `outputV2` is
+the flat optimized control-flow layer (same optimizations, A/B packaging).
+Production remains the authority for business semantics. The optimized
+package may schedule independent work concurrently, materialize lineage at
+different safe boundaries, reuse common intermediates, or use equivalent
+relational expressions, but it must not change the resulting tables.
 
 The SP produces three primary tables for modes 1–3:
 

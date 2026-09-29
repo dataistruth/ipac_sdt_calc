@@ -10,7 +10,8 @@ Use only for `AllocationV2/usp_apply_investment_level_rounding`.
 Production `output/` is the baseline. Import services via `parent.py`
 (`config_service`, `lookthrough_service`, `input_service`,
 `aggregation_service`, `partner_service`, `rounding_service`,
-`write_service`). Do not copy bodies. No `business/`.
+`write_service`). Do not copy bodies. Development: flat `outputV2/` (no
+`business/`, `tests/`). Production: inline in `output/`.
 
 Public entry: `apply_investment_level_rounding`. Orchestrator resolves
 `ExecutionProfile` from `Common_V2.core.execution_profiles` (default

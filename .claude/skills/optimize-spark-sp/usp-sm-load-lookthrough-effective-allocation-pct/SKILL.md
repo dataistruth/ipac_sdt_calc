@@ -17,6 +17,9 @@ amount passes, `alloc_output`). Sequential
 `write_allocation_output` then `update_allocation_input`. Never
 parallel Output+Input. Flow-up Output write stays before the main write.
 
+Development: flat `outputV2/` (no `business/`, `tests/`). Production:
+inline in `output/`.
+
 ## Notebook
 
 Frozen 10 widgets. Same LT identity 4755 / 18266 / qa7. Restore both SM

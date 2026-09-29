@@ -28,7 +28,8 @@ Public entry: `run_load_lookthrough_allocation_input`.
 Never improve benchmark results by weakening business logic, validation,
 output persistence, or exact result comparison. Do not copy FEP CPBT /
 yearly rewrites or footnotes `cost_snapshot` / `entity_levels` /
-`alloc_passN` into this SP. No `business/`.
+`alloc_passN` into this SP. Development: flat `outputV2/` (no
+`business/`, `tests/`). Production: inline in `output/`.
 
 ## Locked candidate (regenerate this)
 
@@ -75,9 +76,10 @@ Source/AllocationV2/usp_load_lookthrough_allocation_input/
         └── benchmark_load_lookthrough_allocation_input.py
 ```
 
-**Do not create:** `pfic_income_attributes.py`, `business/`, `updated/`,
-`output/*_updated.py`, copies of `lt_*.py` inside `outputV2/`. Business
-services stay in production `output/` and are imported via `parent.py`.
+**Do not create:** `pfic_income_attributes.py`, nested `business/`,
+`tests/`, `updated/`, `output/*_updated.py`, copies of `lt_*.py` inside
+`outputV2/`. Production services stay in `output/` and are imported via
+`parent.py`.
 Window `EffPercentage` lives in `write_helpers.py` so Databricks Source
 trees that already have that file pick it up. `__init__.py` must **not**
 eager-import the orchestrator (that pulled a missing submodule and

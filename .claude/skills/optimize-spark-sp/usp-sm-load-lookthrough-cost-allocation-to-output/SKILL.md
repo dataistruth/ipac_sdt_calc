@@ -16,6 +16,9 @@ Extra seams: `temp_alloc_input`, `fep`, `alloc_pass*`, `alloc_output`.
 Sequential **SM_LookThroughAllocationOutput then SM_LookThroughAllocationInput**.
 Never parallel those two.
 
+Development: flat `outputV2/` (no `business/`, `tests/`). Production:
+inline in `output/`.
+
 ## Notebook
 
 Frozen 10 widgets. LT identity 4755 / 18266 / qa7.

@@ -44,8 +44,10 @@ Do not `from Common_V2.core import resolve_execution_profile`.
 | development, outputV2, side by side, A/B, profiler | **2 Development** |
 | (unspecified) | **2 Development** until they ask to land in production |
 
-Never mix modes in one change set. Never add `updated/` or `business/`
-folders in either mode.
+Never mix modes in one change set. Never add `updated/`, `business/`, or
+`tests/` folders in either mode. Development is always a **flat**
+`outputV2/` (every `.py` in that folder, plus `notebook/`). Production
+is always **inline** in `output/` (same optimizations, no `outputV2/`).
 
 ## SP-specific skills
 
@@ -94,8 +96,10 @@ Source/AllocationV2/<sp_name>/output/
     └── run_<sp_name>.py         # runs THIS orchestrator only
 ```
 
-**Do not create:** `outputV2/`, `updated/`, `business/`, `_pre_opt/`,
-`plan_profiler.py`, `output_reconcile.py`, or any profiler shim.
+**Do not create:** `outputV2/`, `updated/`, `business/`, `tests/`,
+`_pre_opt/`, `plan_profiler.py`, `output_reconcile.py`, or any profiler
+shim. Apply the same optimizations **in place** in `output/` (orchestrator
+and existing helper modules). Do not nest extra packages.
 
 **Notebook:** single-variant run of `AllocationV2.<sp>.output.<entry>`.
 Use the frozen identity widgets plus `ExecutionProfile` only (no A/B
@@ -105,21 +109,28 @@ widget, **no** table-hash A/B.
 
 ## Mode 2 — Development
 
-Leave production `output/` unchanged. Candidate lives in `outputV2/` and
-imports production helpers from the sibling `output/` package of this SP
-(`parent.py` / `..output`). Do not copy production business modules into
-`outputV2/` except orchestrator-local optimization modules.
+Leave production `output/` unchanged. Candidate lives in a **flat**
+`outputV2/` (no nested `business/`, `tests/`, `updated/`, or
+`_pre_opt/`). Import production helpers from the sibling `output/`
+package (`parent.py`). Copy a production helper into `outputV2/` only
+when that file itself holds gated optimizations (FEP:
+`cost_pct_loader.py`, `state_allocation.py`, `pfic_footnotes.py`,
+`effective_calc.py`, `entity_hierarchy.py` sit in the `outputV2/` root
+and are bound onto the isolated production orchestrator). Keep every
+locked optimization; only the folder nesting changes.
 
 ```text
 Source/AllocationV2/<sp_name>/
 ├── output/                      # PRODUCTION — do not edit
-└── outputV2/
+└── outputV2/                    # FLAT — all candidate .py here
     ├── __init__.py
     ├── orchestrator.py          # candidate (same public API)
     ├── parent.py                # import unchanged prod helpers
     ├── parallel_helpers.py
     ├── plan_profiler.py         # slim shim; no-op unless ProfilePlan on
     ├── output_reconcile.py      # per-table fingerprints / hashes
+    ├── write_helpers.py         # optional, same folder
+    ├── cost_pct_loader.py       # FEP only: optimized copy in this folder
     └── notebook/
         └── benchmark_<sp_name>.py
 ```
@@ -181,9 +192,6 @@ must not add widgets.
 
 Pass `ExecutionProfile` and `ProfilePlan` only to the updated variant.
 The notebook does not call `resolve_execution_profile`.
-
-Do not add a `business/` folder unless this SP already uses that FEP-only
-pattern **and** the user asks for it.
 
 ## Required inputs
 

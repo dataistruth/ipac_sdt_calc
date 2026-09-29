@@ -161,33 +161,33 @@ def _fresh(module_name):
 
 
 def _require_current_optimized_sources():
-    """Fail fast when outputV2 was synced without its optimized business copies.
+    """Fail fast when outputV2 was synced without its optimized helper copies.
 
-    All optimizations live under ``outputV2/business`` now, so only outputV2
-    needs to be synchronized. Production ``output`` stays pristine.
+    All optimizations live in ``outputV2/`` (same folder as the
+    orchestrator). Production ``output`` stays pristine.
     """
     cost_pct = importlib.import_module(
-        f"{PACKAGE}.outputV2.business.cost_pct_loader"
+        f"{PACKAGE}.outputV2.cost_pct_loader"
     )
     state = importlib.import_module(
-        f"{PACKAGE}.outputV2.business.state_allocation"
+        f"{PACKAGE}.outputV2.state_allocation"
     )
     footnotes = importlib.import_module(
-        f"{PACKAGE}.outputV2.business.pfic_footnotes"
+        f"{PACKAGE}.outputV2.pfic_footnotes"
     )
     requirements = {
-        "business.cost_pct_loader.build_cost_percentage_by_type": (
+        "cost_pct_loader.build_cost_percentage_by_type": (
             cost_pct.build_cost_percentage_by_type,
             {"checkpoint_group_fn"},
         ),
-        "business.state_allocation.build_state_allocation_input": (
+        "state_allocation.build_state_allocation_input": (
             state.build_state_allocation_input,
             {
                 "collapse_state_passes",
                 "batch_state_workflow_lookup",
             },
         ),
-        "business.pfic_footnotes.build_footnote_input_lines": (
+        "pfic_footnotes.build_footnote_input_lines": (
             footnotes.build_footnote_input_lines,
             {"checkpoint_fn"},
         ),
@@ -199,27 +199,27 @@ def _require_current_optimized_sources():
         if absent:
             missing.append(f"{helper_name}: {', '.join(absent)}")
     hierarchy = importlib.import_module(
-        f"{PACKAGE}.outputV2.business.entity_hierarchy"
+        f"{PACKAGE}.outputV2.entity_hierarchy"
     )
     if "_output_v3_hierarchy_materialize" not in inspect.getsource(
         hierarchy.build_entity_hierarchy
     ):
         missing.append(
-            "business.entity_hierarchy.build_entity_hierarchy: "
+            "entity_hierarchy.build_entity_hierarchy: "
             "_output_v3_hierarchy_materialize"
         )
     if "_output_v3_broadcast_cpbt_remaining" not in inspect.getsource(
         cost_pct.build_cost_percentage_by_type
     ):
         missing.append(
-            "business.cost_pct_loader.build_cost_percentage_by_type: "
+            "cost_pct_loader.build_cost_percentage_by_type: "
             "_output_v3_broadcast_cpbt_remaining"
         )
     if missing:
         raise RuntimeError(
-            "Stale or partially synchronized outputV2. Sync outputV2/ "
-            "(including outputV2/business) before benchmarking. Missing "
-            "seams: " + "; ".join(missing)
+            "Stale or partially synchronized outputV2. Sync the full "
+            "outputV2/ folder before benchmarking. Missing seams: "
+            + "; ".join(missing)
         )
 
 
@@ -340,6 +340,11 @@ def _run(variant):
     )
     if reported is None and profile.get("updated_wall_seconds") is not None:
         reported = float(profile["updated_wall_seconds"])
+    print(
+        f"[benchmark] {variant}: wall={wall:.3f}s reported={reported} "
+        f"rows={summary['total_rows']} tables={summary['tables_present']}",
+        flush=True,
+    )
     record = {
         "variant": variant,
         "wall_seconds": wall,
@@ -375,14 +380,27 @@ try:
         production = _run("production")
         optimized = _run("outputV2")
 
-        if production["rows"] != BASELINE["rows"]:
-            raise AssertionError(
-                f"pass {pass_index}: production rows changed: "
-                f"expected 79, got {production['rows']}"
-            )
+        print(
+            f"[benchmark] pass {pass_index} production rows="
+            f"{production['rows']} outputV2 rows={optimized['rows']} "
+            f"historical_baseline_rows={BASELINE['rows']}",
+            flush=True,
+        )
         if production["tables"] != BASELINE["tables"]:
             raise AssertionError(
-                f"pass {pass_index}: production must write three tables"
+                f"pass {pass_index}: production must write three tables, "
+                f"got {production['tables']}"
+            )
+        if optimized["tables"] != BASELINE["tables"]:
+            raise AssertionError(
+                f"pass {pass_index}: outputV2 must write three tables, "
+                f"got {optimized['tables']}"
+            )
+        if production["rows"] != optimized["rows"]:
+            raise AssertionError(
+                f"pass {pass_index}: row count mismatch "
+                f"production={production['rows']} "
+                f"outputV2={optimized['rows']}"
             )
         mismatches = compare_outputs(
             production["fingerprints"], optimized["fingerprints"]

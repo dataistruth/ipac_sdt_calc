@@ -7,7 +7,9 @@ description: Development outputV2 for uspAddLookThroughAllocationDetail_Step_01.
 
 Use this skill only for `AllocationV2/usp_add_lookthrough_alloc_detail_step01`.
 
-Public entry: `run_add_lookthrough_allocation_detail_step01`. Production `output/` is unchanged. No `business/`.
+Public entry: `run_add_lookthrough_allocation_detail_step01`. Production
+`output/` is unchanged in Development. Flat `outputV2/` (no nested
+`business/` or `tests/`). Production mode: inline in `output/`.
 
 The orchestrator resolves `ExecutionProfile` from
 `Common_V2.core.execution_profiles` at start (default **low**). Cap

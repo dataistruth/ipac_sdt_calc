@@ -44,20 +44,20 @@ _PRODUCTION_RUN_FINAL = _base.run_final_effective_percentages
 _PRODUCTION_RESULT_STORER = _base.GenericResultStorer
 
 # ---------------------------------------------------------------------------
-# Optimized business helpers (outputV2-owned)
+# Optimized helpers (outputV2-owned)
 # ---------------------------------------------------------------------------
 # The production ``output`` package stays a pristine SQL conversion. All
-# performance optimizations live in ``outputV2.business`` and are bound onto
-# the isolated production orchestrator here, so the parallel pipeline calls
-# the optimized copies via ``business.<name>`` while ``output`` is untouched.
+# performance optimizations live in this ``outputV2`` folder and are bound
+# onto the isolated production orchestrator here. The parallel pipeline
+# calls these copies while ``output`` is untouched.
 # Every optimization is gated behind ``_output_v3_*`` flags / optional keyword
 # arguments whose defaults reproduce the exact production behavior, so binding
 # the copies does not change results unless outputV2 explicitly opts in.
-from .business import cost_pct_loader as _opt_cost_pct_loader
-from .business import state_allocation as _opt_state_allocation
-from .business import pfic_footnotes as _opt_pfic_footnotes
-from .business import effective_calc as _opt_effective_calc
-from .business import entity_hierarchy as _opt_entity_hierarchy
+from . import cost_pct_loader as _opt_cost_pct_loader
+from . import state_allocation as _opt_state_allocation
+from . import pfic_footnotes as _opt_pfic_footnotes
+from . import effective_calc as _opt_effective_calc
+from . import entity_hierarchy as _opt_entity_hierarchy
 
 _OPTIMIZED_BUSINESS_EXPORTS = {
     _opt_cost_pct_loader: (

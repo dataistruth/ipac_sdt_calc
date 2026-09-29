@@ -21,9 +21,10 @@ same alternating benchmark pass for every table. A fingerprint includes:
 
 This deliberately does not freeze undocumented hash literals in source.
 `notebook/benchmark_final_effective_percentage.py` captures and displays both
-complete fingerprints and fails on any field mismatch. It also requires the
-production side to retain 79 rows and all three tables, preventing a candidate
-from passing by matching a drifted or incomplete write.
+complete fingerprints and fails on any field mismatch. It requires both
+variants to write all three tables and the same live row count. The recorded
+79-row total is historical for RunID `17376`; do not fail A/B if QA data now
+produces a different total, as long as production and outputV2 match.
 
 The notebook defaults to two passes and alternates order. A baseline run uses:
 
@@ -38,8 +39,9 @@ paired runs with median gain of at least 3 seconds and 5%. Final sub-50
 acceptance requires five pairs, candidate median below 50 seconds, and no
 candidate run above 55 seconds.
 
-Before each variant it purges only RunID 17376. Before the benchmark it
-snapshots that RunID from all output tables and restores it in `finally`.
+Before each variant it purges only RunID 17376 and refreshes the tables.
+Before the benchmark it snapshots that RunID from all output tables and
+restores with `writeTo.overwrite` plus `refreshTable` in `finally`.
 Stage, checkpoint-policy, critical-action, parallel-wave,
 execution-strategy, effective Spark configuration, and cfg-artifact merge
 records are shown separately. Parallel activity must contain
