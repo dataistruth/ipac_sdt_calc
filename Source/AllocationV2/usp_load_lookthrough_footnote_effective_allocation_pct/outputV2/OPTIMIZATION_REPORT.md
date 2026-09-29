@@ -20,6 +20,6 @@ Local V2 backends get the footnotes `toDF` qualifier reset.
 
 ## Validation
 
-Local syntax only until a new Databricks A/B on EntityID 4137 /
-RunID 17376 with matching hashes. Re-upload this `outputV2/` first;
-older workspace copies still had parallel writes.
+Local syntax only until a new Databricks A/B on EntityID `4755` /
+RunID `18266`, catalog `qa7`, schema `iPC_2025_QA7_15348` with matching
+hashes. Frozen 10 widgets; ProfilePlan off; original then updated.

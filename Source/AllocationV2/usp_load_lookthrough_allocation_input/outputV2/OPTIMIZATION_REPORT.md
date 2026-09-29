@@ -112,7 +112,8 @@ exposes section, task/pool, and checkpoint activity via
 `notebook/benchmark_load_lookthrough_allocation_input.py` uses the frozen
 10 widgets. Identity: EntityID `4755`, ClientID `15348`, TaxPeriodID `1`,
 RunID `18266`, CatalogName `qa7`, SchemaName `iPC_2025_QA7_15348`.
-`removeAll()` in its own cell. Pass `ExecutionProfile` only to updated.
+`removeAll()` in its own cell. Pass `ExecutionProfile` and `ProfilePlan`
+only to updated. A/B order is original then updated.
 Inspect live columns before snapshot `WHERE`. Snapshots:
 
 - LookThroughAllocationInput (`RunID`)
@@ -130,7 +131,7 @@ checkpoint recommendations.
 
 ## Validation status
 
-Local validation is limited to source review and Python syntax compilation.
-Databricks catalog parity and performance are not yet accepted. Run the
-benchmark with a valid isolated RunID. Acceptance requires matching
-fingerprints in both orders and improvement beyond normal run-to-run variance.
+Locked 2026-09-29 RunID `18266`: fingerprints **PASS**, updated wall
+**18.380s**, reported **18.3s**, PFIC write task **5.991s** (window
+`EffPercentage` in `write_helpers.py`). Profile `low`, ProfilePlan off.
+Do not regenerate a separate `pfic_income_attributes.py`.

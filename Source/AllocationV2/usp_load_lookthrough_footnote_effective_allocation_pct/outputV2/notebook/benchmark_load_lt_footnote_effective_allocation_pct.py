@@ -3,8 +3,7 @@
 # MAGIC # Look-through footnote effective allocation % A/B
 # MAGIC Defaults match the FEP Development notebook. Restore snapshots on exit.
 # MAGIC `LookThroughAllocationOutput` is input and output — restore, do not purge.
-
-# COMMAND ----------
+# MAGIC Identity matches lookthrough allocation input (Entity 4755 / Run 18266).
 
 # COMMAND ----------
 
@@ -17,11 +16,11 @@ dbutils.widgets.text(
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
     "1. Source root",
 )
-dbutils.widgets.text("EntityID", "4137", "2. EntityID")
+dbutils.widgets.text("EntityID", "4755", "2. EntityID")
 dbutils.widgets.text("ClientID", "15348", "3. ClientID")
 dbutils.widgets.text("TaxPeriodID", "1", "4. TaxPeriodID")
-dbutils.widgets.text("RunID", "17376", "5. RunID")
-dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
+dbutils.widgets.text("RunID", "18266", "5. RunID")
+dbutils.widgets.text("CatalogName", "qa7", "6. Catalog")
 dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
@@ -207,24 +206,68 @@ finally:
 
 # COMMAND ----------
 
+from pyspark.sql.types import (
+    BooleanType,
+    DoubleType,
+    IntegerType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
+
+summary_schema = StructType(
+    [
+        StructField("pass_number", IntegerType(), False),
+        StructField("variant", StringType(), False),
+        StructField("wall_seconds", DoubleType(), True),
+        StructField("reported_seconds", DoubleType(), True),
+        StructField("rows", LongType(), True),
+        StructField("status", StringType(), True),
+        StructField("skip_reason", StringType(), True),
+    ]
+)
 summary = [
-    {
-        key: row[key]
-        for key in (
-            "pass_number",
-            "variant",
-            "wall_seconds",
-            "reported_seconds",
-            "rows",
-            "status",
-            "skip_reason",
-        )
-    }
+    (
+        int(row["pass_number"]),
+        str(row["variant"]),
+        None if row["wall_seconds"] is None else float(row["wall_seconds"]),
+        None
+        if row["reported_seconds"] is None
+        else float(row["reported_seconds"]),
+        int(row["rows"] or 0),
+        "" if row["status"] is None else str(row["status"]),
+        "" if row["skip_reason"] is None else str(row["skip_reason"]),
+    )
     for row in records
 ]
-display(spark.createDataFrame(summary).orderBy("pass_number", "variant"))
-display(spark.createDataFrame(parity).orderBy("pass_number", "table"))
+display(spark.createDataFrame(summary, summary_schema).orderBy("pass_number", "variant"))
 
+parity_schema = StructType(
+    [
+        StructField("pass_number", IntegerType(), False),
+        StructField("table", StringType(), False),
+        StructField("matches", BooleanType(), False),
+    ]
+)
+display(
+    spark.createDataFrame(
+        [
+            (int(row["pass_number"]), str(row["table"]), bool(row["matches"]))
+            for row in parity
+        ],
+        parity_schema,
+    ).orderBy("pass_number", "table")
+)
+
+delta_schema = StructType(
+    [
+        StructField("pass_number", IntegerType(), False),
+        StructField("original_seconds", DoubleType(), True),
+        StructField("updated_seconds", DoubleType(), True),
+        StructField("improvement_percent", DoubleType(), True),
+    ]
+)
 delta = []
 for number in range(1, runs + 1):
     current = {
@@ -235,16 +278,14 @@ for number in range(1, runs + 1):
     old = current["original"]["wall_seconds"]
     new = current["updated"]["wall_seconds"]
     delta.append(
-        dict(
-            pass_number=number,
-            original_seconds=old,
-            updated_seconds=new,
-            improvement_percent=(
-                round(100 * (old - new) / old, 2) if old else None
-            ),
+        (
+            int(number),
+            None if old is None else float(old),
+            None if new is None else float(new),
+            None if not old else float(round(100 * (old - new) / old, 2)),
         )
     )
-display(spark.createDataFrame(delta))
+display(spark.createDataFrame(delta, delta_schema))
 
 
 def profile_rows(key):
@@ -256,6 +297,20 @@ def profile_rows(key):
     ]
 
 
+def show_profile(values):
+    if not values:
+        print("No records")
+        return
+    cleaned = [
+        {
+            key: "" if value is None else str(value)
+            for key, value in item.items()
+        }
+        for item in values
+    ]
+    display(spark.createDataFrame(cleaned))
+
+
 for key in (
     "timings",
     "parallel_activity",
@@ -264,9 +319,5 @@ for key in (
     "checkpoint_plan_profile",
     "action_profile",
 ):
-    values = profile_rows(key)
     print(f"===== {key.upper()} =====")
-    if values:
-        display(spark.createDataFrame(values))
-    else:
-        print("No records")
+    show_profile(profile_rows(key))

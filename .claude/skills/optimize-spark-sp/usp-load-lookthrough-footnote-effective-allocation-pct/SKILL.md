@@ -63,11 +63,27 @@ Sequential: append `LookThroughAllocationOutput`, then overwrite
 `LookThroughAllocationInput` for the RunID. Restore both tables before
 each A/B variant (Output is also an input to §7).
 
-## Notebook defaults
+## Notebook widgets (frozen)
 
-Frozen parent-skill Mode 2 widgets only (FEP identity 4137 / 17376,
-QA7 / `iPC_2025_QA7_15348`, ExecutionProfile `low`, 1 A/B pass,
-`ProfilePlan` `off`). No extra widgets. Original then updated.
+Exactly the parent-skill 10 widgets. Identity matches locked lookthrough
+allocation input (QA job):
+
+| # | Name | Default |
+|---|---|---|
+| 1 | `source_path` | `/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source` |
+| 2 | `EntityID` | `4755` |
+| 3 | `ClientID` | `15348` |
+| 4 | `TaxPeriodID` | `1` |
+| 5 | `RunID` | `18266` |
+| 6 | `CatalogName` | `qa7` |
+| 7 | `SchemaName` | `iPC_2025_QA7_15348` |
+| 8 | `ExecutionProfile` | `low` |
+| 9 | `number_of_runs` | `1` |
+| 10 | `ProfilePlan` | `off` |
+
+`removeAll()` in its own cell. Pass `ExecutionProfile` and `ProfilePlan`
+only to updated. Original then updated. Restore Output and Input (do
+not purge Output). Last display cell uses explicit Spark schemas.
 
 Updated always returns a status dict (`elapsed_seconds`, `skip_reason`).
 

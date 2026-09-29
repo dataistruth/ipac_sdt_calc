@@ -27,6 +27,18 @@ optional PFICtoK1IncomeAttributePercentages.
 K3 / AllocationRun mutations stay sequential and run **before**
 `output_writes`. On K3 FAIL, skip writes.
 
+## PFIC EffPercentage (locked)
+
+Production groups `recalc_grouped` twice and inner-joins totals.
+Development `write_helpers.build_pfic_income_attributes` uses
+`sum(Amount)` over EntityID/LineID/TrackingKey, then Amount/TotalAmount.
+Null join keys dropped. Do not add a separate
+`pfic_income_attributes.py`.
+
+Locked updated A/B (RunID 18266, profile low, ProfilePlan off): wall
+**18.380s**, `output_writes` **5.995s**, PFIC task **5.991s**,
+fingerprints PASS.
+
 ## Checkpoints
 
 Keep:

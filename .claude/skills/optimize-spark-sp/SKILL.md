@@ -66,7 +66,11 @@ timings. Do not copy those into other SPs. For
 `usp_load_allocation_input`, Development generate must reproduce the
 locked `outputV2` in that child skill (no `form_flowup_collect.py`,
 collect FormFlowups as one task, keep `pfic_raw`, AllocationInput Delta
-then parallel `output_writes`). For look-through cost alloc, Development
+then parallel `output_writes`). For look-through allocation input,
+Development generate must reproduce the locked `outputV2` in that child
+skill (no `pfic_income_attributes.py`, window PFIC `%` in
+`write_helpers.py`, extra Checkpoint V2 seams, lazy `__init__.py`,
+frozen 10 widgets with RunID `18266`). For look-through cost alloc, Development
 generate must keep extra Checkpoint V2 seams
 (`temp_alloc_input`, `fep`, `alloc_pass1`–`alloc_pass4`, `alloc_output`)
 and sequential Output-then-Input writes.
