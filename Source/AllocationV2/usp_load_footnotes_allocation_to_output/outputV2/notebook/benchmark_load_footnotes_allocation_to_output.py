@@ -257,26 +257,75 @@ finally:
 
 # COMMAND ----------
 
+from pyspark.sql.types import (
+    BooleanType,
+    DoubleType,
+    IntegerType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
+
+summary_schema = StructType(
+    [
+        StructField("pass", IntegerType(), False),
+        StructField("variant", StringType(), False),
+        StructField("wall_seconds", DoubleType(), True),
+        StructField("reported_seconds", DoubleType(), True),
+        StructField("allocation_input_rows", LongType(), True),
+        StructField("allocation_output_rows", LongType(), True),
+        StructField("status", StringType(), True),
+        StructField("skip_reason", StringType(), True),
+    ]
+)
 summary_rows = [
-    {
-        "pass": row["pass"],
-        "variant": row["variant"],
-        "wall_seconds": row["wall_seconds"],
-        "reported_seconds": row["reported_seconds"],
-        "allocation_input_rows": row["summary"][
-            "allocation_input_rows"
-        ],
-        "allocation_output_rows": row["summary"][
-            "allocation_output_rows"
-        ],
-        "status": row["status"],
-        "skip_reason": row.get("skip_reason"),
-    }
+    (
+        int(row["pass"]),
+        str(row["variant"]),
+        None if row["wall_seconds"] is None else float(row["wall_seconds"]),
+        None
+        if row["reported_seconds"] is None
+        else float(row["reported_seconds"]),
+        int((row["summary"] or {}).get("allocation_input_rows") or 0),
+        int((row["summary"] or {}).get("allocation_output_rows") or 0),
+        "" if row.get("status") is None else str(row["status"]),
+        "" if row.get("skip_reason") is None else str(row["skip_reason"]),
+    )
     for row in records
 ]
-display(spark.createDataFrame(summary_rows).orderBy("pass", "variant"))
-display(spark.createDataFrame(parity_rows).orderBy("pass", "table"))
+display(
+    spark.createDataFrame(summary_rows, summary_schema).orderBy(
+        "pass", "variant"
+    )
+)
 
+parity_schema = StructType(
+    [
+        StructField("pass", IntegerType(), False),
+        StructField("table", StringType(), False),
+        StructField("matches", BooleanType(), False),
+    ]
+)
+display(
+    spark.createDataFrame(
+        [
+            (int(row["pass"]), str(row["table"]), bool(row["matches"]))
+            for row in parity_rows
+        ],
+        parity_schema,
+    ).orderBy("pass", "table")
+)
+
+delta_schema = StructType(
+    [
+        StructField("pass", IntegerType(), False),
+        StructField("original_wall_seconds", DoubleType(), True),
+        StructField("updated_wall_seconds", DoubleType(), True),
+        StructField("delta_seconds", DoubleType(), True),
+        StructField("improvement_percent", DoubleType(), True),
+    ]
+)
 delta_rows = []
 for pass_number in range(1, number_of_runs + 1):
     original = next(
@@ -291,41 +340,74 @@ for pass_number in range(1, number_of_runs + 1):
     )
     delta = original["wall_seconds"] - updated["wall_seconds"]
     delta_rows.append(
-        {
-            "pass": pass_number,
-            "original_wall_seconds": original["wall_seconds"],
-            "updated_wall_seconds": updated["wall_seconds"],
-            "delta_seconds": round(delta, 3),
-            "improvement_percent": (
-                round(
-                    100.0 * delta / original["wall_seconds"], 2
-                )
-                if original["wall_seconds"]
-                else None
+        (
+            int(pass_number),
+            None
+            if original["wall_seconds"] is None
+            else float(original["wall_seconds"]),
+            None
+            if updated["wall_seconds"] is None
+            else float(updated["wall_seconds"]),
+            None if delta is None else float(round(delta, 3)),
+            None
+            if not original["wall_seconds"]
+            else float(
+                round(100.0 * delta / original["wall_seconds"], 2)
             ),
-        }
+        )
     )
-display(spark.createDataFrame(delta_rows).orderBy("pass"))
+display(spark.createDataFrame(delta_rows, delta_schema).orderBy("pass"))
 
+checkpoint_schema = StructType(
+    [
+        StructField("pass", IntegerType(), False),
+        StructField("name", StringType(), True),
+        StructField("sequence", LongType(), True),
+        StructField("mode", IntegerType(), True),
+        StructField("backend", StringType(), True),
+        StructField("elapsed_seconds", DoubleType(), True),
+    ]
+)
 checkpoint_rows = [
-    {
-        "pass": row["pass"],
-        "name": item.get("name"),
-        "sequence": item.get("sequence"),
-        "mode": item.get("mode"),
-        "backend": item.get("backend"),
-        "elapsed_seconds": item.get("elapsed_seconds"),
-    }
+    (
+        int(row["pass"]),
+        "" if item.get("name") is None else str(item.get("name")),
+        None
+        if item.get("sequence") is None
+        else int(item.get("sequence")),
+        None if item.get("mode") is None else int(item.get("mode")),
+        "" if item.get("backend") is None else str(item.get("backend")),
+        None
+        if item.get("elapsed_seconds") is None
+        else float(item.get("elapsed_seconds")),
+    )
     for row in records
     if row["variant"] == "updated"
     for item in row["checkpoint_activity"]
 ]
 if checkpoint_rows:
     display(
-        spark.createDataFrame(checkpoint_rows).orderBy(
+        spark.createDataFrame(checkpoint_rows, checkpoint_schema).orderBy(
             "pass", "sequence"
         )
     )
+else:
+    print("No checkpoint activity")
+
+
+def show_profile(values):
+    if not values:
+        print("No records")
+        return
+    cleaned = [
+        {
+            key: "" if value is None else str(value)
+            for key, value in item.items()
+        }
+        for item in values
+    ]
+    display(spark.createDataFrame(cleaned))
+
 
 if profile_plan:
     for row in records:
@@ -341,5 +423,6 @@ if profile_plan:
                 f"[profile] pass={row['pass']} "
                 f"{label} records={len(values)}"
             )
-            if values:
-                display(spark.createDataFrame(values))
+            show_profile(values)
+else:
+    print("Plan profile off")

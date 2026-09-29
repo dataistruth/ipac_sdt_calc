@@ -172,6 +172,8 @@ overrides identity because it does not run on the FEP entity:
 EntityID `4032`, RunID `18263`, SchemaName `IPC_2025_QA7_15348`.
 Hardcode RankForRulePickup `1`. Widget 10 is `ProfilePlan` (`off`/`on`).
 No ExecutionOrder / MaxThreads / shuffle / CheckpointMode widgets.
+Last display cell uses explicit Spark schemas (`skip_reason` can be
+empty; do not infer types from all-None columns).
 
 ### 6. Validate
 
