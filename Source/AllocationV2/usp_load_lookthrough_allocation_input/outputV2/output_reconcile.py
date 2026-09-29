@@ -32,6 +32,13 @@ def _fqn(catalog, schema, table):
     return ".".join(_quote(value) for value in (catalog, schema, table))
 
 
+def _columns(spark, fqn):
+    try:
+        return list(spark.table(fqn).columns)
+    except Exception:
+        return []
+
+
 def create_benchmark_snapshot(spark, catalog, schema, run_id):
     """Snapshot every table the procedure may mutate for this RunID."""
     snapshot = {
@@ -48,6 +55,18 @@ def create_benchmark_snapshot(spark, catalog, schema, run_id):
                 "run_column": run_column,
                 "backup": None,
             }
+            continue
+        columns = _columns(spark, source)
+        if run_column not in columns:
+            snapshot["tables"][table] = {
+                "exists": True,
+                "run_column": run_column,
+                "backup": None,
+            }
+            print(
+                f"[reconcile] skip snapshot {table}: no {run_column}; "
+                f"columns={columns[:12]}"
+            )
             continue
         backup = (
             f"_benchmark_ltai_{table.lower()[:16]}_"
@@ -68,7 +87,7 @@ def create_benchmark_snapshot(spark, catalog, schema, run_id):
 
 def _replace_from_snapshot(spark, snapshot, table):
     spec = snapshot["tables"][table]
-    if not spec["exists"]:
+    if not spec["exists"] or not spec.get("backup"):
         return
     target = _fqn(snapshot["catalog"], snapshot["schema"], table)
     backup = _fqn(snapshot["catalog"], snapshot["schema"], spec["backup"])
@@ -84,26 +103,36 @@ def reset_before_variant(spark, snapshot):
     _replace_from_snapshot(spark, snapshot, "AllocationRun")
     for table in OUTPUT_TABLES:
         spec = snapshot["tables"][table]
+        if not spec.get("backup"):
+            continue
         target = _fqn(snapshot["catalog"], snapshot["schema"], table)
-        if spark.catalog.tableExists(target):
-            spark.sql(
-                f"DELETE FROM {target} WHERE {_quote(spec['run_column'])} "
-                f"= {int(snapshot['run_id'])}"
-            )
+        columns = _columns(spark, target)
+        run_column = spec["run_column"]
+        if run_column not in columns:
+            continue
+        spark.sql(
+            f"DELETE FROM {target} WHERE {_quote(run_column)} "
+            f"= {int(snapshot['run_id'])}"
+        )
 
 
 def restore_original_state(spark, snapshot):
     for table, _ in TABLE_SPECS:
         spec = snapshot["tables"][table]
-        if spec["exists"]:
+        if spec.get("backup"):
             _replace_from_snapshot(spark, snapshot, table)
             continue
+        if not spec["exists"]:
+            continue
         target = _fqn(snapshot["catalog"], snapshot["schema"], table)
-        if spark.catalog.tableExists(target):
-            spark.sql(
-                f"DELETE FROM {target} WHERE {_quote(spec['run_column'])} "
-                f"= {int(snapshot['run_id'])}"
-            )
+        columns = _columns(spark, target)
+        run_column = spec["run_column"]
+        if run_column not in columns:
+            continue
+        spark.sql(
+            f"DELETE FROM {target} WHERE {_quote(run_column)} "
+            f"= {int(snapshot['run_id'])}"
+        )
     print(
         f"[reconcile] restored all affected tables "
         f"for RunID={snapshot['run_id']}"
@@ -112,7 +141,7 @@ def restore_original_state(spark, snapshot):
 
 def drop_benchmark_snapshot(spark, snapshot):
     for spec in snapshot["tables"].values():
-        if spec["backup"]:
+        if spec.get("backup"):
             spark.sql(
                 f"DROP TABLE IF EXISTS "
                 f"{_fqn(snapshot['catalog'], snapshot['schema'], spec['backup'])}"
@@ -121,8 +150,14 @@ def drop_benchmark_snapshot(spark, snapshot):
 
 def fingerprint_table(spark, catalog, schema, table, run_column, run_id):
     fqn = _fqn(catalog, schema, table)
-    if not spark.catalog.tableExists(fqn):
+    columns = _columns(spark, fqn)
+    if not columns:
         return {"table": table, "exists": False}
+    if run_column not in columns:
+        print(
+            f"[reconcile] skip fingerprint {table}: no {run_column}"
+        )
+        return {"table": table, "exists": True, "skipped": True}
     df = spark.table(fqn).filter(F.col(run_column) == int(run_id))
     ordered = sorted(df.columns)
     row_hash = F.xxhash64(

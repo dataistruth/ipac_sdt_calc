@@ -88,11 +88,10 @@ Source/AllocationV2/<sp_name>/output/
 `plan_profiler.py`, `output_reconcile.py`, or any profiler shim.
 
 **Notebook:** single-variant run of `AllocationV2.<sp>.output.<entry>`.
-Widgets for source path, SP parameters, ExecutionProfile, MaxThreads,
-ParallelGroups, CheckpointMode, SqlShufflePartitions. Wall time and row
-counts only. The live orchestrator resolves the profile.
-**No** original-vs-updated compare, **no** ProfilePlan, **no** table-hash
-A/B.
+Use the frozen identity widgets plus `ExecutionProfile` only (no A/B
+widgets). Wall time and row counts only. The live orchestrator resolves
+the profile. **No** original-vs-updated compare, **no** ProfilePlan
+widget, **no** table-hash A/B.
 
 ## Mode 2 — Development
 
@@ -117,9 +116,10 @@ Source/AllocationV2/<sp_name>/
 
 **Notebook:** side by side. Original =
 `AllocationV2.<sp>.output.<entry>`. Updated =
-`AllocationV2.<sp>.outputV2.<entry>`. Purge RunID between variants.
-Compare every output table: row count, schema, numeric sums, order-independent
-hash (`xxhash64` sum/min/max). Optional `ProfilePlan` (default off).
+`AllocationV2.<sp>.outputV2.<entry>`. Use **only** the frozen widget
+set below. Purge/restore RunID between variants. Compare every output
+table: row count, schema, numeric sums, order-independent hash
+(`xxhash64` sum/min/max). No ProfilePlan widget (profiler stays off).
 
 Snapshot, purge, restore, and hash **only after reading the live table
 columns**. Never `WHERE RunID` unless `RunID` is in that table’s schema.
@@ -131,6 +131,45 @@ The Databricks notebook `source_path` must be the same Source tree that
 contains the `outputV2/` just generated. Evict `AllocationV2.<sp>` and
 `Common_V2` from `sys.modules` after putting that path first. Do not mix a
 new notebook with a stale workspace copy of `output_reconcile.py`.
+
+## Frozen notebook widgets (do not add extras)
+
+This set is locked. Next generate must match it. Put
+`dbutils.widgets.removeAll()` in its **own** cell, then create widgets.
+
+**Mode 2 A/B** — exactly these 10 widgets, in this order, with these
+defaults (FEP Development run):
+
+| # | Name | Label | Default |
+|---|---|---|---|
+| 1 | `source_path` | Source root | `/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source` |
+| 2 | `EntityID` | EntityID | `4137` |
+| 3 | `ClientID` | ClientID | `15348` |
+| 4 | `TaxPeriodID` | TaxPeriodID | `1` |
+| 5 | `RunID` | RunID | `17376` |
+| 6 | `CatalogName` | Catalog | `QA7` |
+| 7 | `SchemaName` | Schema | `iPC_2025_QA7_15348` |
+| 8 | `ExecutionProfile` | Execution profile | `low` (`low` / `medium` / `big`) |
+| 9 | `number_of_runs` | A/B passes | `1` |
+| 10 | `ExecutionOrder` | Execution order | `alternate` (`alternate` / `original_first` / `updated_first`) |
+
+**Mode 1** — widgets 1–8 only (no `number_of_runs`, no `ExecutionOrder`).
+
+**Do not create widgets for:** `MaxThreads`, `SqlShufflePartitions`,
+`CheckpointMode`, `ProfilePlan`, `PlanCheckpointThreshold`,
+`ParallelGroups`, `VolumePath`, `ResultType`, `LineType`, `RankForRule`,
+or any other SP-local flag. Shuffle, checkpoint mode, and MaxThreads
+come from `Common_V2.core.execution_profiles` via the orchestrator.
+Hardcode SP-only values in the notebook (cost-alloc: LineType
+`K1 with Cost`, RankForRule `0`, ResultType `deltalake`, VolumePath
+`/Volumes/qa7/datavolume/databrickdata`).
+
+An SP-specific skill may override **EntityID / RunID / SchemaName only**
+when that SP cannot run on the FEP identity. It still must not add
+widgets.
+
+Pass `ExecutionProfile` only to the updated variant. The notebook does
+not call `resolve_execution_profile`.
 
 Do not add a `business/` folder unless this SP already uses that FEP-only
 pattern **and** the user asks for it.
@@ -166,8 +205,8 @@ pattern **and** the user asks for it.
    same-table writes, gating validation, and AllocationRun status updates
    sequential. Build each Spark writer inside its task.
 5. No `output/*_updated.py`. No SP-root `notebooks/`.
-6. Mode 1: no plan profiler code at all. Mode 2: slim profiler only, off
-   unless the notebook sets ProfilePlan on.
+6. Mode 1: no plan profiler code at all. Mode 2: slim profiler only,
+   default off. Do not add a ProfilePlan widget unless the user asks.
 7. Mode 2: never report success until every table hash matches.
 8. Duck-type DataFrames. Do not rename public helper symbols.
 9. Do not drop checkpoints on the hot path. Do not coalesce/repartition

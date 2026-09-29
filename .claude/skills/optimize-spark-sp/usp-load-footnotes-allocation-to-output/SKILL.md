@@ -166,20 +166,10 @@ Do not broadcast fact AllocationInput / cost / underlyings frames.
 
 ### Notebook defaults
 
-`outputV2/notebook/benchmark_load_footnotes_allocation_to_output.py`:
-
-| Widget | Default |
-|---|---|
-| EntityID | `4032` |
-| ClientID | `15348` |
-| TaxPeriodID | `1` |
-| RunID | `18263` |
-| CatalogName | `QA7` |
-| SchemaName | `IPC_2025_QA7_15348` |
-| number_of_runs | `1` |
-| ExecutionOrder | `alternate` |
-| ExecutionProfile | `low` |
-| SqlShufflePartitions | blank |
+Frozen parent-skill Mode 2 widget **names and count** (10 only). This SP
+overrides identity because it does not run on the FEP entity:
+EntityID `4032`, RunID `18263`, SchemaName `IPC_2025_QA7_15348`.
+Do not add MaxThreads / shuffle / CheckpointMode / ProfilePlan widgets.
 
 ### 6. Validate
 

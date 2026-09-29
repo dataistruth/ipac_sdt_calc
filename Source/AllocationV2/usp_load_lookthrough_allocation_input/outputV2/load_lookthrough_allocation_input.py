@@ -21,7 +21,12 @@ from .parallel_helpers import (
     run_parallel,
 )
 from .parent import output_module
-from .plan_profiler import plan_profile_report, profile_action, track_plan
+from .plan_profiler import (
+    plan_profile_report,
+    profile_action,
+    track_checkpoint_plan,
+    track_plan,
+)
 from .write_helpers import write_final_output_parallel
 
 _helpers = output_module("lt_helpers")
@@ -102,6 +107,24 @@ def _as_int(value):
     if _blank(value) is None:
         return None
     return int(value)
+
+
+def _checkpoint(spark, df, name, cfg):
+    """Extra plan-break seams plus local qualifier reset."""
+    if df is None:
+        print(f"[outputV2] checkpoint {name}: skipped (df=None)", flush=True)
+        return None
+    track_checkpoint_plan(name, df, cfg)
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = checkpoint(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    print(f"[outputV2] checkpoint {name}: done", flush=True)
+    return result
 
 
 @contextmanager
@@ -306,7 +329,12 @@ def run_load_lookthrough_allocation_input(
                 enabled_groups,
             )
             k1_workflow_df, adjustment_workflow_df = workflow_data
+            lower_tier_funds_df = _checkpoint(
+                spark, lower_tier_funds_df, "lower_tier_funds", cfg
+            )
+            reclass_k1_df = _checkpoint(spark, reclass_k1_df, "reclass_k1", cfg)
             fx_rates_df = build_fx_rates(spark, cfg, k1_workflow_df)
+            fx_rates_df = _checkpoint(spark, fx_rates_df, "fx_rates", cfg)
             status["sections_completed"] = 4
 
         # These builders consume immutable inputs and return disjoint plans.
@@ -344,6 +372,9 @@ def run_load_lookthrough_allocation_input(
             lower_tier_amount_df = build_rounding_diff(
                 spark, cfg, lower_tier_amount_df
             )
+            lower_tier_amount_df = _checkpoint(
+                spark, lower_tier_amount_df, "lower_tier_amount", cfg
+            )
             lt_k1_input_df = recompute_lt_input_from_lower_tier(
                 cfg, lower_tier_amount_df
             )
@@ -369,7 +400,7 @@ def run_load_lookthrough_allocation_input(
                 alloc_input_df = alloc_input_df.unionByName(
                     lt_m1_input_df, allowMissingColumns=True
                 )
-            alloc_input_df = checkpoint(
+            alloc_input_df = _checkpoint(
                 spark, alloc_input_df, "alloc_input_post_unions", cfg
             )
             status["sections_completed"] = 10
@@ -382,6 +413,9 @@ def run_load_lookthrough_allocation_input(
                 _fcc_blocked_df,
                 reclass_unblocked_df,
             ) = build_pfic_mapped_lines(spark, cfg, alloc_input_df)
+            pfic_mapped_df = _checkpoint(
+                spark, pfic_mapped_df, "pfic_mapped", cfg
+            )
             pfic_alloc_input_df, converted_pfic_amounts_df = (
                 build_pfic_conversion(
                     spark,
@@ -407,7 +441,7 @@ def run_load_lookthrough_allocation_input(
                 pfic_mapped_df,
                 lower_tier_funds_df,
             )
-            alloc_input_df = checkpoint(
+            alloc_input_df = _checkpoint(
                 spark, alloc_input_df, "alloc_input_post_pfic", cfg
             )
             status["sections_completed"] = 14
@@ -415,6 +449,9 @@ def run_load_lookthrough_allocation_input(
         with _timed(timings, "S15-S19 sequential finalization"):
             alloc_input_df = build_box_jkl_input(
                 spark, cfg, alloc_input_df, fx_rates_df
+            )
+            alloc_input_df = _checkpoint(
+                spark, alloc_input_df, "alloc_input_box_jkl", cfg
             )
             alloc_input_df = apply_master_feed_exclusion(
                 spark, cfg, alloc_input_df
@@ -425,6 +462,9 @@ def run_load_lookthrough_allocation_input(
             )
             alloc_input_df = apply_line_exclusions(
                 spark, cfg, alloc_input_df
+            )
+            alloc_input_df = _checkpoint(
+                spark, alloc_input_df, "alloc_input_pre_write", cfg
             )
             status["sections_completed"] = 19
 

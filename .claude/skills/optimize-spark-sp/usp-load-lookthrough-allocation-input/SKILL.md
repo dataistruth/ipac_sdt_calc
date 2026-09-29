@@ -69,7 +69,7 @@ Public entry:
 9. Never use a runtime improvement from a failed or non-parity run.
 10. Do not leave `__pycache__` or `.pyc` files in the repository.
 11. Mode 1 Production: no plan profiler. Mode 2 Development: slim profiler
-    off unless ProfilePlan is on.
+    default off. Do not add a ProfilePlan widget.
 
 ## Target configuration
 
@@ -84,9 +84,28 @@ them.
   - `independent_early_loads`
   - `independent_input_builders`
   - `output_writes`
-- production checkpoints: **keep**
+- production checkpoints: **keep** (`alloc_input_post_unions`,
+  `alloc_input_post_pfic`)
+- extra Checkpoint V2 seams (reused frames, footnotes-style plan
+  breaks): `lower_tier_funds`, `reclass_k1`, `fx_rates`,
+  `lower_tier_amount`, `pfic_mapped`, `alloc_input_box_jkl`,
+  `alloc_input_pre_write`
 - speculative broadcasts / extra caches: **off** unless measured
 - FEP / footnotes-only flags: **do not apply**
+
+## Notebook widgets (frozen — identity override)
+
+Exactly the parent-skill 10 widgets. This SP overrides identity from
+the QA job (`common_params_json`): EntityID `4755`, ClientID `15348`,
+TaxPeriodID `1`, RunID `18266`, CatalogName `qa7`. Job `SchemaName` is
+null; the client schema widget is still required:
+`iPC_2025_QA7_15348`. `removeAll()` in its own cell.
+
+Do **not** add MaxThreads / shuffle / CheckpointMode / ProfilePlan /
+VolumePath / ResultType widgets. Hardcode ResultType `deltalake` and
+VolumePath `/Volumes/qa7/datavolume/databrickdata`. Pass
+`ExecutionProfile` only to updated. Inspect live columns before
+`WHERE RunID` / `UpperTierRunID`.
 
 ## Implementation workflow
 
@@ -117,9 +136,11 @@ Required modules:
 - `parent.py`: live `output/` imports
 - `parallel_helpers.py`: bounded pools, START/DONE, observe every future
 - `write_helpers.py`: distinct-table appends for `output_writes`
-- `output_reconcile.py`: snapshot / restore / hash all five tables
+- `output_reconcile.py`: snapshot / restore / hash all five tables;
+  inspect live columns before `WHERE RunID`
 - `plan_profiler.py`: slim shim
-- `notebook/benchmark_load_lookthrough_allocation_input.py`: A/B
+- `notebook/benchmark_load_lookthrough_allocation_input.py`: frozen 10
+  widgets (Entity 4755 / Run 18266 / catalog `qa7`)
 
 Do not create `output/updated/` or a package-root `notebooks/` folder.
 
@@ -140,7 +161,10 @@ Wave time is `max(task)`, not the sum. Cap workers 1..4.
 ### 4. Apply Checkpoint V2
 
 Use only `Common_V2.core.checkpoint_V2`. Initialize once before pools.
-Keep `alloc_input_post_unions` and `alloc_input_post_pfic`.
+Keep `alloc_input_post_unions` and `alloc_input_post_pfic`. Extra V2
+seams on reused frames (`lower_tier_funds`, `reclass_k1`, `fx_rates`,
+`lower_tier_amount`, `pfic_mapped`, `alloc_input_box_jkl`,
+`alloc_input_pre_write`). After a local backend, `toDF(*columns)`.
 
 ### 5. Validate
 

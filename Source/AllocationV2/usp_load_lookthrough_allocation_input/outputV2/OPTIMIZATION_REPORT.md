@@ -90,6 +90,10 @@ both due to high fan-out; the notebook records incoming
 nodes/depth/operator mix and materialization time before any direct removal can
 be considered.
 
+Extra Checkpoint V2 seams (reused frames; local backend `toDF`):
+`lower_tier_funds`, `reclass_k1`, `fx_rates`, `lower_tier_amount`,
+`pfic_mapped`, `alloc_input_box_jkl`, `alloc_input_pre_write`.
+
 ## Telemetry
 
 `ProfilePlan=on` records and prints separate BUILDER, CHECKPOINT, and ACTION
@@ -101,9 +105,11 @@ exposes section, task/pool, and checkpoint activity via
 
 ## Benchmark and reconciliation
 
-`notebook/benchmark_load_lookthrough_allocation_input.py` moves `source_path`
-to the front, evicts production/outputV2/profiler/Common_V2 modules, proves the
-V2 checkpoint import, alternates execution order, and snapshots all RunID state:
+`notebook/benchmark_load_lookthrough_allocation_input.py` uses the frozen
+10 widgets. Identity: EntityID `4755`, ClientID `15348`, TaxPeriodID `1`,
+RunID `18266`, CatalogName `qa7`, SchemaName `iPC_2025_QA7_15348`.
+`removeAll()` in its own cell. Pass `ExecutionProfile` only to updated.
+Inspect live columns before snapshot `WHERE`. Snapshots:
 
 - LookThroughAllocationInput (`RunID`)
 - SchKTaxableIncome (`UpperTierRunID`)

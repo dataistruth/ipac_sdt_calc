@@ -65,9 +65,9 @@ each A/B variant (Output is also an input to §7).
 
 ## Notebook defaults
 
-EntityID `4137`, ClientID `15348`, TaxPeriodID `1`, RunID `17376`,
-catalog `QA7`, schema `iPC_2025_QA7_15348`, ExecutionProfile `low`,
-ProfilePlan `off`, shuffle blank.
+Frozen parent-skill Mode 2 widgets only (FEP identity 4137 / 17376,
+QA7 / `iPC_2025_QA7_15348`, ExecutionProfile `low`, 1 A/B pass,
+alternate). No extra widgets.
 
 Updated always returns a status dict (`elapsed_seconds`, `skip_reason`).
 

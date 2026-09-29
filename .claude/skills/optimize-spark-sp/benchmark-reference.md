@@ -21,24 +21,9 @@ Runs **only** the live modified orchestrator:
 
 No original/updated pair. No `_pre_opt`. No ProfilePlan. No table-hash A/B.
 
-Widgets:
-
-```text
-source_path
-EntityID
-ClientID
-TaxPeriodID
-RunID
-CatalogName
-SchemaName
-ResultType
-VolumePath                 # only if the SP supports it
-ExecutionProfile           # low | medium | big; default low
-MaxThreads                 # blank means profile value (4)
-ParallelGroups             # default all
-CheckpointMode             # blank means profile value
-SqlShufflePartitions       # blank means profile shuffle
-```
+Widgets: **frozen Mode 1 set only** (parent skill). Identity +
+`ExecutionProfile`. No MaxThreads / shuffle / CheckpointMode /
+VolumePath / ResultType / ParallelGroups widgets.
 
 Flow: evict `AllocationV2.<sp>.output` and `Common_V2` from `sys.modules`,
 put `source_path` first on `sys.path`, import checkpoint V2, optionally
@@ -60,20 +45,18 @@ Source/AllocationV2/<sp_name>/outputV2/notebook/benchmark_<sp_name>.py
 | Original | `AllocationV2.<sp>.output.<prod_entry>` |
 | Updated | `AllocationV2.<sp>.outputV2.<entry>` |
 
-Widgets: Mode 1 set **plus**
+Widgets: **frozen Mode 2 set only** (parent skill). Exactly 10 widgets:
+`source_path`, `EntityID` `4137`, `ClientID` `15348`, `TaxPeriodID` `1`,
+`RunID` `17376`, `CatalogName` `QA7`, `SchemaName` `iPC_2025_QA7_15348`,
+`ExecutionProfile` `low`, `number_of_runs` `1`, `ExecutionOrder`
+`alternate`. `removeAll()` in its own cell.
 
-```text
-number_of_runs
-ExecutionOrder             # alternate | original_first | updated_first
-ProfilePlan                # off | on; default off
-PlanCheckpointThreshold    # default 30
-```
-
-Pass `ExecutionProfile`, `MaxThreads`, `ParallelGroups`, `ProfilePlan`,
-`PlanCheckpointThreshold`, and explicit `CheckpointMode` **only** to the
-updated variant. The updated orchestrator resolves the profile; the
-notebook does not call `resolve_execution_profile`. Apply explicit
-`SqlShufflePartitions` to both variants when the widget is set.
+Do **not** add MaxThreads, shuffle, CheckpointMode, ProfilePlan,
+threshold, ParallelGroups, VolumePath, ResultType, or LineType widgets.
+Hardcode SP-only constants in the notebook. Pass `ExecutionProfile`
+**only** to the updated variant. The orchestrator resolves the tier from
+`Common_V2.core.execution_profiles`; the notebook does not call
+`resolve_execution_profile`.
 
 ### Fresh import
 

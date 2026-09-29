@@ -70,30 +70,33 @@ ThreadPool caused count mismatches on a sibling SP). Sequential writes.
 
 SKIP when `RunStatus=FAIL` or no Cost/704c FEP rows (`load_workflow_ids`).
 
-## Notebook defaults (same FEP Development run widgets)
+## Notebook widgets (frozen — do not add extras)
 
-`outputV2/notebook/benchmark_load_lookthrough_cost_alloc.py` uses the
-same identity widgets and defaults as FEP
-`benchmark_final_effective_percentage.py`:
+This SP is the locked example of the parent-skill widget set.
+`outputV2/notebook/benchmark_load_lookthrough_cost_alloc.py` must keep
+**exactly these 10 widgets** (FEP Development run). Next generate must
+reproduce this notebook, not a larger one.
 
-| Widget | Default |
-|---|---|
-| source_path | `/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source` |
-| EntityID | `4137` |
-| ClientID | `15348` |
-| TaxPeriodID | `1` |
-| RunID | `17376` |
-| CatalogName | `QA7` |
-| SchemaName | `iPC_2025_QA7_15348` |
-| ExecutionProfile | `low` |
-| number_of_runs | `1` |
-| ExecutionOrder | `alternate` |
+| # | Name | Label | Default |
+|---|---|---|---|
+| 1 | `source_path` | Source root | `/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source` |
+| 2 | `EntityID` | EntityID | `4137` |
+| 3 | `ClientID` | ClientID | `15348` |
+| 4 | `TaxPeriodID` | TaxPeriodID | `1` |
+| 5 | `RunID` | RunID | `17376` |
+| 6 | `CatalogName` | Catalog | `QA7` |
+| 7 | `SchemaName` | Schema | `iPC_2025_QA7_15348` |
+| 8 | `ExecutionProfile` | Execution profile | `low` |
+| 9 | `number_of_runs` | A/B passes | `1` |
+| 10 | `ExecutionOrder` | Execution order | `alternate` |
 
-No MaxThreads / shuffle / CheckpointMode / plan-profiler widgets: the
-execution profile tier resolves them. LineType `K1 with Cost`,
-RankForRule `0`, ResultType `deltalake`, and VolumePath are constants.
-Put `dbutils.widgets.removeAll()` in its own cell (Databricks keeps old
-values if widgets are recreated in the same cell).
+`removeAll()` in its own cell. Pass `ExecutionProfile` only to updated;
+the orchestrator reads `Common_V2.core.execution_profiles`.
+
+**Not widgets** (constants in the notebook): LineType `K1 with Cost`,
+RankForRule `0`, ResultType `deltalake`, VolumePath
+`/Volumes/qa7/datavolume/databrickdata`. No MaxThreads / shuffle /
+CheckpointMode / ProfilePlan / ParallelGroups widgets.
 
 Production `output/` uses flat `from _data_loading import ...`. Alias
 `_data_loading`, `_hierarchy`, `_allocation` in `sys.modules` to the

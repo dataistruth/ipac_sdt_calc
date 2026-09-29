@@ -103,8 +103,11 @@ directly from that module; do not re-export or resolve profiles from
 The **SP orchestrator** performs this resolution once at invocation start,
 before checkpoint initialization and before parallel tasks copy `cfg`.
 Default `execution_profile` / `ExecutionProfile` is **`low`**. The
-notebook passes the widget through; it does not call
-`resolve_execution_profile`. `Common_V2.core.__init__` stays passive.
+notebook passes **only** the frozen `ExecutionProfile` widget through;
+it does not call `resolve_execution_profile` and must not add MaxThreads
+/ shuffle / CheckpointMode widgets. `Common_V2.core.__init__` stays
+passive. Function args for those overrides may still exist; they stay
+`None` so the tier applies.
 
 ```python
 from Common_V2.core.checkpoint_V2 import (
