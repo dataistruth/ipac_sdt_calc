@@ -27,10 +27,10 @@ from .plan_profiler import (
     track_checkpoint_plan,
     track_plan,
 )
-from .pfic_income_attributes import (
+from .write_helpers import (
     build_pfic_income_attributes as build_pfic_income_attributes_v2,
+    write_final_output_parallel,
 )
-from .write_helpers import write_final_output_parallel
 
 _helpers = output_module("lt_helpers")
 logger = _helpers.logger
