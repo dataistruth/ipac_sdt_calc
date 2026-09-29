@@ -29,10 +29,10 @@ dbutils.widgets.dropdown(
 )
 dbutils.widgets.text("number_of_runs", "1", "9. A/B passes")
 dbutils.widgets.dropdown(
-    "ExecutionOrder",
-    "alternate",
-    ["alternate", "original_first", "updated_first"],
-    "10. Execution order",
+    "ProfilePlan",
+    "off",
+    ["off", "on"],
+    "10. Plan profile",
 )
 
 # COMMAND ----------
@@ -43,7 +43,7 @@ import time
 
 source_path = dbutils.widgets.get("source_path").strip().rstrip("/")
 runs = int(dbutils.widgets.get("number_of_runs") or "1")
-order_setting = dbutils.widgets.get("ExecutionOrder")
+profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
 entity_id = int(dbutils.widgets.get("EntityID"))
 client_id = int(dbutils.widgets.get("ClientID"))
 tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
@@ -100,11 +100,8 @@ reconcile = fresh_import(f"{package}.outputV2.output_reconcile")
 
 
 def order_for(number):
-    if order_setting == "original_first":
-        return ("original", "updated")
-    if order_setting == "updated_first":
-        return ("updated", "original")
-    return ("original", "updated") if number % 2 else ("updated", "original")
+    del number
+    return ("original", "updated")
 
 
 def _reported_seconds(result):
@@ -137,6 +134,7 @@ def run_variant(variant, number, snapshot):
     )
     if variant == "updated":
         kwargs["ExecutionProfile"] = execution_profile
+        kwargs["ProfilePlan"] = profile_plan
     started = time.perf_counter()
     result = module.run_load_lookthrough_cost_alloc(spark, **kwargs)
     wall = round(time.perf_counter() - started, 3)

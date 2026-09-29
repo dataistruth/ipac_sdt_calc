@@ -169,7 +169,8 @@ Do not broadcast fact AllocationInput / cost / underlyings frames.
 Frozen parent-skill Mode 2 widget **names and count** (10 only). This SP
 overrides identity because it does not run on the FEP entity:
 EntityID `4032`, RunID `18263`, SchemaName `IPC_2025_QA7_15348`.
-Do not add MaxThreads / shuffle / CheckpointMode / ProfilePlan widgets.
+Hardcode RankForRulePickup `1`. Widget 10 is `ProfilePlan` (`off`/`on`).
+No ExecutionOrder / MaxThreads / shuffle / CheckpointMode widgets.
 
 ### 6. Validate
 
@@ -178,7 +179,7 @@ Syntax-check. Then run the Databricks A/B notebook on an isolated RunID:
 1. snapshot AllocationInput RunID partition and existing generated
    footnote AllocationOutput rows;
 2. restore both before every variant;
-3. original (`output`) then updated (`outputV2`), or the widget order;
+3. original (`output`) then updated (`outputV2`);
 4. compare both tables; restore original state in `finally`.
 
 Reject the candidate if either table differs.

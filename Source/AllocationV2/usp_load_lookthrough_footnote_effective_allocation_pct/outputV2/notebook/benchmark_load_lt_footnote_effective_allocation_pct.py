@@ -6,61 +6,35 @@
 
 # COMMAND ----------
 
+# COMMAND ----------
+
 dbutils.widgets.removeAll()
+
+# COMMAND ----------
+
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
     "1. Source root",
 )
-dbutils.widgets.text("number_of_runs", "1", "2. A/B passes")
-dbutils.widgets.dropdown(
-    "ExecutionOrder",
-    "alternate",
-    ["alternate", "original_first", "updated_first"],
-    "3. Execution order",
-)
-dbutils.widgets.text("EntityID", "4137", "4. EntityID")
-dbutils.widgets.text("ClientID", "15348", "5. ClientID")
-dbutils.widgets.text("TaxPeriodID", "1", "6. TaxPeriodID")
-dbutils.widgets.text("RunID", "17376", "7. RunID")
-dbutils.widgets.text("CatalogName", "QA7", "8. Catalog")
-dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "9. Schema")
-dbutils.widgets.text(
-    "VolumePath",
-    "/Volumes/qa7/datavolume/databrickdata",
-    "10. Volume path",
-)
+dbutils.widgets.text("EntityID", "4137", "2. EntityID")
+dbutils.widgets.text("ClientID", "15348", "3. ClientID")
+dbutils.widgets.text("TaxPeriodID", "1", "4. TaxPeriodID")
+dbutils.widgets.text("RunID", "17376", "5. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
+dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
     "low",
     ["low", "medium", "big"],
-    "11. Execution profile",
+    "8. Execution profile",
 )
-dbutils.widgets.text("MaxThreads", "", "12. Max threads (blank=profile)")
-dbutils.widgets.text("ParallelGroups", "all", "13. Parallel groups")
+dbutils.widgets.text("number_of_runs", "1", "9. A/B passes")
 dbutils.widgets.dropdown(
     "ProfilePlan",
     "off",
     ["off", "on"],
-    "14. Plan profiler",
-)
-dbutils.widgets.text("PlanCheckpointThreshold", "30", "15. Plan threshold")
-dbutils.widgets.dropdown(
-    "CheckpointMode",
-    "default",
-    ["default", "1", "2", "3", "4"],
-    "16. Checkpoint mode",
-)
-dbutils.widgets.text(
-    "SqlShufflePartitions",
-    "",
-    "17. spark.sql.shuffle.partitions (blank = profile)",
-)
-dbutils.widgets.dropdown(
-    "ResultType",
-    "deltalake",
-    ["deltalake", "parquet"],
-    "18. Result type",
+    "10. Plan profile",
 )
 
 # COMMAND ----------
@@ -71,34 +45,20 @@ import time
 
 source_path = dbutils.widgets.get("source_path").strip().rstrip("/")
 runs = int(dbutils.widgets.get("number_of_runs") or "1")
-order_setting = dbutils.widgets.get("ExecutionOrder")
+profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
 entity_id = int(dbutils.widgets.get("EntityID"))
 client_id = int(dbutils.widgets.get("ClientID"))
 tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
 run_id = int(dbutils.widgets.get("RunID"))
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
-volume_path = dbutils.widgets.get("VolumePath").strip()
+volume_path = "/Volumes/qa7/datavolume/databrickdata"
 execution_profile = (
     dbutils.widgets.get("ExecutionProfile").strip() or "low"
 )
-max_threads_raw = dbutils.widgets.get("MaxThreads").strip()
-workers = int(max_threads_raw) if max_threads_raw else None
-parallel_groups = dbutils.widgets.get("ParallelGroups").strip() or "all"
-profile_plan = dbutils.widgets.get("ProfilePlan").lower() == "on"
-threshold = int(dbutils.widgets.get("PlanCheckpointThreshold") or "30")
-mode_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
-mode = None if mode_raw in {"", "default"} else int(mode_raw)
-shuffle = dbutils.widgets.get("SqlShufflePartitions").strip()
-result_type = dbutils.widgets.get("ResultType").strip() or "deltalake"
-if runs < 1 or (workers is not None and not 1 <= workers <= 4) or (
-    mode is not None and mode not in (1, 2, 3, 4)
-):
-    raise ValueError("Invalid runs, MaxThreads, or CheckpointMode")
-if mode == 3 and not volume_path:
-    raise ValueError("VolumePath is required for CheckpointMode=3")
-if shuffle:
-    spark.conf.set("spark.sql.shuffle.partitions", shuffle)
+result_type = "deltalake"
+if runs < 1:
+    raise ValueError("A/B passes must be >= 1")
 
 while source_path in sys.path:
     sys.path.remove(source_path)
@@ -141,11 +101,8 @@ reconcile = fresh_import(f"{package}.outputV2.output_reconcile")
 
 
 def order_for(number):
-    if order_setting == "original_first":
-        return ("original", "updated")
-    if order_setting == "updated_first":
-        return ("updated", "original")
-    return ("original", "updated") if number % 2 else ("updated", "original")
+    del number
+    return ("original", "updated")
 
 
 def _reported_seconds(result):
@@ -172,18 +129,8 @@ def run_variant(variant, number, snapshot):
         ExecutionID=f"lt-fn-eff-ab-{number}-{variant}",
     )
     if variant == "updated":
-        kwargs.update(
-            ExecutionProfile=execution_profile,
-            ParallelGroups=parallel_groups,
-            ProfilePlan=profile_plan,
-            PlanCheckpointThreshold=threshold,
-        )
-        if workers is not None:
-            kwargs["MaxThreads"] = workers
-        if mode is not None:
-            kwargs["CheckpointMode"] = mode
-        if shuffle:
-            kwargs["SqlShufflePartitions"] = int(shuffle)
+        kwargs["ExecutionProfile"] = execution_profile
+        kwargs["ProfilePlan"] = profile_plan
     started = time.perf_counter()
     result = module.run_load_lt_footnote_effective_allocation_pct(
         spark, **kwargs

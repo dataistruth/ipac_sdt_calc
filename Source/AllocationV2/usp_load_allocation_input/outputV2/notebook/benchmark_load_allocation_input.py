@@ -11,64 +11,32 @@ import time
 # COMMAND ----------
 
 dbutils.widgets.removeAll()
+
+# COMMAND ----------
+
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
-    "1. Monolith Source/",
+    "1. Source root",
 )
-dbutils.widgets.text("number_of_runs", "1", "2. A/B passes")
-dbutils.widgets.dropdown(
-    "ExecutionOrder",
-    "alternate",
-    ["alternate", "original_first", "updated_first"],
-    "3. Execution order",
-)
-dbutils.widgets.text("EntityID", "115", "4. EntityID")
-dbutils.widgets.text("ClientID", "15348", "5. ClientID")
-dbutils.widgets.text("TaxPeriodID", "1", "6. TaxPeriodID")
-dbutils.widgets.text("RunID", "16560", "7. RunID")
-dbutils.widgets.text("CatalogName", "QA7", "8. Catalog")
-dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "9. Schema")
-dbutils.widgets.text(
-    "VolumePath",
-    "/Volumes/qa7/datavolume/databrickdata",
-    "10. Volume path",
-)
+dbutils.widgets.text("EntityID", "115", "2. EntityID")
+dbutils.widgets.text("ClientID", "15348", "3. ClientID")
+dbutils.widgets.text("TaxPeriodID", "1", "4. TaxPeriodID")
+dbutils.widgets.text("RunID", "16560", "5. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
+dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
     "low",
     ["low", "medium", "big"],
-    "11. Execution profile",
+    "8. Execution profile",
 )
-dbutils.widgets.text("MaxThreads", "4", "12. Updated parallel workers")
-dbutils.widgets.text("ParallelGroups", "all", "13. Parallel groups")
+dbutils.widgets.text("number_of_runs", "1", "9. A/B passes")
 dbutils.widgets.dropdown(
     "ProfilePlan",
     "off",
     ["off", "on"],
-    "14. Plan profiler",
-)
-dbutils.widgets.text(
-    "PlanCheckpointThreshold",
-    "30",
-    "15. Plan checkpoint threshold",
-)
-dbutils.widgets.dropdown(
-    "CheckpointMode",
-    "default",
-    ["default", "1", "2", "3", "4"],
-    "16. Checkpoint mode",
-)
-dbutils.widgets.text(
-    "SqlShufflePartitions",
-    "",
-    "17. spark.sql.shuffle.partitions (blank = profile)",
-)
-dbutils.widgets.dropdown(
-    "ResultType",
-    "deltalake",
-    ["deltalake", "parquet"],
-    "18. Result type",
+    "10. Plan profile",
 )
 
 # COMMAND ----------
@@ -92,10 +60,6 @@ except ImportError as exc:
         f"the Source folder to sys.path: {source_root}"
     ) from exc
 
-shuffle_partitions = dbutils.widgets.get("SqlShufflePartitions").strip()
-if shuffle_partitions:
-    spark.conf.set("spark.sql.shuffle.partitions", int(shuffle_partitions))
-
 common_args = {
     "EntityID": int(dbutils.widgets.get("EntityID")),
     "ClientID": int(dbutils.widgets.get("ClientID")),
@@ -103,25 +67,15 @@ common_args = {
     "RunID": int(dbutils.widgets.get("RunID")),
     "CatalogName": dbutils.widgets.get("CatalogName"),
     "SchemaName": dbutils.widgets.get("SchemaName"),
-    "ResultType": dbutils.widgets.get("ResultType"),
-    "VolumePath": dbutils.widgets.get("VolumePath"),
+    "ResultType": "deltalake",
+    "VolumePath": "/Volumes/qa7/datavolume/databrickdata",
 }
 updated_args = {
     **common_args,
     "ExecutionProfile": dbutils.widgets.get("ExecutionProfile").strip()
     or "low",
-    "MaxThreads": int(dbutils.widgets.get("MaxThreads") or "4"),
-    "ParallelGroups": dbutils.widgets.get("ParallelGroups").strip() or "all",
-    "ProfilePlan": dbutils.widgets.get("ProfilePlan"),
-    "PlanCheckpointThreshold": int(
-        dbutils.widgets.get("PlanCheckpointThreshold")
-    ),
+    "ProfilePlan": dbutils.widgets.get("ProfilePlan").strip() or "off",
 }
-checkpoint_mode_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
-if checkpoint_mode_raw not in {"", "default"}:
-    updated_args["CheckpointMode"] = int(checkpoint_mode_raw)
-if shuffle_partitions:
-    updated_args["SqlShufflePartitions"] = int(shuffle_partitions)
 
 # COMMAND ----------
 
@@ -283,7 +237,6 @@ def _run_variant(name):
 
 
 number_of_runs = max(1, int(dbutils.widgets.get("number_of_runs")))
-execution_order = dbutils.widgets.get("ExecutionOrder")
 
 rows = []
 snapshots = create_run_snapshots(
@@ -294,16 +247,7 @@ snapshots = create_run_snapshots(
 )
 try:
     for iteration in range(1, number_of_runs + 1):
-        if execution_order == "alternate":
-            order = (
-                ["production", "updated"]
-                if iteration % 2
-                else ["updated", "production"]
-            )
-        elif execution_order == "original_first":
-            order = ["production", "updated"]
-        else:
-            order = ["updated", "production"]
+        order = ["production", "updated"]
         print(
             f"[benchmark] pass {iteration} execution order: "
             f"{' -> '.join(order)}"

@@ -46,17 +46,17 @@ Source/AllocationV2/<sp_name>/outputV2/notebook/benchmark_<sp_name>.py
 | Updated | `AllocationV2.<sp>.outputV2.<entry>` |
 
 Widgets: **frozen Mode 2 set only** (parent skill). Exactly 10 widgets:
-`source_path`, `EntityID` `4137`, `ClientID` `15348`, `TaxPeriodID` `1`,
-`RunID` `17376`, `CatalogName` `QA7`, `SchemaName` `iPC_2025_QA7_15348`,
-`ExecutionProfile` `low`, `number_of_runs` `1`, `ExecutionOrder`
-`alternate`. `removeAll()` in its own cell.
+`source_path`, `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`,
+`CatalogName`, `SchemaName`, `ExecutionProfile` `low`, `number_of_runs`
+`1`, `ProfilePlan` `off` (`off` / `on`). `removeAll()` in its own cell.
+A/B order is always original then updated (no `ExecutionOrder` widget).
 
-Do **not** add MaxThreads, shuffle, CheckpointMode, ProfilePlan,
+Do **not** add MaxThreads, shuffle, CheckpointMode, ExecutionOrder,
 threshold, ParallelGroups, VolumePath, ResultType, or LineType widgets.
-Hardcode SP-only constants in the notebook. Pass `ExecutionProfile`
-**only** to the updated variant. The orchestrator resolves the tier from
-`Common_V2.core.execution_profiles`; the notebook does not call
-`resolve_execution_profile`.
+Hardcode SP-only constants in the notebook. Pass `ExecutionProfile` and
+`ProfilePlan` **only** to the updated variant. The orchestrator resolves
+the tier from `Common_V2.core.execution_profiles`; the notebook does not
+call `resolve_execution_profile`.
 
 ### Fresh import
 
@@ -91,7 +91,7 @@ Validate `outputV2/` has entry module, `plan_profiler.py`,
 
 For each pass:
 
-1. Choose order from `ExecutionOrder`.
+1. Run original then updated (no ExecutionOrder widget).
 2. Purge only this RunID from compared tables **that have a RunID
    column**. Read `spark.table(fqn).columns` first. Skip (do not fail)
    tables without that column.

@@ -8,93 +8,50 @@
 # COMMAND ----------
 
 dbutils.widgets.removeAll()
+
+# COMMAND ----------
+
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
     "1. Source root",
 )
-dbutils.widgets.text("number_of_runs", "1", "2. Number of runs")
-dbutils.widgets.dropdown(
-    "ExecutionOrder",
-    "alternate",
-    ["alternate", "original_first", "updated_first"],
-    "3. Execution order",
-)
-dbutils.widgets.text("EntityID", "4032", "4. EntityID")
-dbutils.widgets.text("ClientID", "15348", "5. ClientID")
-dbutils.widgets.text("TaxPeriodID", "1", "6. TaxPeriodID")
-dbutils.widgets.text("RunID", "18263", "7. RunID")
-dbutils.widgets.text("CatalogName", "QA7", "8. Catalog")
+dbutils.widgets.text("EntityID", "4032", "2. EntityID")
+dbutils.widgets.text("ClientID", "15348", "3. ClientID")
+dbutils.widgets.text("TaxPeriodID", "1", "4. TaxPeriodID")
+dbutils.widgets.text("RunID", "18263", "5. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
 dbutils.widgets.text(
-    "SchemaName", "IPC_2025_QA7_15348", "9. Schema"
-)
-dbutils.widgets.dropdown(
-    "RankForRulePickup", "1", ["1", "2"], "10. Rule rank"
+    "SchemaName", "IPC_2025_QA7_15348", "7. Schema"
 )
 dbutils.widgets.dropdown(
     "ExecutionProfile",
     "low",
     ["low", "medium", "big"],
-    "11. Execution profile",
+    "8. Execution profile",
 )
-dbutils.widgets.text("MaxThreads", "", "12. Max threads (blank=profile)")
-dbutils.widgets.text(
-    "ParallelGroups", "all", "13. Parallel groups"
-)
+dbutils.widgets.text("number_of_runs", "1", "9. A/B passes")
 dbutils.widgets.dropdown(
-    "ProfilePlan", "off", ["off", "on"], "14. Plan profile"
-)
-dbutils.widgets.text(
-    "PlanCheckpointThreshold", "30", "15. Plan threshold"
-)
-dbutils.widgets.dropdown(
-    "CheckpointMode",
-    "default",
-    ["default", "1", "2", "3", "4"],
-    "16. Checkpoint mode (blank=profile)",
-)
-dbutils.widgets.text(
-    "SqlShufflePartitions",
-    "",
-    "17. Shuffle partitions (blank=profile)",
+    "ProfilePlan", "off", ["off", "on"], "10. Plan profile"
 )
 
 source_path = dbutils.widgets.get("source_path").strip()
 number_of_runs = int(
     dbutils.widgets.get("number_of_runs").strip() or "1"
 )
-execution_order = dbutils.widgets.get("ExecutionOrder").strip()
+profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
 entity_id = int(dbutils.widgets.get("EntityID"))
 client_id = int(dbutils.widgets.get("ClientID"))
 tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
 run_id = int(dbutils.widgets.get("RunID"))
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
-rank = int(dbutils.widgets.get("RankForRulePickup"))
+rank = 1
 execution_profile = (
     dbutils.widgets.get("ExecutionProfile").strip() or "low"
 )
-max_threads_raw = dbutils.widgets.get("MaxThreads").strip()
-max_threads = int(max_threads_raw) if max_threads_raw else None
-parallel_groups = dbutils.widgets.get("ParallelGroups").strip() or "all"
-profile_plan = dbutils.widgets.get("ProfilePlan").lower() == "on"
-plan_threshold = int(
-    dbutils.widgets.get("PlanCheckpointThreshold").strip() or "30"
-)
-checkpoint_mode_raw = dbutils.widgets.get("CheckpointMode").strip()
-checkpoint_mode = (
-    None if checkpoint_mode_raw in {"", "default"} else int(checkpoint_mode_raw)
-)
-shuffle_partitions = dbutils.widgets.get(
-    "SqlShufflePartitions"
-).strip()
-
 if number_of_runs < 1:
-    raise ValueError("number_of_runs must be >= 1")
-if max_threads is not None and not 1 <= max_threads <= 4:
-    raise ValueError("MaxThreads must be between 1 and 4")
-if shuffle_partitions:
-    spark.conf.set("spark.sql.shuffle.partitions", shuffle_partitions)
+    raise ValueError("A/B passes must be >= 1")
 
 # COMMAND ----------
 
@@ -156,15 +113,8 @@ drop_snapshot = reconcile.drop_benchmark_snapshot
 
 
 def _order(pass_number):
-    if execution_order == "original_first":
-        return ("original", "updated")
-    if execution_order == "updated_first":
-        return ("updated", "original")
-    return (
-        ("original", "updated")
-        if pass_number % 2
-        else ("updated", "original")
-    )
+    del pass_number
+    return ("original", "updated")
 
 
 def _run_variant(variant, pass_number, snapshot):
@@ -188,17 +138,9 @@ def _run_variant(variant, pass_number, snapshot):
         kwargs.update(
             {
                 "ExecutionProfile": execution_profile,
-                "ParallelGroups": parallel_groups,
                 "ProfilePlan": profile_plan,
-                "PlanCheckpointThreshold": plan_threshold,
             }
         )
-        if max_threads is not None:
-            kwargs["MaxThreads"] = max_threads
-        if checkpoint_mode is not None:
-            kwargs["CheckpointMode"] = checkpoint_mode
-        if shuffle_partitions:
-            kwargs["SqlShufflePartitions"] = int(shuffle_partitions)
     started = time.time()
     result = runner.run_load_footnotes_allocation_to_output(
         spark, **kwargs

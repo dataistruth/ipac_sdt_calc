@@ -103,9 +103,9 @@ directly from that module; do not re-export or resolve profiles from
 The **SP orchestrator** performs this resolution once at invocation start,
 before checkpoint initialization and before parallel tasks copy `cfg`.
 Default `execution_profile` / `ExecutionProfile` is **`low`**. The
-notebook passes **only** the frozen `ExecutionProfile` widget through;
-it does not call `resolve_execution_profile` and must not add MaxThreads
-/ shuffle / CheckpointMode widgets. `Common_V2.core.__init__` stays
+notebook passes the frozen `ExecutionProfile` and `ProfilePlan` widgets
+through; it does not call `resolve_execution_profile` and must not add
+MaxThreads / shuffle / CheckpointMode / ExecutionOrder widgets. `Common_V2.core.__init__` stays
 passive. Function args for those overrides may still exist; they stay
 `None` so the tier applies.
 
@@ -337,7 +337,7 @@ Production orchestrators must not reference `plan_profiler` or
 In Mode 2, add a slim `outputV2/plan_profiler.py` that re-exports the
 shared `AllocationV2.plan_profiler` when present, else no-ops with the
 same signatures. Default `profile_plan=False`. The A/B notebook may turn
-it on.
+it on with widget `ProfilePlan`.
 
 Shared package: `AllocationV2.plan_profiler`. The slim shim must re-export:
 

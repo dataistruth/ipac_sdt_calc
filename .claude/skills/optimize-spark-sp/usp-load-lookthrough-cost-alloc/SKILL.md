@@ -88,15 +88,16 @@ reproduce this notebook, not a larger one.
 | 7 | `SchemaName` | Schema | `iPC_2025_QA7_15348` |
 | 8 | `ExecutionProfile` | Execution profile | `low` |
 | 9 | `number_of_runs` | A/B passes | `1` |
-| 10 | `ExecutionOrder` | Execution order | `alternate` |
+| 10 | `ProfilePlan` | Plan profile | `off` |
 
-`removeAll()` in its own cell. Pass `ExecutionProfile` only to updated;
-the orchestrator reads `Common_V2.core.execution_profiles`.
+`removeAll()` in its own cell. Pass `ExecutionProfile` and `ProfilePlan`
+only to updated. A/B order is original then updated. The orchestrator
+reads `Common_V2.core.execution_profiles`.
 
 **Not widgets** (constants in the notebook): LineType `K1 with Cost`,
 RankForRule `0`, ResultType `deltalake`, VolumePath
 `/Volumes/qa7/datavolume/databrickdata`. No MaxThreads / shuffle /
-CheckpointMode / ProfilePlan / ParallelGroups widgets.
+CheckpointMode / ExecutionOrder / ParallelGroups widgets.
 
 Production `output/` uses flat `from _data_loading import ...`. Alias
 `_data_loading`, `_hierarchy`, `_allocation` in `sys.modules` to the

@@ -69,7 +69,7 @@ Public entry:
 9. Never use a runtime improvement from a failed or non-parity run.
 10. Do not leave `__pycache__` or `.pyc` files in the repository.
 11. Mode 1 Production: no plan profiler. Mode 2 Development: slim profiler
-    default off. Do not add a ProfilePlan widget.
+    off unless `ProfilePlan` is on. No `ExecutionOrder` widget.
 
 ## Target configuration
 
@@ -101,11 +101,12 @@ TaxPeriodID `1`, RunID `18266`, CatalogName `qa7`. Job `SchemaName` is
 null; the client schema widget is still required:
 `iPC_2025_QA7_15348`. `removeAll()` in its own cell.
 
-Do **not** add MaxThreads / shuffle / CheckpointMode / ProfilePlan /
+Do **not** add MaxThreads / shuffle / CheckpointMode / ExecutionOrder /
 VolumePath / ResultType widgets. Hardcode ResultType `deltalake` and
 VolumePath `/Volumes/qa7/datavolume/databrickdata`. Pass
-`ExecutionProfile` only to updated. Inspect live columns before
-`WHERE RunID` / `UpperTierRunID`.
+`ExecutionProfile` and `ProfilePlan` only to updated. Inspect live columns
+before `WHERE RunID` / `UpperTierRunID`. A/B order is original then
+updated.
 
 ## Implementation workflow
 

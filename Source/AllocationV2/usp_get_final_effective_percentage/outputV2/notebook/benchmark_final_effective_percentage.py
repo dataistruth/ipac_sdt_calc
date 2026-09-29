@@ -9,6 +9,9 @@
 # COMMAND ----------
 
 dbutils.widgets.removeAll()
+
+# COMMAND ----------
+
 dbutils.widgets.text(
     "source_path",
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
@@ -26,20 +29,13 @@ dbutils.widgets.dropdown(
     ["low", "medium", "big"],
     "8. Execution profile",
 )
-dbutils.widgets.text("MaxThreads", "", "9. Max threads (blank=profile)")
-dbutils.widgets.text(
-    "SqlShufflePartitions", "", "10. Shuffle partitions (blank=profile)"
-)
+dbutils.widgets.text("number_of_runs", "1", "9. A/B passes")
 dbutils.widgets.dropdown(
-    "CheckpointMode",
-    "default",
-    ["default", "1", "2", "4", "5"],
-    "11. Checkpoint mode (blank=profile)",
+    "ProfilePlan",
+    "off",
+    ["off", "on"],
+    "10. Plan profile",
 )
-dbutils.widgets.dropdown(
-    "MissingEntityIdentity", "on", ["off", "on"], "12. Missing identity"
-)
-dbutils.widgets.text("Passes", "1", "13. Passes")
 
 source_path = dbutils.widgets.get("source_path").strip()
 entity_id = int(dbutils.widgets.get("EntityID"))
@@ -51,29 +47,15 @@ schema = dbutils.widgets.get("SchemaName").strip()
 execution_profile = (
     dbutils.widgets.get("ExecutionProfile").strip() or "low"
 )
-max_threads_raw = dbutils.widgets.get("MaxThreads").strip()
-max_threads = int(max_threads_raw) if max_threads_raw else None
-shuffle_raw = dbutils.widgets.get("SqlShufflePartitions").strip()
-shuffle_partitions = int(shuffle_raw) if shuffle_raw else None
-checkpoint_raw = dbutils.widgets.get("CheckpointMode").strip().lower()
-checkpoint_mode = (
-    None
-    if checkpoint_raw in {"", "default"}
-    else int(checkpoint_raw)
-)
-missing_entity_identity = (
-    dbutils.widgets.get("MissingEntityIdentity").strip().lower() == "on"
-)
-passes = int(dbutils.widgets.get("Passes"))
+profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+passes = int(dbutils.widgets.get("number_of_runs") or "1")
+missing_entity_identity = True
+max_threads = None
+shuffle_partitions = None
+checkpoint_mode = None
 
-if max_threads is not None and not 1 <= max_threads <= 4:
-    raise ValueError("MaxThreads must be between 1 and 4")
-if checkpoint_mode is not None and checkpoint_mode not in {1, 2, 4, 5}:
-    raise ValueError("CheckpointMode must be one of 1, 2, 4, 5")
-if shuffle_partitions is not None and shuffle_partitions < 1:
-    raise ValueError("SqlShufflePartitions must be >= 1")
 if passes < 1:
-    raise ValueError("Passes must be >= 1")
+    raise ValueError("A/B passes must be >= 1")
 
 BASELINE = {
     "run_id": 17376,
@@ -287,17 +269,12 @@ def _run(variant):
         kwargs.update(
             {
                 "ExecutionProfile": execution_profile,
+                "ProfilePlan": profile_plan,
                 "ParallelGroups": PARALLEL_GROUPS,
                 "MissingEntityIdentity": missing_entity_identity,
                 **PROMOTED_OUTPUT_V3_KWARGS,
             }
         )
-        if max_threads is not None:
-            kwargs["MaxThreads"] = max_threads
-        if checkpoint_mode is not None:
-            kwargs["CheckpointMode"] = checkpoint_mode
-        if shuffle_partitions is not None:
-            kwargs["SqlShufflePartitions"] = shuffle_partitions
     started = time.time()
     result = runner.run_final_effective_percentages(spark, **kwargs)
     wall = round(time.time() - started, 3)

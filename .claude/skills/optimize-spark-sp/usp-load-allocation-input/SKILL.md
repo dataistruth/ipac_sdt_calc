@@ -200,18 +200,19 @@ Export aliases used by the notebook: `create_run_snapshots`,
 Frozen parent-skill Mode 2 widget **names and count** (10 only). This SP
 overrides identity for the locked 48.4s A/B: EntityID `115`, RunID
 `16560`, SchemaName `IPC_2025_QA7_15348`. Hardcode VolumePath /
-ResultType. Do **not** add MaxThreads / shuffle / CheckpointMode /
-ProfilePlan / ParallelGroups widgets.
+ResultType. Widget 10 is `ProfilePlan` (`off`/`on`). Do **not** add
+MaxThreads / shuffle / CheckpointMode / ExecutionOrder / ParallelGroups
+widgets.
 
 Put `source_path` first on `sys.path`. Evict
 `AllocationV2.usp_load_allocation_input.output`, `.outputV2`,
 `AllocationV2.plan_profiler`, `Common_V2`. Original module
 `...output.load_allocation_input`; updated
-`...outputV2.load_allocation_input`. Pass `ExecutionProfile` **only** to
-updated. Purge only tables that have a `RunID` column. Restore snapshots
-in `finally`.
+`...outputV2.load_allocation_input`. Pass `ExecutionProfile` and
+`ProfilePlan` **only** to updated. Purge only tables that have a `RunID`
+column. Restore snapshots in `finally`.
 
-Fair timing: ProfilePlan **off**.
+Default `ProfilePlan` **off** for fair timing.
 
 ## Target configuration
 

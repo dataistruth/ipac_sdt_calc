@@ -67,7 +67,7 @@ each A/B variant (Output is also an input to §7).
 
 Frozen parent-skill Mode 2 widgets only (FEP identity 4137 / 17376,
 QA7 / `iPC_2025_QA7_15348`, ExecutionProfile `low`, 1 A/B pass,
-alternate). No extra widgets.
+`ProfilePlan` `off`). No extra widgets. Original then updated.
 
 Updated always returns a status dict (`elapsed_seconds`, `skip_reason`).
 

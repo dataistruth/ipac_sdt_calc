@@ -261,6 +261,15 @@ If a new outputV3 flag appears enabled but its checkpoint name is absent:
 Absence of `fn_alloc_pfic_m2` or `all_ent_post_tag_m0` indicates that the
 corresponding shared-helper optimization was not active.
 
+## Notebook widgets
+
+Frozen parent-skill Mode 2 set (10 widgets). FEP identity 4137 / 17376,
+QA7 / `iPC_2025_QA7_15348`. Widget 10 is `ProfilePlan` (`off`/`on`).
+No ExecutionOrder / MaxThreads / shuffle / CheckpointMode /
+MissingEntityIdentity widgets. Hardcode missing-entity identity **on**.
+A/B order is original then updated. Pass `ExecutionProfile` and
+`ProfilePlan` only to outputV2.
+
 ## Completion report
 
 Report:

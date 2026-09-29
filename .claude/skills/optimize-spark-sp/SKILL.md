@@ -119,7 +119,7 @@ Source/AllocationV2/<sp_name>/
 `AllocationV2.<sp>.outputV2.<entry>`. Use **only** the frozen widget
 set below. Purge/restore RunID between variants. Compare every output
 table: row count, schema, numeric sums, order-independent hash
-(`xxhash64` sum/min/max). No ProfilePlan widget (profiler stays off).
+(`xxhash64` sum/min/max). `ProfilePlan` widget default **off**.
 
 Snapshot, purge, restore, and hash **only after reading the live table
 columns**. Never `WHERE RunID` unless `RunID` is in that table’s schema.
@@ -151,25 +151,26 @@ defaults (FEP Development run):
 | 7 | `SchemaName` | Schema | `iPC_2025_QA7_15348` |
 | 8 | `ExecutionProfile` | Execution profile | `low` (`low` / `medium` / `big`) |
 | 9 | `number_of_runs` | A/B passes | `1` |
-| 10 | `ExecutionOrder` | Execution order | `alternate` (`alternate` / `original_first` / `updated_first`) |
+| 10 | `ProfilePlan` | Plan profile | `off` (`off` / `on`) |
 
-**Mode 1** — widgets 1–8 only (no `number_of_runs`, no `ExecutionOrder`).
+**Mode 1** — widgets 1–8 only (no `number_of_runs`, no `ProfilePlan`).
 
-**Do not create widgets for:** `MaxThreads`, `SqlShufflePartitions`,
-`CheckpointMode`, `ProfilePlan`, `PlanCheckpointThreshold`,
+**Do not create widgets for:** `ExecutionOrder`, `MaxThreads`,
+`SqlShufflePartitions`, `CheckpointMode`, `PlanCheckpointThreshold`,
 `ParallelGroups`, `VolumePath`, `ResultType`, `LineType`, `RankForRule`,
-or any other SP-local flag. Shuffle, checkpoint mode, and MaxThreads
-come from `Common_V2.core.execution_profiles` via the orchestrator.
+or any other SP-local flag. A/B order is always **original then
+updated**. Shuffle, checkpoint mode, and MaxThreads come from
+`Common_V2.core.execution_profiles` via the orchestrator.
 Hardcode SP-only values in the notebook (cost-alloc: LineType
 `K1 with Cost`, RankForRule `0`, ResultType `deltalake`, VolumePath
 `/Volumes/qa7/datavolume/databrickdata`).
 
-An SP-specific skill may override **EntityID / RunID / SchemaName only**
-when that SP cannot run on the FEP identity. It still must not add
-widgets.
+An SP-specific skill may override **EntityID / RunID / CatalogName /
+SchemaName only** when that SP cannot run on the FEP identity. It still
+must not add widgets.
 
-Pass `ExecutionProfile` only to the updated variant. The notebook does
-not call `resolve_execution_profile`.
+Pass `ExecutionProfile` and `ProfilePlan` only to the updated variant.
+The notebook does not call `resolve_execution_profile`.
 
 Do not add a `business/` folder unless this SP already uses that FEP-only
 pattern **and** the user asks for it.
@@ -205,8 +206,9 @@ pattern **and** the user asks for it.
    same-table writes, gating validation, and AllocationRun status updates
    sequential. Build each Spark writer inside its task.
 5. No `output/*_updated.py`. No SP-root `notebooks/`.
-6. Mode 1: no plan profiler code at all. Mode 2: slim profiler only,
-   default off. Do not add a ProfilePlan widget unless the user asks.
+6. Mode 1: no plan profiler code at all. Mode 2: slim profiler only.
+   Notebook widget `ProfilePlan` default **off**. No `ExecutionOrder`
+   widget.
 7. Mode 2: never report success until every table hash matches.
 8. Duck-type DataFrames. Do not rename public helper symbols.
 9. Do not drop checkpoints on the hot path. Do not coalesce/repartition
