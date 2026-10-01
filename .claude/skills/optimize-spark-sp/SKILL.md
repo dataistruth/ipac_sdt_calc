@@ -211,6 +211,15 @@ The notebook does not call `resolve_execution_profile`.
    once before worker threads copy `cfg`.
    Modes: 1=Delta, 2=odd local/even Delta, 3=odd local/even Volume, 4=all
    localCheckpoint. Inherit `DEFAULT_CHECKPOINT_MODE` unless overridden.
+   **Production inline:** if builders call module-level `checkpoint` and you
+   rebind that name to a `_checkpoint` wrapper (for `toDF` after local
+   backends / hierarchy `hier_level_*`), the wrapper must call
+   **`checkpoint_V2(...)` by that imported name**, never `checkpoint(...)`.
+   Rebinding `checkpoint = _checkpoint` while `_checkpoint` looks up
+   `checkpoint` at runtime is infinite recursion (`maximum recursion depth
+   exceeded`). Development `outputV2` may patch `output.orchestrator.checkpoint`
+   because `_checkpoint` lives in a **different** module. That pattern is
+   unsafe when inlined into the same production module.
 3. The **SP orchestrator** resolves `ExecutionProfile` (`low`/`medium`/`big`)
    at invocation start. Import
    `Common_V2.core.execution_profiles.resolve_execution_profile` directly.
@@ -249,6 +258,38 @@ The notebook does not call `resolve_execution_profile`.
 
 Do not copy FEP CPBT/footnote/state rewrites into other SPs.
 Do not put AQE in the profile; it stays at the cluster default (`true`).
+
+## Known bad (Checkpoint V2 rebind)
+
+Do **not** inline this Production pattern:
+
+```python
+from Common_V2.core.checkpoint_V2 import checkpoint_V2 as checkpoint
+
+def _checkpoint(spark, df, name, cfg):
+    result = checkpoint(spark, df, name, cfg)  # looks up module.checkpoint
+    ...
+
+mod.checkpoint = _checkpoint  # now checkpoint is _checkpoint → RecursionError
+```
+
+Use:
+
+```python
+from Common_V2.core.checkpoint_V2 import checkpoint_V2
+
+checkpoint = checkpoint_V2  # builders may call this name
+
+def _checkpoint(spark, df, name, cfg):
+    result = checkpoint_V2(spark, df, name, cfg)
+    ...
+
+mod.checkpoint = _checkpoint  # safe: wrapper never names the rebound alias
+```
+
+Patch a **sibling** module’s `checkpoint` (Development `outputV2` → `output`)
+only when the wrapper is defined in the patching module. After local
+Checkpoint V2, `toDF(*columns)` stays required.
 
 **Plan profiler:** Mode 2 only. See implementation reference.
 

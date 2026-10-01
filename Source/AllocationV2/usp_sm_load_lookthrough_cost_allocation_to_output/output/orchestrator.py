@@ -29,7 +29,7 @@ import time
 
 from Common_V2.core.helpers import read_table, table_prefix, ns, ns0, sql_round, safe_divide
 from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2 as checkpoint,
+    checkpoint_V2,
     drop_checkpoints_V2 as drop_checkpoints,
     initialize_checkpoint_V2,
     resolve_checkpoint_mode,
@@ -66,7 +66,7 @@ def _checkpoint(spark, df, name, cfg):
     if df is None:
         return None
     activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint(spark, df, name, cfg)
+    result = checkpoint_V2(spark, df, name, cfg)
     activity = cfg.get("_checkpoint_v2_activity", ())
     if (
         len(activity) > activity_start
@@ -76,17 +76,15 @@ def _checkpoint(spark, df, name, cfg):
     return result
 
 
+# Builders call module-level checkpoint(). Point it at the wrapper after
+# _checkpoint is defined. Never have _checkpoint call this name.
+checkpoint = _checkpoint
+
+
 @contextmanager
 def use_v2_production_checkpoint():
-    """Route module-level checkpoint() to Checkpoint V2 helper."""
-    import sys
-    mod = sys.modules[__name__]
-    original = mod.checkpoint
-    mod.checkpoint = _checkpoint
-    try:
-        yield
-    finally:
-        mod.checkpoint = original
+    """No-op: checkpoint already routes to _checkpoint → checkpoint_V2."""
+    yield
 
 
 

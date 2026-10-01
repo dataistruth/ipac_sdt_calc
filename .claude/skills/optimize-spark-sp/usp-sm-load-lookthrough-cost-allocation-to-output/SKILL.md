@@ -12,6 +12,13 @@ Do **not** copy `output/orchestrator.py`. Import it via `parent.py` and
 wrap `run_sm_load_lookthrough_cost_allocation_to_output`. Patch
 production `checkpoint` to Checkpoint V2 for recursive `hier_level_*`.
 
+**Production inline:** do not rebind this module’s `checkpoint` to
+`_checkpoint` if `_checkpoint` still calls `checkpoint(...)`. That is
+`maximum recursion depth exceeded` (seen 2026-10-01 on the production
+run notebook). `_checkpoint` must call `checkpoint_V2(...)` by the
+imported name. Development `outputV2` patching `_prod.checkpoint` is
+safe because the wrapper is in a different module.
+
 Extra seams: `temp_alloc_input`, `fep`, `alloc_pass*`, `alloc_output`.
 Sequential **SM_LookThroughAllocationOutput then SM_LookThroughAllocationInput**.
 Never parallel those two.

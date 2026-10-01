@@ -409,6 +409,27 @@ from Common_V2.core.checkpoint_V2 import (
 )
 ```
 
+When Production **inlines** a wrapper and rebinds the same module’s
+`checkpoint` (hierarchy `hier_level_*`, local `toDF` reset), do **not**
+use `checkpoint_V2 as checkpoint` inside that wrapper. Python looks up
+`checkpoint` at call time. After `mod.checkpoint = _checkpoint`, the
+wrapper calls itself until `maximum recursion depth exceeded`.
+
+```python
+from Common_V2.core.checkpoint_V2 import checkpoint_V2
+
+checkpoint = checkpoint_V2
+
+def _checkpoint(spark, df, name, cfg):
+    result = checkpoint_V2(spark, df, name, cfg)
+    ...
+```
+
+Development may patch `_prod.checkpoint = _checkpoint` because
+`_checkpoint` lives in `outputV2` and still calls **that** module’s
+`checkpoint_V2` import. Do not copy that rebind onto the same production
+file without renaming the inner call to `checkpoint_V2`.
+
 Call once at start, after the orchestrator resolves the execution profile
 and before worker threads copy `cfg`. If `CheckpointMode` /
 `checkpoint_mode` are unset, pass `profile["checkpoint_mode"]`. Do not

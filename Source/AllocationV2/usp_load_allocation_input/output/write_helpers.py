@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from time import perf_counter
 
 from Common_V2.core.generic_result_storer import GenericResultStorer
 from Common_V2.core.helpers import table_prefix
@@ -115,12 +116,27 @@ def _align(spark, cfg, df, tbl_name):
     return out.select(target_cols)
 
 
+def _materialize_write_df(df, tbl_name):
+    """Eager local checkpoint so Delta and Parquet share one computed frame."""
+    if df is None:
+        return None
+    started = perf_counter()
+    materialized = df.localCheckpoint(eager=True)
+    materialized = materialized.toDF(*materialized.columns)
+    print(
+        f"   [write-ckpt] {tbl_name} localCheckpoint eager "
+        f"{perf_counter() - started:.3f}s"
+    )
+    return materialized
+
+
 def _write_one_table(spark, cfg, tbl_name, df, client_id, entity_id, execution_id):
-    """One distinct-table Delta write. Writer is built inside this task."""
+    """One distinct-table write. Writer is built inside this task."""
     local = isolated_cfg(cfg)
     write_df = _align(spark, local, df, tbl_name)
     if tbl_name in SMALL_TABLES:
         write_df = write_df.coalesce(1)
+    write_df = _materialize_write_df(write_df, tbl_name)
     prefix = table_prefix(local)
     fqn = f"{prefix}.{tbl_name}"
     result_type = local.get("result_type", "deltalake")
@@ -168,6 +184,7 @@ def flush_collected_results(
     prefix = table_prefix(cfg)
     alloc_df = parquet_results.get("AllocationInput")
     if alloc_df is not None:
+        alloc_df = _materialize_write_df(alloc_df, "AllocationInput")
         alloc_df.write.format("delta").mode("overwrite").option(
             "replaceWhere", f"RunID = {run_id}"
         ).saveAsTable(f"{prefix}.AllocationInput")
