@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
-from time import perf_counter
 
 from Common_V2.core.generic_result_storer import GenericResultStorer
 from Common_V2.core.helpers import table_prefix
@@ -31,8 +31,11 @@ SMALL_TABLES = {
 
 def _merge_parquet_results(cfg, parts):
     dest = cfg.setdefault("_parquet_results", {})
-    for part in parts:
-        for table_name, df in (part or {}).items():
+    schema_cache = cfg.setdefault("_schema_cache", {})
+    for frames, schemas in parts:
+        for table_name, types in (schemas or {}).items():
+            schema_cache.setdefault(table_name, types)
+        for table_name, df in (frames or {}).items():
             if table_name in dest:
                 dest[table_name] = dest[table_name].unionByName(
                     df, allowMissingColumns=True
@@ -44,7 +47,25 @@ def _merge_parquet_results(cfg, parts):
 def _collect_one(spark, cfg, fn):
     local = isolated_cfg(cfg)
     fn(spark, local)
-    return local.get("_parquet_results") or {}
+    return (
+        local.get("_parquet_results") or {},
+        local.get("_schema_cache") or {},
+    )
+
+
+def _merge_save_values(values):
+    """Combine per-table GenericResultStorer JSON into sdt_d's single-call shape."""
+    merged = None
+    for value in values:
+        if not (value and isinstance(value, str) and value.strip().startswith("{")):
+            continue
+        info = json.loads(value)
+        if merged is None:
+            merged = {"ResultFilePath": info.get("ResultFilePath", "")}
+        for key, files in info.items():
+            if key != "ResultFilePath":
+                merged[key] = files
+    return json.dumps(merged) if merged is not None else None
 
 
 def collect_output_frames_parallel(
@@ -117,44 +138,19 @@ def _align(spark, cfg, df, tbl_name):
     return out.select(target_cols)
 
 
-def _materialize_write_df(df, tbl_name):
-    """Eager local checkpoint so Delta and Parquet share one computed frame."""
-    if df is None:
-        return None
-    started = perf_counter()
-    materialized = df.localCheckpoint(eager=True)
-    materialized = materialized.toDF(*materialized.columns)
-    print(
-        f"   [write-ckpt] {tbl_name} localCheckpoint eager "
-        f"{perf_counter() - started:.3f}s"
-    )
-    return materialized
-
-
 def _write_one_table(spark, cfg, tbl_name, df, client_id, entity_id, execution_id):
     """One distinct-table write. Writer is built inside this task."""
     local = isolated_cfg(cfg)
     write_df = _align(spark, local, df, tbl_name)
     if tbl_name in SMALL_TABLES:
         write_df = write_df.coalesce(1)
-    write_df = _materialize_write_df(write_df, tbl_name)
-    prefix = table_prefix(local)
-    fqn = f"{prefix}.{tbl_name}"
-    result_type = local.get("result_type", "deltalake")
-    run_id = local["run_id"]
-    if result_type == "deltalake" and "RunID" in write_df.columns:
-        write_df.write.format("delta").mode("overwrite").option(
-            "replaceWhere", f"RunID = {run_id}"
-        ).saveAsTable(fqn)
-        print(f"   [ok] {tbl_name} (delta)")
-        return None
     storer = GenericResultStorer(spark, None)
     return storer.save_results(
         result={tbl_name: write_df},
-        result_type=result_type,
+        result_type=local.get("result_type", "deltalake"),
         catalog_name=local.get("catalog", ""),
         database_name=local.get("schema", ""),
-        run_id=run_id,
+        run_id=local["run_id"],
         client_id=client_id,
         entity_id=entity_id,
         execution_id=execution_id,
@@ -185,7 +181,6 @@ def flush_collected_results(
     prefix = table_prefix(cfg)
     alloc_df = parquet_results.get("AllocationInput")
     if alloc_df is not None:
-        alloc_df = _materialize_write_df(alloc_df, "AllocationInput")
         alloc_df.write.format("delta").mode("overwrite").option(
             "replaceWhere", f"RunID = {run_id}"
         ).saveAsTable(f"{prefix}.AllocationInput")
@@ -227,14 +222,7 @@ def flush_collected_results(
     print(
         f"[done] Stored {len(flowup_items)} flow-up tables: {datetime.now()}"
     )
-    for value in save_values:
-        if (
-            value
-            and isinstance(value, str)
-            and value.strip().startswith("{")
-        ):
-            save_return_value = value
-    return save_return_value
+    return _merge_save_values(save_values) or save_return_value
 
 
 __all__ = [

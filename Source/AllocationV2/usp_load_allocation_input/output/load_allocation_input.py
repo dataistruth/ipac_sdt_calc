@@ -171,6 +171,7 @@ def run_load_allocation_input(
     mode = None
     save_return_value = None
     log_section("run_load_allocation_input")
+    original_shuffle = spark.conf.get("spark.sql.shuffle.partitions")
 
     try:
         with _timed(timings, "S1 config and views"):
@@ -369,6 +370,7 @@ def run_load_allocation_input(
     except Exception:
         raise
     finally:
+        spark.conf.set("spark.sql.shuffle.partitions", original_shuffle)
         elapsed = time.time() - t0
         _LAST_RUN_PROFILE = {
             "timings": list(timings),

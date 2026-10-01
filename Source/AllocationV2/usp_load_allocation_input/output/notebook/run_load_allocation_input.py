@@ -60,7 +60,6 @@ common_args = {
     "RunID": int(dbutils.widgets.get("RunID")),
     "CatalogName": dbutils.widgets.get("CatalogName"),
     "SchemaName": dbutils.widgets.get("SchemaName"),
-    "ResultType": "deltalake",
     "VolumePath": "/Volumes/qa7/datavolume/databrickdata",
     "ExecutionProfile": dbutils.widgets.get("ExecutionProfile").strip() or "low",
 }
