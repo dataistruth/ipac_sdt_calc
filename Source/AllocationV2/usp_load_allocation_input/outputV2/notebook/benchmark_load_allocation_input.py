@@ -194,7 +194,20 @@ def _run_variant(name):
         common_args["CatalogName"],
         common_args["SchemaName"],
         common_args["RunID"],
+        volume_path=common_args["VolumePath"],
+        client_id=common_args["ClientID"],
+        execution_id="1",
     )
+    print(f"[fingerprint] {name}")
+    for table_name, item in fingerprints.items():
+        print(
+            f"[fingerprint] {table_name} rows={item.get('rows')} "
+            f"hash_sum={item.get('hash_sum')} "
+            f"volume_files={item.get('volume_file_count')} "
+            f"types={item.get('volume_file_types')} "
+            f"delta_files={item.get('delta_num_files')} "
+            f"names={item.get('volume_files')}"
+        )
     parsed_result = result
     if isinstance(parsed_result, str):
         try:
@@ -238,6 +251,7 @@ def _run_variant(name):
 number_of_runs = max(1, int(dbutils.widgets.get("number_of_runs")))
 
 rows = []
+file_rows = []
 snapshots = create_run_snapshots(
     spark,
     common_args["CatalogName"],
@@ -258,6 +272,25 @@ try:
             row["order"] = " -> ".join(order)
             rows.append(row)
             pass_rows[variant] = row
+            for table_name, item in json.loads(row["fingerprints"]).items():
+                file_rows.append(
+                    {
+                        "iteration": iteration,
+                        "variant": variant,
+                        "table": table_name,
+                        "rows": item.get("rows"),
+                        "volume_file_count": item.get("volume_file_count"),
+                        "volume_file_types": json.dumps(
+                            item.get("volume_file_types") or {},
+                            sort_keys=True,
+                        ),
+                        "delta_num_files": item.get("delta_num_files"),
+                        "volume_files": json.dumps(
+                            item.get("volume_files") or [],
+                            sort_keys=True,
+                        ),
+                    }
+                )
             print(
                 f"[benchmark] {variant}: wall={row['elapsed_seconds']:.3f}s "
                 f"reported={row['reported_seconds']}"
@@ -266,6 +299,7 @@ try:
         updated = json.loads(pass_rows["updated"]["fingerprints"])
         reconcile = importlib.import_module(RECONCILE_MODULE)
         mismatches = reconcile.compare_outputs(production, updated)
+        file_mismatches = reconcile.compare_files(production, updated)
         if mismatches:
             print(
                 f"[reconcile] FAIL run={iteration}: "
@@ -275,6 +309,17 @@ try:
                 f"Output parity failed: {json.dumps(mismatches, default=str)}"
             )
         print(f"[reconcile] PASS {iteration}: all output fingerprints match")
+        if file_mismatches:
+            print(
+                f"[reconcile] FILE DIFF run={iteration}: "
+                f"{[row['table'] for row in file_mismatches]}"
+            )
+            print(json.dumps(file_mismatches, default=str))
+        else:
+            print(
+                f"[reconcile] FILE PASS {iteration}: "
+                "file counts and types match"
+            )
 finally:
     try:
         restore_run_snapshots(
@@ -324,6 +369,18 @@ summary = (
     .withColumnRenamed("avg(elapsed_seconds)", "average_elapsed_seconds")
 )
 display(summary)
+
+# COMMAND ----------
+
+print("===== FILE FINGERPRINTS =====")
+if file_rows:
+    display(
+        spark.createDataFrame(file_rows).orderBy(
+            "iteration", "table", "variant"
+        )
+    )
+else:
+    print("No file fingerprints captured")
 
 # COMMAND ----------
 
