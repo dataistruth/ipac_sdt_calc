@@ -1,4 +1,4 @@
-"""Bounded join hints proven by the existing candidate."""
+"""Bounded join hints for footnote allocation (keys only, never fact tables)."""
 
 from contextlib import contextmanager
 
@@ -10,6 +10,7 @@ from . import quarter_logic as _quarter_logic
 from .allocation_704c import (
     build_custom_footnote_line_types as _build_custom_types,
 )
+from .underlyings import derive_cost_underlying_types
 
 
 def _quarter_update(df, source, line_type, ql, lid, tk, quarter):
@@ -99,24 +100,10 @@ def broadcast_zero_exclude_lines(df):
     return F.broadcast(df)
 
 
-def derive_cost_underlying_types(df_cost_snapshot):
-    """Mirror production's TempCostUnderlyingTypes derivation."""
-    return (
-        df_cost_snapshot.filter(
-            (F.lower(F.col("EntityUnderlyingtype")) != "k-1 only")
-            | (
-                (F.lower(F.col("EntityUnderlyingtype")) == "k-1 only")
-                & (F.col("InvestmentID") == -1)
-            )
-        )
-        .select(
-            "EntityId",
-            "InvestmentID",
-            "Quarter",
-            "AllocationTypeId",
-            "TrackingKey",
-            "Underlyingtype",
-            "EntityUnderlyingtype",
-        )
-        .distinct()
-    )
+__all__ = [
+    "broadcast_part_v_lines",
+    "broadcast_zero_exclude_lines",
+    "build_custom_footnote_line_types",
+    "derive_cost_underlying_types",
+    "quarter_join_hints",
+]

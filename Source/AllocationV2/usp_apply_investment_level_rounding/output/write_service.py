@@ -11,7 +11,6 @@ import pyspark.sql.functions as F
 import time
 
 from Common_V2.core.helpers import tbl, tbl_name, ns, sql_round, get_logger
-from Common_V2.core.checkpoint import checkpoint
 from Common_V2.core.observability import log_section, log_timing
 
 logger = get_logger("apply_investment_level_rounding")

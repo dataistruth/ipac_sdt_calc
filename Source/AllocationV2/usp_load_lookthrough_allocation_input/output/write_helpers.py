@@ -1,8 +1,8 @@
-"""Distinct-table final writes for look-through allocation input outputV2.
+"""Distinct-table final writes for look-through allocation input.
 
 Same filters, aggregations, casts, and appends as production
 ``write_final_output``. Each function writes one table and builds its
-Spark writer inside the task.
+Spark writer inside the task. Window PFIC EffPercentage lives here.
 """
 
 from __future__ import annotations
@@ -12,7 +12,10 @@ import time
 import pyspark.sql.functions as F
 from pyspark.sql import Window
 
-from .lt_helpers import logger, log_section, log_timing, tbl, tbl_name
+try:
+    from .lt_helpers import logger, log_section, log_timing, tbl, tbl_name
+except ImportError:
+    from lt_helpers import logger, log_section, log_timing, tbl, tbl_name
 
 
 def build_pfic_income_attributes(

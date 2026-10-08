@@ -24,6 +24,7 @@ Usage (reuse shared config from a workflow):
 from pyspark.sql import SparkSession, DataFrame
 import pyspark.sql.functions as F
 import pyspark.sql.types as T
+from contextlib import contextmanager
 from datetime import datetime
 import json
 import logging
@@ -31,7 +32,7 @@ import time
 
 from Common_V2.core.helpers import read_table, table_prefix, ns0
 from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2 as checkpoint,
+    checkpoint_V2,
     drop_checkpoints_V2,
     initialize_checkpoint_V2,
     resolve_checkpoint_mode,
@@ -44,11 +45,12 @@ from Common_V2.core.writers import write_insert
 try:
     from _data_loading import (
         load_partners, load_line_items, load_lookthrough_input,
-        load_allocation_rules,
+        load_allocation_rules, load_cost_percentages,
         load_book_effective_rules, add_footnote_inheritance,
         load_final_effective_percentages,
         apply_704c_to_k1_mappings,
     )
+    import _hierarchy as _hierarchy_mod
     from _hierarchy import build_entity_hierarchy, build_rule_ordered_underlyings
     from _allocation import (
         prepare_lookthrough_input,
@@ -57,19 +59,16 @@ try:
         process_704c_allocation,
         insert_704c_by_amount_mapped_lines,
     )
-    from hierarchy_plan_breaks import (
-        load_cost_percentages as load_cost_percentages_v2,
-        use_v2_hierarchy_checkpoint,
-    )
     from parallel_helpers import normalize_workers
 except ImportError:
     from ._data_loading import (
         load_partners, load_line_items, load_lookthrough_input,
-        load_allocation_rules,
+        load_allocation_rules, load_cost_percentages,
         load_book_effective_rules, add_footnote_inheritance,
         load_final_effective_percentages,
         apply_704c_to_k1_mappings,
     )
+    from . import _hierarchy as _hierarchy_mod
     from ._hierarchy import build_entity_hierarchy, build_rule_ordered_underlyings
     from ._allocation import (
         prepare_lookthrough_input,
@@ -77,10 +76,6 @@ except ImportError:
         process_by_amount_allocation, process_by_percentage_allocation,
         process_704c_allocation,
         insert_704c_by_amount_mapped_lines,
-    )
-    from .hierarchy_plan_breaks import (
-        load_cost_percentages as load_cost_percentages_v2,
-        use_v2_hierarchy_checkpoint,
     )
     from .parallel_helpers import normalize_workers
 
@@ -404,7 +399,7 @@ def _checkpoint(spark, df, name, cfg):
     if df is None:
         return None
     activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint(spark, df, name, cfg)
+    result = checkpoint_V2(spark, df, name, cfg)
     activity = cfg.get("_checkpoint_v2_activity", ())
     if (
         len(activity) > activity_start
@@ -412,6 +407,18 @@ def _checkpoint(spark, df, name, cfg):
     ):
         result = result.toDF(*result.columns)
     return result
+
+
+
+@contextmanager
+def _use_v2_hierarchy_checkpoint():
+    """Route production _hierarchy._checkpoint to Checkpoint V2 + toDF."""
+    original = _hierarchy_mod._checkpoint
+    _hierarchy_mod._checkpoint = _checkpoint
+    try:
+        yield
+    finally:
+        _hierarchy_mod._checkpoint = original
 
 
 def run_load_lookthrough_cost_alloc(
@@ -479,6 +486,11 @@ def run_load_lookthrough_cost_alloc(
     )
 
     t0 = time.time()
+    orig_shuffle = None
+    try:
+        orig_shuffle = spark.conf.get("spark.sql.shuffle.partitions")
+    except Exception:
+        orig_shuffle = None
     profile_name = (
         _blank(ExecutionProfile) or _blank(execution_profile) or "low"
     )
@@ -585,7 +597,7 @@ def run_load_lookthrough_cost_alloc(
             spark, load_lookthrough_input(spark, cfg), "input_raw", cfg
         )
         rules = load_allocation_rules(spark, cfg)
-        cost_data = load_cost_percentages_v2(spark, cfg, _checkpoint)
+        cost_data = load_cost_percentages(spark, cfg)
         distinct_mappings = None
         if (
             line_type == "K1 with 704c"
@@ -608,7 +620,7 @@ def run_load_lookthrough_cost_alloc(
             spark, cost_data["cost_percentages"], "cost_percentages", cfg
         )
 
-        with use_v2_hierarchy_checkpoint(_checkpoint):
+        with _use_v2_hierarchy_checkpoint():
             all_underlyings = build_entity_hierarchy(
                 spark, cfg, cost_percentages
             )
@@ -896,7 +908,9 @@ def run_load_lookthrough_cost_alloc(
         elapsed = round(time.time() - t0, 1)
         status["elapsed"] = elapsed
         status["elapsed_seconds"] = elapsed
-        if isinstance(cfg, dict):
+        if orig_shuffle is not None:
+            spark.conf.set("spark.sql.shuffle.partitions", orig_shuffle)
+        if isinstance(cfg, dict) and cfg.get("drop_checkpoints"):
             drop_checkpoints_V2(spark, cfg)
 
     logger.info(f"[DONE] {status}")

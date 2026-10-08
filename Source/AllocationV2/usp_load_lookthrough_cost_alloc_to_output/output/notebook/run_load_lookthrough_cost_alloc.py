@@ -14,11 +14,11 @@ dbutils.widgets.text(
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
     "1. Source root",
 )
-dbutils.widgets.text("EntityID", "4755", "2. EntityID")
+dbutils.widgets.text("EntityID", "4137", "2. EntityID")
 dbutils.widgets.text("ClientID", "15348", "3. ClientID")
 dbutils.widgets.text("TaxPeriodID", "1", "4. TaxPeriodID")
-dbutils.widgets.text("RunID", "18266", "5. RunID")
-dbutils.widgets.text("CatalogName", "qa7", "6. Catalog")
+dbutils.widgets.text("RunID", "17376", "5. RunID")
+dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
 dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
@@ -61,7 +61,7 @@ print(f"[run] Python import root={sys.path[0]}", flush=True)
 
 package = "AllocationV2.usp_load_lookthrough_cost_alloc_to_output"
 
-FLAT_SIBLINGS = ('_data_loading', '_hierarchy', '_allocation', 'hierarchy_plan_breaks', 'parallel_helpers')
+FLAT_SIBLINGS = ("_data_loading", "_hierarchy", "_allocation", "parallel_helpers")
 
 
 def fresh_import():
@@ -81,7 +81,9 @@ def fresh_import():
             f"{package}.output.{sibling}"
         )
 
-    module = importlib.import_module("AllocationV2.usp_load_lookthrough_cost_alloc_to_output.output.load_lookthrough_cost_alloc_to_output")
+    module = importlib.import_module(
+        f"{package}.output.load_lookthrough_cost_alloc_to_output"
+    )
     print(f"[import] runner={module.__file__}")
     return module
 
@@ -109,8 +111,8 @@ if isinstance(result, dict):
     reported = result.get("elapsed_seconds", result.get("elapsed"))
 
 TABLES = [
-    'LookThroughAllocationOutput',
-    'LookThroughAllocationInput',
+    "LookThroughAllocationOutput",
+    "LookThroughAllocationInput",
 ]
 rows = {}
 for table in TABLES:

@@ -41,12 +41,14 @@ from pyspark.sql import SparkSession
 from Common_V2.core.helpers import read_table, get_logger, log_timing
 from Common_V2.core.config import load_common_config
 from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2 as checkpoint,
+    checkpoint_V2,
     drop_checkpoints_V2,
     initialize_checkpoint_V2,
     resolve_checkpoint_mode,
 )
 from Common_V2.core.execution_profiles import resolve_execution_profile
+
+checkpoint = checkpoint_V2
 from Common_V2.core.generic_result_storer import GenericResultStorer
 
 from .parallel_helpers import (
@@ -93,7 +95,7 @@ def _checkpoint_frame(spark, df, name, cfg):
     if not hasattr(df, "columns"):
         return df
     activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint(spark, df, name, cfg)
+    result = checkpoint_V2(spark, df, name, cfg)
     activity = cfg.get("_checkpoint_v2_activity", ())
     if (
         len(activity) > activity_start
@@ -333,6 +335,8 @@ def run_usp_load_k3_allocation_summary(
     }
     save_result = ""
 
+    original_shuffle = spark.conf.get("spark.sql.shuffle.partitions")
+
     try:
         if cfg is None:
             cfg = load_common_config(
@@ -494,6 +498,7 @@ def run_usp_load_k3_allocation_summary(
         logger.error("[FAIL] %s", e, exc_info=True)
         raise
     finally:
+        spark.conf.set("spark.sql.shuffle.partitions", original_shuffle)
         status["elapsed_seconds"] = round(time.time() - t0, 1)
         if isinstance(cfg, dict):
             drop_checkpoints_V2(spark, cfg)

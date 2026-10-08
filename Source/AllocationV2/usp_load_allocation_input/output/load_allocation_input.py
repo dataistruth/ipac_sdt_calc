@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager
 
 from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2 as checkpoint,
+    checkpoint_V2,
     drop_checkpoints_V2,
     initialize_checkpoint_V2,
     resolve_checkpoint_mode,
@@ -89,7 +89,7 @@ def _timed(timings, step):
 
 def _checkpoint(spark, df, name, cfg):
     activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint(spark, df, name, cfg)
+    result = checkpoint_V2(spark, df, name, cfg)
     activity = cfg.get("_checkpoint_v2_activity", ())
     if (
         len(activity) > activity_start
@@ -405,7 +405,7 @@ def run_load_allocation_input(
 
 
 __all__ = [
-    "checkpoint",
+    "checkpoint_V2",
     "drop_checkpoints_V2",
     "get_last_run_profile",
     "run_load_allocation_input",

@@ -21,9 +21,23 @@ import pyspark.sql.functions as F
 from pyspark.sql import DataFrame, SparkSession, Window
 
 from Common_V2.core.helpers import get_logger, log_timing, sql_round as _sql_round
-from Common_V2.core.checkpoint import checkpoint
+from Common_V2.core.checkpoint_V2 import checkpoint_V2
 
 from ._prep import _apply_6a6b
+
+def _checkpoint_frame(spark, df, name, cfg):
+    if df is None:
+        return None
+    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
+    result = checkpoint_V2(spark, df, name, cfg)
+    activity = cfg.get("_checkpoint_v2_activity", ())
+    if (
+        len(activity) > activity_start
+        and activity[-1].get("backend") == "local"
+    ):
+        result = result.toDF(*result.columns)
+    return result
+
 
 logger = get_logger(__name__)
 
@@ -58,7 +72,7 @@ def apply_country_level_rounding(
     total_by_country = temp_detail.groupBy("LineID", "AttributeTypeID", "AttributeID").agg(
         _sql_round(F.sum("Amount"), 0).alias("TotalAmount")
     )
-    total_by_country = checkpoint(spark, total_by_country, "k3sp_total_by_country", cfg)
+    total_by_country = _checkpoint_frame(spark, total_by_country, "k3sp_total_by_country", cfg)
 
     diff_rows = rounding_diff.select("EntityID", "PartnerNumber", "LineID", "DiffAmount", "Amount")
     k1 = k1_amounts.select(
@@ -104,7 +118,7 @@ def apply_country_level_rounding(
         F.col("AttributeID").asc(),
     )
     rank_by_line = diff_by_country.withColumn("Rnk", F.row_number().over(w_rank))
-    rank_by_line = checkpoint(spark, rank_by_line, "k3sp_rank_by_line", cfg)
+    rank_by_line = _checkpoint_frame(spark, rank_by_line, "k3sp_rank_by_line", cfg)
 
     max_rank_row = rank_by_line.agg(F.max("Rnk").alias("m")).first()
     max_rank = max_rank_row["m"] if max_rank_row and max_rank_row["m"] is not None else 0
@@ -241,7 +255,7 @@ def apply_country_level_rounding(
                 ]
             )
         )
-        summary = checkpoint(spark, summary, f"k3sp_rank{r}_summary", cfg)
+        summary = _checkpoint_frame(spark, summary, f"k3sp_rank{r}_summary", cfg)
 
     # ---- Post-loop: plug residual per-partner diff to highest income country ----
     # #AggregatedTotalAmounts (SQL 414-417) + #DiffAmounts (SQL 421-424).

@@ -124,7 +124,6 @@ result = module.run_load_footnotes_allocation_to_output(
     CatalogName=catalog,
     SchemaName=schema,
     RankForRulePickup=rank,
-    ResultType="deltalake",
     VolumePath=volume_path,
     ExecutionProfile=execution_profile,
 )

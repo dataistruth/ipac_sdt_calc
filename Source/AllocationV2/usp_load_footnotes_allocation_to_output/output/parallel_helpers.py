@@ -1,4 +1,4 @@
-"""Bounded parallel phases for footnote outputV2."""
+"""Bounded parallel phases for footnote allocation."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def run_phase(name, tasks, max_threads, enabled_groups):
         )
         return result
 
-    workers = max(1, min(max_threads, len(tasks)))
+    workers = max(1, min(max_threads, len(tasks), 4))
     results = {}
     failures = []
     started = time.time()

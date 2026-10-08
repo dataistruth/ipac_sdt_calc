@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager
 
 from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2 as checkpoint,
+    checkpoint_V2,
     drop_checkpoints_V2,
     initialize_checkpoint_V2,
     resolve_checkpoint_mode,
@@ -15,44 +15,84 @@ from Common_V2.core.checkpoint_V2 import (
 from Common_V2.core.config import load_common_config
 from Common_V2.core.execution_profiles import resolve_execution_profile
 
-from .lt_config_service import (
-    build_fx_rates,
-    load_config,
-    load_lower_tier_funds,
-    load_reclass_k1_data,
-    load_workflows,
-)
-from .lt_finalization_service import (
-    apply_blocker_entity,
-    apply_line_exclusions,
-    apply_master_feed_exclusion,
-    apply_tag_percentages,
-    build_box_jkl_input,
-    validate_k3_rules,
-)
-from .lt_flowup_service import (
-    build_lt_flowup_adjustment,
-    build_lt_flowup_m1,
-)
-from .lt_helpers import logger
-from .lt_k1_service import (
-    build_adjustments_input,
-    build_k1_input,
-    build_lt_flowup_k1,
-    build_rounding_diff,
-    recompute_lt_input_from_lower_tier,
-)
-from .lt_pfic_conversion_service import build_pfic_conversion
-from .lt_pfic_service import build_pfic_elections, build_pfic_mapped_lines
-from .parallel_helpers import (
-    normalize_workers,
-    parse_enabled_groups,
-    run_parallel,
-)
-from .write_helpers import (
-    build_pfic_income_attributes,
-    write_final_output_parallel,
-)
+try:
+    from .lt_config_service import (
+        build_fx_rates,
+        load_config,
+        load_lower_tier_funds,
+        load_reclass_k1_data,
+        load_workflows,
+    )
+    from .lt_finalization_service import (
+        apply_blocker_entity,
+        apply_line_exclusions,
+        apply_master_feed_exclusion,
+        apply_tag_percentages,
+        build_box_jkl_input,
+        validate_k3_rules,
+    )
+    from .lt_flowup_service import (
+        build_lt_flowup_adjustment,
+        build_lt_flowup_m1,
+    )
+    from .lt_helpers import logger
+    from .lt_k1_service import (
+        build_adjustments_input,
+        build_k1_input,
+        build_lt_flowup_k1,
+        build_rounding_diff,
+        recompute_lt_input_from_lower_tier,
+    )
+    from .lt_pfic_conversion_service import build_pfic_conversion
+    from .lt_pfic_service import build_pfic_elections, build_pfic_mapped_lines
+    from .parallel_helpers import (
+        normalize_workers,
+        parse_enabled_groups,
+        run_parallel,
+    )
+    from .write_helpers import (
+        build_pfic_income_attributes,
+        write_final_output_parallel,
+    )
+except ImportError:
+    from lt_config_service import (
+        build_fx_rates,
+        load_config,
+        load_lower_tier_funds,
+        load_reclass_k1_data,
+        load_workflows,
+    )
+    from lt_finalization_service import (
+        apply_blocker_entity,
+        apply_line_exclusions,
+        apply_master_feed_exclusion,
+        apply_tag_percentages,
+        build_box_jkl_input,
+        validate_k3_rules,
+    )
+    from lt_flowup_service import (
+        build_lt_flowup_adjustment,
+        build_lt_flowup_m1,
+    )
+    from lt_helpers import logger
+    from lt_k1_service import (
+        build_adjustments_input,
+        build_k1_input,
+        build_lt_flowup_k1,
+        build_rounding_diff,
+        recompute_lt_input_from_lower_tier,
+    )
+    from lt_pfic_conversion_service import build_pfic_conversion
+    from lt_pfic_service import build_pfic_elections, build_pfic_mapped_lines
+    from parallel_helpers import (
+        normalize_workers,
+        parse_enabled_groups,
+        run_parallel,
+    )
+    from write_helpers import (
+        build_pfic_income_attributes,
+        write_final_output_parallel,
+    )
 
 _LAST_RUN_PROFILE = {}
 
@@ -77,7 +117,7 @@ def _checkpoint(spark, df, name, cfg):
         print(f"[CHECKPOINT_V2] checkpoint {name}: skipped (df=None)", flush=True)
         return None
     activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint(spark, df, name, cfg)
+    result = checkpoint_V2(spark, df, name, cfg)
     activity = cfg.get("_checkpoint_v2_activity", ())
     if (
         len(activity) > activity_start
@@ -152,6 +192,7 @@ def run_load_lookthrough_allocation_input(
         MaxThreads=MaxThreads,
     )
     mode = None
+    orig_shuffle = None
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
     status = {
         "sp_name": "uspLoadLookThroughAllocationInput",
@@ -164,6 +205,7 @@ def run_load_lookthrough_allocation_input(
     }
 
     try:
+        orig_shuffle = spark.conf.get("spark.sql.shuffle.partitions")
         with _timed(timings, "S1 config"):
             if cfg is None:
                 cfg = load_common_config(
@@ -232,7 +274,6 @@ def run_load_lookthrough_allocation_input(
                 return status
             status["sections_completed"] = 1
 
-        # Each task only builds and returns a DataFrame; none mutates cfg or writes.
         with _timed(timings, "S2-S4 independent loads"):
             (
                 workflow_data,
@@ -264,7 +305,6 @@ def run_load_lookthrough_allocation_input(
             fx_rates_df = _checkpoint(spark, fx_rates_df, "fx_rates", cfg)
             status["sections_completed"] = 4
 
-        # These builders consume immutable inputs and return disjoint plans.
         with _timed(timings, "S5-S7 independent input builders"):
             k1_input_df, adj_input_df, lower_tier_amount_df = run_parallel(
                 [
@@ -294,7 +334,6 @@ def run_load_lookthrough_allocation_input(
             )
             status["sections_completed"] = 7
 
-        # Shared alloc_input, PFIC, validation, and all RunID mutations stay ordered.
         with _timed(timings, "S8-S10 sequential union pipeline"):
             lower_tier_amount_df = build_rounding_diff(
                 spark, cfg, lower_tier_amount_df
@@ -423,6 +462,10 @@ def run_load_lookthrough_allocation_input(
         raise
     finally:
         status["elapsed_seconds"] = round(time.perf_counter() - started, 1)
+        if orig_shuffle is not None:
+            spark.conf.set("spark.sql.shuffle.partitions", orig_shuffle)
+        if isinstance(cfg, dict) and cfg.get("drop_checkpoints"):
+            drop_checkpoints_V2(spark, cfg)
         _LAST_RUN_PROFILE = {
             "timings": list(timings),
             "parallel_activity": list(parallel_activity),
@@ -440,7 +483,7 @@ def run_load_lookthrough_allocation_input(
 
 
 __all__ = [
-    "checkpoint",
+    "checkpoint_V2",
     "drop_checkpoints_V2",
     "get_last_run_profile",
     "run_load_lookthrough_allocation_input",

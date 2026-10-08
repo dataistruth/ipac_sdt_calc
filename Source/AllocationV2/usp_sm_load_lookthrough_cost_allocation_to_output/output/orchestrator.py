@@ -87,8 +87,6 @@ def use_v2_production_checkpoint():
     yield
 
 
-
-
 # ---------------------------------------------------------------------------
 # Private helpers (module-scoped aliases)
 # ---------------------------------------------------------------------------
@@ -2069,6 +2067,11 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
     execution_id = ExecutionID
 
     t0 = time.time()
+    orig_shuffle = None
+    try:
+        orig_shuffle = spark.conf.get("spark.sql.shuffle.partitions")
+    except Exception:
+        orig_shuffle = None
     parallel_activity = []
     enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
     profile_name = _blank(ExecutionProfile) or _blank(execution_profile) or "low"
@@ -2326,7 +2329,9 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
         raise
     finally:
         status["elapsed_seconds"] = round(time.time() - t0, 1)
-        if isinstance(cfg, dict):
+        if orig_shuffle is not None:
+            spark.conf.set("spark.sql.shuffle.partitions", orig_shuffle)
+        if isinstance(cfg, dict) and cfg.get("drop_checkpoints"):
             drop_checkpoints(spark, cfg)
 
     logger.info(

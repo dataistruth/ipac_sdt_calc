@@ -1,4 +1,4 @@
-"""Bounded parallel phases for footnote outputV2."""
+"""Bounded parallel phases for Final Effective Percentage."""
 
 from __future__ import annotations
 
@@ -6,16 +6,38 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+KNOWN_GROUPS = frozenset(
+    {
+        "common_dimensions",
+        "independent_builders",
+        "mode_prep",
+        "independent_effective",
+        "output_writes",
+    }
+)
+
+
+def normalize_workers(max_threads=4, MaxThreads=None):
+    raw = MaxThreads if MaxThreads is not None else max_threads
+    try:
+        return max(1, min(int(raw), 4))
+    except (TypeError, ValueError):
+        return 4
+
 
 def parse_enabled_groups(parallel_groups="all", ParallelGroups=None):
     raw = ParallelGroups if ParallelGroups is not None else parallel_groups
     text = str(raw or "all").strip().lower()
-    known = {"s3_s5_plans", "s13_writes"}
     if text in {"", "all"}:
-        return set(known)
+        return set(KNOWN_GROUPS)
     if text == "none":
         return set()
     return {part.strip() for part in text.split(",") if part.strip()}
+
+
+def isolated_cfg(cfg):
+    local = dict(cfg)
+    return local
 
 
 def run_phase(name, tasks, max_threads, enabled_groups):
@@ -46,7 +68,7 @@ def run_phase(name, tasks, max_threads, enabled_groups):
         )
         return result
 
-    workers = max(1, min(max_threads, len(tasks)))
+    workers = max(1, min(max_threads, len(tasks), 4))
     results = {}
     failures = []
     started = time.time()

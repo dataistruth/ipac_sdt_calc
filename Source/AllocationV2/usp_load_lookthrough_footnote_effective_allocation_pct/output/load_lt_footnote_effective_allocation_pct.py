@@ -49,7 +49,7 @@ from Common_V2.core.helpers import (
     sql_round as _sql_round,
 )
 from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2 as _checkpoint_v2_impl,
+    checkpoint_V2,
     drop_checkpoints_V2 as _drop_checkpoints,
     initialize_checkpoint_V2,
     resolve_checkpoint_mode,
@@ -59,7 +59,6 @@ try:
     from parallel_helpers import normalize_workers
 except ImportError:
     from .parallel_helpers import normalize_workers
-
 from Common_V2.core.observability import (
     get_logger,
     log_section as _log_section,
@@ -69,10 +68,6 @@ from Common_V2.core.generic_result_storer import GenericResultStorer
 
 logger = get_logger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# SP-Specific Config — SQL lines 53–310
-# ---------------------------------------------------------------------------
 
 def _blank(value):
     if value is None:
@@ -92,7 +87,7 @@ def _checkpoint(spark, df, name, cfg):
     if df is None:
         return None
     activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = _checkpoint_v2_impl(spark, df, name, cfg)
+    result = checkpoint_V2(spark, df, name, cfg)
     activity = cfg.get("_checkpoint_v2_activity", ())
     if (
         len(activity) > activity_start
@@ -102,6 +97,9 @@ def _checkpoint(spark, df, name, cfg):
     return result
 
 
+# ---------------------------------------------------------------------------
+# SP-Specific Config — SQL lines 53–310
+# ---------------------------------------------------------------------------
 def _load_sp_config(spark, cfg):
     """Alias Common_V2 cfg scalars into SP-local legacy keys.
 
@@ -1874,6 +1872,11 @@ def run_load_lt_footnote_effective_allocation_pct(
     schema = SchemaName
 
     t0 = time.time()
+    orig_shuffle = None
+    try:
+        orig_shuffle = spark.conf.get("spark.sql.shuffle.partitions")
+    except Exception:
+        orig_shuffle = None
     profile_name = _blank(ExecutionProfile) or _blank(execution_profile) or "low"
     profile = resolve_execution_profile(profile_name)
     workers = normalize_workers(
@@ -2096,7 +2099,9 @@ def run_load_lt_footnote_effective_allocation_pct(
         raise
     finally:
         status["elapsed_seconds"] = round(time.time() - t0, 1)
-        if isinstance(cfg, dict):
+        if orig_shuffle is not None:
+            spark.conf.set("spark.sql.shuffle.partitions", orig_shuffle)
+        if isinstance(cfg, dict) and cfg.get("drop_checkpoints"):
             _drop_checkpoints(spark, cfg)
 
     logger.info(

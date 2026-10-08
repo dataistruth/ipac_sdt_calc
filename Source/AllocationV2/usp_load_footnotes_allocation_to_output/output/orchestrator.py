@@ -1,6 +1,10 @@
-"""Production orchestration for Footnote Allocation."""
+"""
+orchestrator.py
 
-from __future__ import annotations
+Converted from: dbo.uspLoadFootnotesAllocationToOutput.sql
+Production-inline Checkpoint V2 + parallel S3/S5 plans.
+S13 writes AllocationOutput then AllocationInput deduction sequentially.
+"""
 
 import json
 import logging
@@ -11,13 +15,12 @@ import pyspark.sql.functions as F
 
 from Common_V2.core.checkpoint_V2 import (
     checkpoint_V2,
+    drop_checkpoints_V2,
     initialize_checkpoint_V2,
     resolve_checkpoint_mode,
 )
 from Common_V2.core.config import load_common_config
 from Common_V2.core.execution_profiles import resolve_execution_profile
-
-from .parallel_helpers import parse_enabled_groups, run_phase
 
 from .allocation_704c import (
     apply_704c_deduction,
@@ -30,6 +33,7 @@ from .allocation_effective import (
     resolve_min_quarter,
 )
 from .allocation_input import (
+    build_allocation_input,
     build_temp_allocation_input,
     build_temp_book_effective,
     build_temp_final_effective_pct,
@@ -43,10 +47,7 @@ from .join_optimizations import (
     derive_cost_underlying_types,
     quarter_join_hints,
 )
-from .plan_break_optimizations import (
-    build_allocation_input,
-    build_entity_hierarchy,
-)
+from .parallel_helpers import parse_enabled_groups, run_phase
 from .quarter_logic import (
     update_form_quarters,
     update_pfic_partv_quarters,
@@ -54,6 +55,7 @@ from .quarter_logic import (
 )
 from .underlyings import (
     build_cost_percentage_data,
+    build_entity_hierarchy,
     build_underlyings_footnotes_ordered,
     filter_asset_class,
 )
@@ -113,74 +115,6 @@ def _checkpoint(spark, df, name, cfg):
     return result
 
 
-def _v2(msg):
-    print(f"[run] {msg}", flush=True)
-
-
-def _log_frame(label, df):
-    if df is None:
-        _v2(f"{label}: df=None")
-        return {"rows": None, "nonzero": None, "allocation_types": []}
-    rows = df.count()
-    nonzero = None
-    types = []
-    if "Amount" in df.columns:
-        nonzero = df.filter(
-            F.coalesce(F.col("Amount"), F.lit(0)) != 0
-        ).count()
-    if "AllocationType" in df.columns and rows:
-        types = [
-            (row["AllocationType"], int(row["n"]))
-            for row in (
-                df.groupBy("AllocationType")
-                .count()
-                .withColumnRenamed("count", "n")
-                .orderBy(F.desc("n"))
-                .limit(20)
-                .collect()
-            )
-        ]
-    _v2(
-        f"{label}: rows={rows} amount_nonzero={nonzero} "
-        f"allocation_types={types}"
-    )
-    return {"rows": rows, "nonzero": nonzero, "allocation_types": types}
-
-
-def _log_live_output(spark, cfg):
-    from Common_V2.core.helpers import read_table
-
-    run_id = int(cfg["run_id"])
-    live = read_table(spark, "AllocationOutput", cfg).filter(
-        F.col("RunID") == run_id
-    )
-    total = live.count()
-    footnote = live.filter(
-        F.col("AllocationType").like("Footnote%")
-        | (F.col("AllocationType") == "704c Footnote")
-    ).count()
-    types = [
-        (row["AllocationType"], int(row["n"]))
-        for row in (
-            live.groupBy("AllocationType")
-            .count()
-            .withColumnRenamed("count", "n")
-            .orderBy(F.desc("n"))
-            .limit(20)
-            .collect()
-        )
-    ]
-    _v2(
-        f"live AllocationOutput RunID={run_id}: total={total} "
-        f"footnote_filter={footnote} allocation_types={types}"
-    )
-    return {
-        "live_output_rows": total,
-        "live_footnote_rows": footnote,
-        "live_allocation_types": types,
-    }
-
-
 def run_load_footnotes_allocation_to_output(
     spark,
     cfg: dict = None,
@@ -203,8 +137,15 @@ def run_load_footnotes_allocation_to_output(
     SqlShufflePartitions=None,
     **kwargs,
 ):
-    """Run production S1-S13 semantics with shared-V2 checkpoints."""
     del kwargs
+    entity_id = EntityID
+    client_id = ClientID
+    tax_period_id = TaxPeriodID
+    run_id = RunID
+    catalog = CatalogName
+    schema = SchemaName
+    rank_for_rule_pickup = RankForRulePickup
+
     started = time.time()
     timings = []
     enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
@@ -226,31 +167,26 @@ def run_load_footnotes_allocation_to_output(
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
     status = {
         "sp_name": "uspLoadFootnotesAllocationToOutput",
-        "run_id": RunID,
-        "entity_id": EntityID,
+        "run_id": run_id,
+        "entity_id": entity_id,
         "status": "SUCCESS",
         "error": None,
         "elapsed_seconds": 0,
         "sections_completed": 0,
-        "skip_reason": None,
-        "write_inserted_rows": None,
-        "combined_rows": None,
-        "combined_nonzero": None,
-        "combined_allocation_types": [],
-        "live_output_rows": None,
-        "live_footnote_rows": None,
     }
+    original_shuffle = spark.conf.get("spark.sql.shuffle.partitions")
+
     try:
         with _timed(timings, "S1-S2/config"):
             if cfg is None:
                 cfg = load_common_config(
                     spark,
-                    entity_id=EntityID,
-                    client_id=ClientID,
-                    tax_period_id=TaxPeriodID,
-                    run_id=RunID,
-                    catalog=CatalogName,
-                    schema=SchemaName,
+                    entity_id=entity_id,
+                    client_id=client_id,
+                    tax_period_id=tax_period_id,
+                    run_id=run_id,
+                    catalog=catalog,
+                    schema=schema,
                 )
             shuffle_override = _as_int(SqlShufflePartitions)
             if shuffle_override is None:
@@ -286,8 +222,8 @@ def run_load_footnotes_allocation_to_output(
                 "max_threads": workers,
                 "execution_profile": profile_name,
             }
-            if RankForRulePickup is not None:
-                cfg["rank_for_rule_pickup"] = RankForRulePickup
+            if rank_for_rule_pickup is not None:
+                cfg["rank_for_rule_pickup"] = rank_for_rule_pickup
             assert cfg.get("rank_for_rule_pickup") is not None, (
                 "rank_for_rule_pickup must be provided"
             )
@@ -307,24 +243,17 @@ def run_load_footnotes_allocation_to_output(
             )
             cfg["_df_entity"] = _read(spark, "Entity", cfg)
             load_sp_config(spark, cfg)
-            preconditions_met = validate_run_preconditions(spark, cfg)
-            _v2(
-                "S1 preconditions "
-                f"met={preconditions_met} "
-                f"run_status={cfg.get('run_status')!r} "
-                f"entity_allocation_type_id={cfg.get('entity_allocation_type_id')!r} "
-                f"pe_book_allocation_type_id={cfg.get('pe_book_allocation_type_id')!r} "
-                f"RunID={cfg.get('run_id')} EntityID={cfg.get('entity_id')}"
-            )
-
-        if not preconditions_met:
-            status["status"] = "SKIPPED"
-            status["skip_reason"] = "preconditions"
-            _v2("SKIPPED: preconditions (RunStatus=FAIL or not PE Book)")
-            return status
+            if not validate_run_preconditions(spark, cfg):
+                logger.info(
+                    f"[SKIP] RunStatus=FAIL or wrong allocation type. "
+                    f"RunID={cfg['run_id']}, EntityID={cfg['entity_id']}"
+                )
+                status["status"] = "SKIPPED"
+                return status
 
         def _cost_snapshot():
-            snapshot, _lazy_types = build_cost_percentage_data(spark, cfg)
+            snapshot, _unused_types = build_cost_percentage_data(spark, cfg)
+            del _unused_types
             return snapshot
 
         with _timed(timings, "S3-S5 plans"):
@@ -401,8 +330,8 @@ def run_load_footnotes_allocation_to_output(
             df_cost_pct_snapshot = _checkpoint(
                 spark, df_cost_pct_snapshot, "cost_snapshot", cfg
             )
-            df_temp_cost_underlying_types = (
-                derive_cost_underlying_types(df_cost_pct_snapshot)
+            df_temp_cost_underlying_types = derive_cost_underlying_types(
+                df_cost_pct_snapshot
             )
             status["sections_completed"] = 5
 
@@ -445,14 +374,10 @@ def run_load_footnotes_allocation_to_output(
                 spark, df_alloc_input, "alloc_input", cfg
             )
             status["sections_completed"] = 9
-            _v2("S9 alloc_input checkpointed")
 
-        is_empty = df_alloc_input.isEmpty()
-        _v2(f"S9 alloc_input.isEmpty={is_empty}")
-        if is_empty:
+        if df_alloc_input.isEmpty():
+            logger.info("[SKIP] #AllocationInput is empty — nothing to allocate")
             status["status"] = "SKIPPED"
-            status["skip_reason"] = "empty_allocation_input"
-            _v2("SKIPPED: allocation input empty after S9")
             return status
 
         with _timed(timings, "S10 704c"):
@@ -470,10 +395,6 @@ def run_load_footnotes_allocation_to_output(
                 )
                 if result_704c is not None:
                     df_tmp_alloc_output_704c, df_alloc_input = result_704c
-            _v2(
-                f"S10 is_704c_enabled={cfg.get('is_704c_enabled')!r} "
-                f"has_704c_output={df_tmp_alloc_output_704c is not None}"
-            )
             status["sections_completed"] = 10
 
         with _timed(timings, "S11 deduction"):
@@ -529,7 +450,6 @@ def run_load_footnotes_allocation_to_output(
                 df_entity_partners,
                 df_custom_fn_types,
             )
-            _log_frame("S12 effective_pct_output", df_tmp_alloc_output_eff)
             status["sections_completed"] = 12
 
         with _timed(timings, "S13 writes"):
@@ -562,52 +482,17 @@ def run_load_footnotes_allocation_to_output(
                     )
             else:
                 df_combined = None
-                _v2("S13 df_combined=None (no 704c and no effective frames)")
 
             if df_combined is not None:
-                combined_stats = _log_frame("S13 df_combined", df_combined)
-                status["combined_rows"] = combined_stats["rows"]
-                status["combined_nonzero"] = combined_stats["nonzero"]
-                status["combined_allocation_types"] = combined_stats[
-                    "allocation_types"
-                ]
-                written = dict(
-                    run_phase(
-                        "s13_writes",
-                        [
-                            (
-                                "output",
-                                write_allocation_output,
-                                (spark, {**cfg}, df_combined),
-                                {},
-                            ),
-                            (
-                                "deduction",
-                                apply_deduction,
-                                (
-                                    spark,
-                                    {**cfg},
-                                    df_combined,
-                                    df_alloc_input,
-                                    df_fn_allocated_lines,
-                                    df_zero_exclude,
-                                ),
-                                {},
-                            ),
-                        ],
-                        min(workers, 2),
-                        enabled_groups,
-                    )
+                write_allocation_output(spark, cfg, df_combined)
+                apply_deduction(
+                    spark,
+                    cfg,
+                    df_combined,
+                    df_alloc_input,
+                    df_fn_allocated_lines,
+                    df_zero_exclude,
                 )
-                status["write_inserted_rows"] = written.get("output")
-                _v2(
-                    "S13 write_allocation_output "
-                    f"inserted={status['write_inserted_rows']}"
-                )
-                live = _log_live_output(spark, cfg)
-                status.update(live)
-            else:
-                _v2("S13 skipped writes (nothing to insert)")
             status["sections_completed"] = 13
     except Exception as exc:
         status["status"] = "FAIL"
@@ -615,35 +500,17 @@ def run_load_footnotes_allocation_to_output(
         logger.error("[FAIL] %s", exc, exc_info=True)
         raise
     finally:
+        spark.conf.set("spark.sql.shuffle.partitions", original_shuffle)
         status["elapsed_seconds"] = round(time.time() - started, 1)
-        checkpoint_activity = (
-            list(cfg.get("_checkpoint_v2_activity", ()))
-            if isinstance(cfg, dict)
-            else []
-        )
         status["timings"] = timings
-        status["checkpoint_activity"] = checkpoint_activity
-        _v2(
-            f"DONE status={status.get('status')} "
-            f"skip_reason={status.get('skip_reason')} "
-            f"sections={status.get('sections_completed')} "
-            f"elapsed={status.get('elapsed_seconds')}s "
-            f"combined_rows={status.get('combined_rows')} "
-            f"combined_nonzero={status.get('combined_nonzero')} "
-            f"inserted={status.get('write_inserted_rows')} "
-            f"live_output={status.get('live_output_rows')} "
-            f"live_footnote={status.get('live_footnote_rows')} "
-            f"combined_types={status.get('combined_allocation_types')}"
-        )
-        if timings:
-            _v2(
-                "timings "
-                + ", ".join(
-                    f"{item['step']}={item['elapsed_seconds']}s"
-                    for item in timings
-                )
-            )
+        if isinstance(cfg, dict) and cfg.get("drop_checkpoints"):
+            drop_checkpoints_V2(spark, cfg)
 
+    logger.info(
+        f"[DONE] run_load_footnotes_allocation_to_output | "
+        f"{status['elapsed_seconds']}s | "
+        f"RunID={cfg['run_id']} EntityID={cfg['entity_id']}"
+    )
     return status
 
 

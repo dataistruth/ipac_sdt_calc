@@ -138,7 +138,7 @@ def _align(spark, cfg, df, tbl_name):
 
 
 def _write_one_table(spark, cfg, tbl_name, df, client_id, entity_id, execution_id):
-    """One distinct-table write. Writer is built inside this task."""
+    """One distinct-table write via GenericResultStorer (sdt_d flush path)."""
     local = isolated_cfg(cfg)
     write_df = _align(spark, local, df, tbl_name)
     if tbl_name in SMALL_TABLES:

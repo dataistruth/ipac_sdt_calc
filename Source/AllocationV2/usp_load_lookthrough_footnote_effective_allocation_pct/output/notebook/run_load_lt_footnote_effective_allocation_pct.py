@@ -61,13 +61,15 @@ def fresh_import():
         if any(
             loaded == root or loaded.startswith(root + ".")
             for root in roots
-        ) or loaded in globals().get("FLAT_SIBLINGS", ()):
+        ):
             del sys.modules[loaded]
     importlib.invalidate_caches()
     checkpoint = importlib.import_module("Common_V2.core.checkpoint_V2")
     print(f"[import] checkpoint_V2={checkpoint.__file__}")
 
-    module = importlib.import_module("AllocationV2.usp_load_lookthrough_footnote_effective_allocation_pct.output.load_lt_footnote_effective_allocation_pct")
+    module = importlib.import_module(
+        f"{package}.output.load_lt_footnote_effective_allocation_pct"
+    )
     print(f"[import] runner={module.__file__}")
     return module
 
@@ -95,8 +97,8 @@ if isinstance(result, dict):
     reported = result.get("elapsed_seconds", result.get("elapsed"))
 
 TABLES = [
-    'LookThroughAllocationOutput',
-    'LookThroughAllocationInput',
+    "LookThroughAllocationOutput",
+    "LookThroughAllocationInput",
 ]
 rows = {}
 for table in TABLES:
