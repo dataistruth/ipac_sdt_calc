@@ -23,6 +23,7 @@ Usage (reuse shared config from a workflow):
 """
 
 import json
+import logging
 import time
 from contextlib import contextmanager
 
