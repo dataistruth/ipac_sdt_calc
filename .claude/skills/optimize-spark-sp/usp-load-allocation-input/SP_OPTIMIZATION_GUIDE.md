@@ -22,11 +22,22 @@ Validations can insert `AllocationRunErrors` and abort.
 After purge no-op: form inputs, K1-related inputs, and PFIC snapshot are
 independent plans (`independent_input_builders`).
 
-Then sequential: checkpoint `pfic_snapshot`, PFIC allocation rows, custom
-footnote input (`_cf_latest_txn_*`), checkpoint `alloc_input`, PFIC
-flowup pipeline (inner `base_flowup` 7a-1 / 7a-2), checkpoint `pfic_raw`,
-XML alert, election deletes, Part V/VII, checkpoint `pfic_flowup`,
-filters, `alloc_filtered`, tags, optional `alloc_tagged`.
+Then sequential: checkpoint `pfic_snapshot`, union form+K1, checkpoint
+`alloc_form_k1`, add PFIC allocation rows and custom footnote input
+(`_cf_latest_txn_*`), checkpoint `alloc_input`, PFIC flowup pipeline
+(inner `base_flowup` 7a-1 / 7a-2), checkpoint `pfic_raw`, XML alert,
+election deletes, Part V/VII, checkpoint `pfic_flowup`, filters,
+`alloc_filtered`, tags, optional `alloc_tagged`.
+
+`alloc_form_k1` and `alloc_input` are intentionally separate. The former
+cuts the form+K1 lineage before PFIC/custom-footnote unions; the latter
+materializes the completed AllocationInput consumed downstream. In the
+RunID 16560 observation, the old 18.015s `alloc_input` materialization
+became 5.182s (`alloc_form_k1`) + 3.383s (`alloc_input`), and the following
+7a-1 phase dropped from 8.5s to 5.7s. Keep both seams in future Production
+inline and Development outputV2 generation. Validate total wall time with a
+same-cluster A/B because write routing and cluster warmth can dominate the
+end-to-end result.
 
 Then `output_collect` (3 tasks) and sequential AllocationInput Delta
 write, then `output_writes` (one task per remaining table, max 4 workers).

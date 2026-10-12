@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-load-allocation-input
-description: Regenerates or extends the locked Development outputV2 for uspLoadAllocationInput (Checkpoint V2, three parallel groups, AllocationInput-first then eight parallel flow-up Delta writes). Use when implementing, generating, benchmarking, or diagnosing this SP. Do not invent extra modules or revert to GenericResultStorer batch writes.
+description: Regenerates or extends uspLoadAllocationInput with Checkpoint V2 (including alloc_form_k1), three parallel groups, and AllocationInput-first flow-up writes. Use when implementing, generating, benchmarking, or diagnosing this SP. Do not invent extra modules.
 ---
 
 # Optimize uspLoadAllocationInput
@@ -133,8 +133,26 @@ Signature must accept production params plus Development-only
    `build_pfic_snapshot(spark, {**cfg}, k1_workflow_df)`.  
    Isolated `{**cfg}`. No temp views in these three.
 5. **S6 sequential unions:** checkpoint `pfic_snapshot` → union form+k1 →
-   `build_pfic_allocation_input` → union → `build_custom_footnote_input`
-   (temp view `_cf_latest_txn_*`) → union → checkpoint `alloc_input`.
+   checkpoint **`alloc_form_k1`** → `build_pfic_allocation_input` → union →
+   `build_custom_footnote_input` (temp view `_cf_latest_txn_*`) → union →
+   checkpoint `alloc_input`.
+
+   `alloc_form_k1` is a required seam in both Production and Development
+   generation. Put it immediately after `form_df.unionByName(k1_df,
+   allowMissingColumns=True)` and before PFIC allocation/custom-footnote rows:
+
+   ```python
+   allocation_input_df = form_df.unionByName(
+       k1_df, allowMissingColumns=True
+   )
+   allocation_input_df = _checkpoint(
+       spark, allocation_input_df, "alloc_form_k1", cfg
+   )
+   ```
+
+   Keep the later `alloc_input` checkpoint. The first seam cuts the form+K1
+   lineage; the second materializes the completed AllocationInput after PFIC
+   and custom-footnote unions. Do not replace one with the other.
 6. **S7 sequential:** `build_pfic_flowup_pipeline` (inner production
    `base_flowup` 7a-1 / 7a-2 stay inside that helper) → checkpoint
    **`pfic_raw`** → `check_pfic_xml_override_alert` →
@@ -221,8 +239,23 @@ Default `ProfilePlan` **off** for fair timing.
 
 - `ExecutionProfile=low` → shuffle 32, CheckpointMode 4, MaxThreads 4
 - Explicit CheckpointMode / shuffle / MaxThreads override the profile
+- Required orchestrator checkpoints include `pfic_snapshot`,
+  **`alloc_form_k1`**, `alloc_input`, `pfic_raw`, `pfic_flowup`,
+  `alloc_filtered`, and optional `alloc_tagged`.
 - Inner production `base_flowup` checkpoints stay local/eager as in
   production helpers; do not rewrite `ai_pfic_flowup_service.py`
+
+### `alloc_form_k1` measured evidence
+
+RunID `16560`, profile `low`, CheckpointMode 4:
+
+- Before the extra seam, `alloc_input` materialization was **18.015s**.
+- With `alloc_form_k1`, that work split into **5.182s**
+  (`alloc_form_k1`) + **3.383s** (`alloc_input`) = **8.565s**.
+- The following inner `base_flowup` 7a-1 changed from **8.5s** to **5.7s**.
+- Output row counts stayed the same for the observed run. This evidence is
+  local to the changed section; do not claim an end-to-end wall-clock win
+  without a same-cluster A/B with identical write routing.
 
 ## Non-negotiable contracts
 
