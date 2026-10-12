@@ -293,6 +293,9 @@ def run_load_allocation_input(
             allocation_input_df = form_df.unionByName(
                 k1_df, allowMissingColumns=True
             )
+            allocation_input_df = _checkpoint(
+                spark, allocation_input_df, "alloc_form_k1", cfg
+            )
             pfic_alloc_df = build_pfic_allocation_input(
                 spark, cfg, pfic_snapshot_df
             )
