@@ -61,15 +61,64 @@ _PROFILING_ACTIVE: ContextVar[bool] = ContextVar(
     "alloc_plan_profile_active", default=False
 )
 
+# Process-wide sinks. ContextVars do not copy into ThreadPoolExecutor workers,
+# and FEP / footnote SPs checkpoint inside those workers. A leftover on-run
+# still cannot tax the next off-run because disable_plan_profile() clears these.
+_CFG_KEYS = {
+    "plan": "_plan_profile",
+    "checkpoint": "_checkpoint_plan_profile",
+    "action": "_action_plan_profile",
+}
+_ACTIVE = {
+    "profiling": False,
+    "plan": None,
+    "checkpoint": None,
+    "action": None,
+}
+
+
+def _set_active_sink(kind: str, records: list) -> None:
+    with _LOCK:
+        _ACTIVE["profiling"] = True
+        _ACTIVE[kind] = records
+
+
+def _clear_active_sinks() -> None:
+    with _LOCK:
+        _ACTIVE["profiling"] = False
+        _ACTIVE["plan"] = None
+        _ACTIVE["checkpoint"] = None
+        _ACTIVE["action"] = None
+
+
+def _sink_list(kind: str, cfg: dict | None = None):
+    with _LOCK:
+        sink = _ACTIVE.get(kind)
+    if sink is not None:
+        return sink
+    ctx = {
+        "plan": _PLAN_SINK,
+        "checkpoint": _CHECKPOINT_SINK,
+        "action": _ACTION_SINK,
+    }[kind].get()
+    if ctx is not None:
+        return ctx
+    if isinstance(cfg, dict):
+        return cfg.setdefault(_CFG_KEYS[kind], [])
+    return None
+
 
 def profiling_enabled(cfg: dict | None = None) -> bool:
     """True only when the notebook ProfilePlan widget armed this invocation.
 
-    ``cfg['profile_plan']`` wins when present so a leftover sink cannot
-    force ``df.explain`` after the widget is turned off.
+    ``cfg['profile_plan']`` wins when that key is present so a leftover
+    sink cannot force ``df.explain`` after the widget is turned off.
     """
-    if isinstance(cfg, dict):
+    if isinstance(cfg, dict) and "profile_plan" in cfg:
         return bool(cfg.get("profile_plan"))
+    with _LOCK:
+        if _ACTIVE["profiling"]:
+            return True
     return bool(_PROFILING_ACTIVE.get())
 
 
@@ -79,6 +128,7 @@ def disable_plan_profile() -> None:
     _PLAN_SINK.set(None)
     _CHECKPOINT_SINK.set(None)
     _ACTION_SINK.set(None)
+    _clear_active_sinks()
 
 # Operators worth counting individually in the per-function histogram.
 _OPERATORS = (
@@ -234,6 +284,7 @@ def start_plan_profile() -> tuple:
     """
     records: list = []
     _PROFILING_ACTIVE.set(True)
+    _set_active_sink("plan", records)
     token = _PLAN_SINK.set(records)
     return token, records
 
@@ -258,6 +309,7 @@ def start_checkpoint_plan_profile() -> tuple:
     """
     records: list = []
     _PROFILING_ACTIVE.set(True)
+    _set_active_sink("checkpoint", records)
     token = _CHECKPOINT_SINK.set(records)
     return token, records
 
@@ -277,6 +329,7 @@ def start_action_profile() -> tuple:
     """Activate a fresh ACTION record sink for one invocation."""
     records: list = []
     _PROFILING_ACTIVE.set(True)
+    _set_active_sink("action", records)
     token = _ACTION_SINK.set(records)
     return token, records
 
@@ -296,7 +349,6 @@ def _record_action(
     cfg: dict | None,
     elapsed_seconds: float | None,
 ) -> None:
-    sink = _ACTION_SINK.get()
     if not profiling_enabled(cfg):
         return
     try:
@@ -315,11 +367,9 @@ def _record_action(
                 else None
             ),
         }
-        target = (
-            sink
-            if sink is not None
-            else cfg.setdefault("_action_plan_profile", [])
-        )
+        target = _sink_list("action", cfg)
+        if target is None:
+            return
         with _LOCK:
             target.append(record)
     except Exception:
@@ -343,7 +393,6 @@ def profile_action(name: str, df, action, cfg: dict | None = None):
     Profiling is a transparent pass-through when disabled. Exceptions from the
     action are propagated unchanged.
     """
-    sink = _ACTION_SINK.get()
     if not profiling_enabled(cfg):
         return action()
     metrics = measure_plan(df, cfg)
@@ -361,13 +410,10 @@ def profile_action(name: str, df, action, cfg: dict | None = None):
                 "ops": metrics["ops"],
                 "elapsed_seconds": round(elapsed, 3),
             }
-            target = (
-                sink
-                if sink is not None
-                else cfg.setdefault("_action_plan_profile", [])
-            )
-            with _LOCK:
-                target.append(record)
+            target = _sink_list("action", cfg)
+            if target is not None:
+                with _LOCK:
+                    target.append(record)
 
 
 def track_checkpoint_plan(name: str, df, cfg=None) -> None:
@@ -381,7 +427,6 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
     or an active start_* from the widget). Never raises. Never ``explain``
     when the widget is off.
     """
-    sink = _CHECKPOINT_SINK.get()
     if not profiling_enabled(cfg):
         return
     try:
@@ -395,11 +440,9 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
             "delta": metrics["nodes"],
             "ops": metrics["ops"],
         }
-        target = (
-            sink
-            if sink is not None
-            else cfg.setdefault("_checkpoint_plan_profile", [])
-        )
+        target = _sink_list("checkpoint", cfg)
+        if target is None:
+            return
         with _LOCK:
             target.append(record)
         ops = " ".join(f"{k}={v}" for k, v in sorted(record["ops"].items()))
@@ -424,7 +467,6 @@ def track_plan(fn):
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        sink = _PLAN_SINK.get()
         cfg = _find_cfg(args, kwargs)
         if not profiling_enabled(cfg):
             return fn(*args, **kwargs)
@@ -448,11 +490,9 @@ def track_plan(fn):
                     "delta": metrics["nodes"] - input_nodes,
                     "ops": metrics["ops"],
                 }
-                target = (
-                    sink
-                    if sink is not None
-                    else cfg.setdefault("_plan_profile", [])
-                )
+                target = _sink_list("plan", cfg)
+                if target is None:
+                    return result
                 with _LOCK:
                     target.append(record)
                 ops = " ".join(

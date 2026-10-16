@@ -17,7 +17,7 @@ def _empty_start(*args, **kwargs):
 
 
 def plan_profile_report(source, threshold=None, label=""):
-    return None
+    return list(source or [])
 
 
 def disable_plan_profile():
@@ -42,7 +42,23 @@ def build_plan_profile_display(spark, records, threshold=30, kind="builder"):
             StructField("ops", StringType(), True),
         ]
     )
-    return spark.createDataFrame([], schema=schema)
+    rows = []
+    for raw in list(records or []):
+        rec = dict(raw)
+        recommendation = rec.get("recommendation") or ""
+        candidate = "yes" if recommendation in {"add", "keep"} else ""
+        rows.append(
+            (
+                str(rec.get("func")),
+                int(rec.get("nodes", 0) or 0),
+                int(rec.get("depth", 0) or 0),
+                int(rec.get("delta", 0) or 0),
+                candidate,
+                recommendation,
+                str(rec.get("ops") or ""),
+            )
+        )
+    return spark.createDataFrame(rows, schema=schema)
 
 
 def store_last_plan_profile(builder=None, checkpoint=None, action=None):

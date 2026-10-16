@@ -351,9 +351,17 @@ shared `AllocationV2.plan_profiler` when present, else no-ops with the
 same signatures. Default `profile_plan=False`. The A/B notebook may turn
 it on with widget `ProfilePlan`. `measure_plan` and `df.explain` run
 only in that on-path. When the widget is off, call
-`disable_plan_profile()` so leftover ContextVar sinks cannot tax the
+`disable_plan_profile()` so leftover sinks cannot tax the
 updated A/B run. The last notebook cell displays stored
 BUILDER / CHECKPOINT / ACTION tables only when the widget is on.
+
+Record sinks must be process-wide (module list + lock), not
+ContextVar-only. Checkpoint V2 and builders run inside
+`ThreadPoolExecutor` workers that do not inherit ContextVars; otherwise
+CHECKPOINT keep/remove tables stay empty. Wrap Mode 2 builder imports
+with `track_plan` so BUILDER add/measure/collapse has rows. Finish must
+merge `cfg["_plan_profile"]` / `cfg["_checkpoint_plan_profile"]` /
+`cfg["_action_plan_profile"]` into `LAST_PLAN_PROFILE`.
 
 Shared package: `AllocationV2.plan_profiler`. The slim shim must re-export:
 

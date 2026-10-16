@@ -184,6 +184,10 @@ that runs **only** `if profile_plan:`. It must `display` BUILDER
 (add/measure) tables from `outputV2.plan_profiler.LAST_PLAN_PROFILE`
 via `build_plan_profile_display`. Do **not** call `df.explain` or
 `measure_plan` in that cell — only render stored records.
+Checkpoint rows come from Checkpoint V2 on every seam (including
+worker threads). Builder rows require wrapping Mode 2 builder imports
+with `track_plan`. ACTION stays empty unless `profile_action` wraps
+Spark actions.
 
 `measure_plan` / `df.explain` are allowed **only** when the widget is
 `on` and `cfg["profile_plan"]` is True. When the widget is `off`, the

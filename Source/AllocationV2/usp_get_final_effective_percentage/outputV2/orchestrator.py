@@ -163,8 +163,66 @@ from AllocationV2.usp_get_final_effective_percentage.output.result_saver import 
     build_all_results,
 )
 from Common_V2.core.generic_result_storer import GenericResultStorer
+from AllocationV2.usp_get_final_effective_percentage.outputV2.plan_profiler import (
+    track_plan as _track_plan,
+)
 
 logger = logging.getLogger(__name__)
+
+# Development-only wraps. Production output/ modules stay untouched.
+# track_plan is a no-op unless ProfilePlan armed this run.
+for _builder_name in (
+    "build_allocation_input",
+    "build_sm_lookthrough_allocation_input",
+    "build_lookthrough_allocation_input",
+    "build_entity_partners",
+    "build_asset_class_relationship",
+    "build_cost_underlying_types",
+    "build_entity_hierarchy",
+    "build_underlyings_combined",
+    "build_cost_percentage_snapshot_modes123",
+    "build_cost_percentage_snapshot_mode4",
+    "build_mode1_704c_pe_book_allocations",
+    "build_temp_cost_percentage",
+    "load_allocation_rules",
+    "load_line_items",
+    "load_book_effective_data",
+    "load_yearly_lines",
+    "load_quarters",
+    "load_yearly_data",
+    "build_lookthrough_input_modes14",
+    "build_footnote_lines",
+    "build_footnote_book_effective",
+    "filter_asset_class_underlyings",
+    "build_underlyings_hlevel_ordered",
+    "build_underlying_mod",
+    "build_all_underlyings_ordered",
+    "build_input_lines",
+    "compute_amount_based_allocation",
+    "build_non_dated_entities",
+    "build_dated_entities",
+    "build_footnote_underlyings_ordered",
+    "build_footnote_input_lines",
+    "build_footnote_dated_entities",
+    "compute_form199a_effective_percentage",
+    "build_state_allocation_input",
+    "build_state_entities",
+    "build_entity_underlyings",
+    "load_transfers_adj_cost",
+    "build_cost_percentage_by_type",
+    "compute_missing_entities",
+    "build_final_cost_percentage",
+    "compute_minimum_quarter",
+    "compute_effective_percentage_dated",
+    "compute_effective_percentage_non_dated",
+    "apply_plugging",
+    "apply_type_id_update",
+    "build_final_output",
+    "build_all_results",
+):
+    _fn = globals().get(_builder_name)
+    if callable(_fn):
+        globals()[_builder_name] = _track_plan(_fn)
 
 if not logger.handlers:
     _handler = logging.StreamHandler()
@@ -195,7 +253,7 @@ def _start_dev_plan_profile(enabled):
     )
 
 
-def _finish_dev_plan_profile(tokens, threshold=30):
+def _finish_dev_plan_profile(tokens, threshold=30, cfg=None):
     from .plan_profiler import disable_plan_profile, store_last_plan_profile
 
     if not tokens:
@@ -207,16 +265,26 @@ def _finish_dev_plan_profile(tokens, threshold=30):
         finish_plan_profile,
         plan_profile_report,
     )
+
+    def _pair(item):
+        if isinstance(item, tuple) and len(item) >= 2:
+            return item[0], list(item[1] or [])
+        return item, []
+
     plan_token, cp_token, action_token = tokens
-    finish_action_profile(action_token[0] if isinstance(action_token, tuple) else action_token)
-    finish_checkpoint_plan_profile(cp_token[0] if isinstance(cp_token, tuple) else cp_token)
-    finish_plan_profile(plan_token[0] if isinstance(plan_token, tuple) else plan_token)
-    builder = plan_token[1] if isinstance(plan_token, tuple) else None
-    checkpoints = cp_token[1] if isinstance(cp_token, tuple) else None
-    actions = action_token[1] if isinstance(action_token, tuple) else None
-    builder_rep = plan_profile_report(builder, threshold, label="BUILDER")
-    ckpt_rep = plan_profile_report(checkpoints, threshold, label="CHECKPOINT")
-    action_rep = plan_profile_report(actions, threshold, label="ACTION")
+    plan_tok, builder = _pair(plan_token)
+    cp_tok, checkpoints = _pair(cp_token)
+    action_tok, actions = _pair(action_token)
+    finish_action_profile(action_tok)
+    finish_checkpoint_plan_profile(cp_tok)
+    finish_plan_profile(plan_tok)
+    if isinstance(cfg, dict):
+        builder = builder + list(cfg.get("_plan_profile") or [])
+        checkpoints = checkpoints + list(cfg.get("_checkpoint_plan_profile") or [])
+        actions = actions + list(cfg.get("_action_plan_profile") or [])
+    builder_rep = plan_profile_report(builder, threshold, label="BUILDER") or []
+    ckpt_rep = plan_profile_report(checkpoints, threshold, label="CHECKPOINT") or []
+    action_rep = plan_profile_report(actions, threshold, label="ACTION") or []
     store_last_plan_profile(builder_rep, ckpt_rep, action_rep)
     disable_plan_profile()
 
@@ -1798,7 +1866,7 @@ def run_modes(
     finally:
 
         try:
-            _finish_dev_plan_profile(locals().get("_plan_tokens"))
+            _finish_dev_plan_profile(locals().get("_plan_tokens"), cfg=locals().get("cfg"))
         except Exception:
             pass
         spark.conf.set("spark.sql.shuffle.partitions", original_shuffle)

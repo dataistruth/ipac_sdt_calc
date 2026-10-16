@@ -75,7 +75,7 @@ def _start_dev_plan_profile(enabled):
     )
 
 
-def _finish_dev_plan_profile(tokens, threshold=30):
+def _finish_dev_plan_profile(tokens, threshold=30, cfg=None):
     from .plan_profiler import disable_plan_profile, store_last_plan_profile
 
     if not tokens:
@@ -87,16 +87,26 @@ def _finish_dev_plan_profile(tokens, threshold=30):
         finish_plan_profile,
         plan_profile_report,
     )
+
+    def _pair(item):
+        if isinstance(item, tuple) and len(item) >= 2:
+            return item[0], list(item[1] or [])
+        return item, []
+
     plan_token, cp_token, action_token = tokens
-    finish_action_profile(action_token[0] if isinstance(action_token, tuple) else action_token)
-    finish_checkpoint_plan_profile(cp_token[0] if isinstance(cp_token, tuple) else cp_token)
-    finish_plan_profile(plan_token[0] if isinstance(plan_token, tuple) else plan_token)
-    builder = plan_token[1] if isinstance(plan_token, tuple) else None
-    checkpoints = cp_token[1] if isinstance(cp_token, tuple) else None
-    actions = action_token[1] if isinstance(action_token, tuple) else None
-    builder_rep = plan_profile_report(builder, threshold, label="BUILDER")
-    ckpt_rep = plan_profile_report(checkpoints, threshold, label="CHECKPOINT")
-    action_rep = plan_profile_report(actions, threshold, label="ACTION")
+    plan_tok, builder = _pair(plan_token)
+    cp_tok, checkpoints = _pair(cp_token)
+    action_tok, actions = _pair(action_token)
+    finish_action_profile(action_tok)
+    finish_checkpoint_plan_profile(cp_tok)
+    finish_plan_profile(plan_tok)
+    if isinstance(cfg, dict):
+        builder = builder + list(cfg.get("_plan_profile") or [])
+        checkpoints = checkpoints + list(cfg.get("_checkpoint_plan_profile") or [])
+        actions = actions + list(cfg.get("_action_plan_profile") or [])
+    builder_rep = plan_profile_report(builder, threshold, label="BUILDER") or []
+    ckpt_rep = plan_profile_report(checkpoints, threshold, label="CHECKPOINT") or []
+    action_rep = plan_profile_report(actions, threshold, label="ACTION") or []
     store_last_plan_profile(builder_rep, ckpt_rep, action_rep)
     disable_plan_profile()
 
@@ -551,7 +561,7 @@ def apply_investment_level_rounding(
     finally:
 
         try:
-            _finish_dev_plan_profile(locals().get("_plan_tokens"))
+            _finish_dev_plan_profile(locals().get("_plan_tokens"), cfg=locals().get("cfg"))
         except Exception:
             pass
         spark.conf.set("spark.sql.shuffle.partitions", original_shuffle)
