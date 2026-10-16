@@ -113,6 +113,10 @@ for name in required:
 def load_runner(module_name):
     clear_modules(PACKAGE)
     importlib.import_module("Common_V2.core.checkpoint_V2")
+    try:
+        importlib.import_module("AllocationV2.plan_profiler")
+    except Exception as exc:
+        print(f"[plan-profile] AllocationV2.plan_profiler not loaded: {exc}")
     return importlib.import_module(module_name)
 
 
@@ -229,9 +233,15 @@ display(spark.createDataFrame(parity_rows, schema=parity_schema))
 # COMMAND ----------
 
 if profile_plan:
-    profiler = importlib.import_module(f"{PACKAGE}.outputV2.plan_profiler")
-    last = getattr(profiler, "LAST_PLAN_PROFILE", {}) or {}
-    build = profiler.build_plan_profile_display
+    shim = importlib.import_module(f"{PACKAGE}.outputV2.plan_profiler")
+    last = getattr(shim, "LAST_PLAN_PROFILE", {}) or {}
+    try:
+        shared = importlib.import_module("AllocationV2.plan_profiler")
+        build = shared.build_plan_profile_display
+        print("[plan-profile] using AllocationV2.plan_profiler")
+    except Exception as exc:
+        build = shim.build_plan_profile_display
+        print(f"[plan-profile] shared profiler missing ({exc}); using SP shim")
     print("[plan-profile] BUILDER (add / measure / collapse)")
     display(build(spark, last.get("builder"), threshold=30, kind="builder"))
     print("[plan-profile] CHECKPOINT (keep / measure / remove)")

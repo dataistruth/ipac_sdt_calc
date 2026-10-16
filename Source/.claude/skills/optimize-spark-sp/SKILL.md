@@ -179,10 +179,14 @@ display(spark.createDataFrame(parity_rows, schema=parity_schema))
 ```
 
 **ProfilePlan last cell (Mode 2):** after the parity displays, add a cell
-that runs **only** `if profile_plan:`. It must `display` BUILDER
+that runs **only** `if profile_plan:`. Import shared
+`AllocationV2.plan_profiler` in `load_runner` before the SP module so
+the per-SP shim binds to the real implementation. The last cell reads
+`LAST_PLAN_PROFILE` from the SP shim and calls
+`AllocationV2.plan_profiler.build_plan_profile_display` (shim display
+only if the shared package is missing). Display BUILDER
 (add/measure/collapse), CHECKPOINT (keep/measure/remove), and ACTION
-(add/measure) tables from `outputV2.plan_profiler.LAST_PLAN_PROFILE`
-via `build_plan_profile_display`. Do **not** call `df.explain` or
+(add/measure). Do **not** call `df.explain` or
 `measure_plan` in that cell — only render stored records.
 Checkpoint rows come from Checkpoint V2 on every seam (including
 worker threads). Builder rows require wrapping Mode 2 builder imports
