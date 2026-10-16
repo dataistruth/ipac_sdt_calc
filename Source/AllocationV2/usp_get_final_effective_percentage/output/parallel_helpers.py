@@ -11,7 +11,11 @@ KNOWN_GROUPS = frozenset(
         "common_dimensions",
         "independent_builders",
         "mode_prep",
+        "mode_prep_boundaries",
         "independent_effective",
+        "effective_inputs",
+        "effective_boundaries",
+        "output_build",
         "output_writes",
     }
 )

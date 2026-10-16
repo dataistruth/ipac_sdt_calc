@@ -95,6 +95,36 @@ them. Keep them in `_PROMOTED_EXPERIMENT_DEFAULTS` and the benchmark
 - skip yearly empty probe: **off** (must stay off; it regresses
   `tcp_post_et_m0`)
 
+## Production concurrency must-haves (do not regress)
+
+Production `output/orchestrator.py` must keep the locked ~54s parallel
+waves. A 71s run with CheckpointMode 4 but **serialized** Pass A / pre-CPBT
+/ post-miss / min-quarter / Pass C means these were lost during inline
+porting. Next generate must preserve every wave below.
+
+| Wave / `run_phase` group | Tasks | Required checkpoints / work |
+|---|---|---|
+| `mode_prep` | `mode_1`, `mode_2`, `mode_3` | Concurrent Pass A; use `isolated_cfg` per mode |
+| `mode_prep_boundaries` | `non_dated_m*`, `dated_m*`, `transfers_m*` | `nde_pre_cpbt_m*`, `de_pre_cpbt_m*`, `txfr_pre_cpbt_m*` overlap |
+| CPBT post-tag | `temp_post_tag`, `transfers_post_tag` | via `checkpoint_group_fn` |
+| CPBT fused outputs | `temp_output`, `transfer_output` | `tcp_by_type_fused`, `txfr_adj_fused` |
+| Post-miss + final cost | `post_missing_non_dated`, `post_missing_dated`, `final_cost` | `nde_post_miss_fused`, `de_post_miss_fused`, `final_cost_pct_fused` |
+| `effective_inputs` | `dated_after_min_quarter`, `minimum_quarter` | `de_post_minq_fused`, `cost_pct_min_q_fused` |
+| `independent_effective` | `dated`, `nondated` | dated/non-dated effective calc |
+| `effective_boundaries` | `eff_dated`/`eff_nondated`, then `plugged_dated`/`plugged_non_dated` | `eff_dt_fused`, `eff_nd_fused`, `eff_dt_plug_fused`, `eff_nd_plug_fused` |
+| `output_build` | `mode_1`, `mode_2`, `mode_3` | concurrent `build_final_output` |
+| `output_writes` | three result tables | concurrent Delta writes |
+
+`parallel_helpers.KNOWN_GROUPS` must include:
+`common_dimensions`, `independent_builders`, `mode_prep`,
+`mode_prep_boundaries`, `independent_effective`, `effective_inputs`,
+`effective_boundaries`, `output_build`, `output_writes`.
+
+Reject a Production generate if a Mode-1 notebook log shows sequential
+`[START] mode 2 prep` only after mode 1 finishes, or if
+`de_post_minq_fused` / `cost_pct_min_q_fused` are absent after
+`final_cost_pct_fused`.
+
 ## Implementation workflow
 
 ### 1. Establish the production baseline
@@ -146,10 +176,14 @@ no profiler, no A/B notebook.
 
 ### 4. Apply proven mode-preparation changes
 
-- Run modes 1, 2, and 3 concurrently.
-- Keep `all_und_final_m2` and `fn_input_lines_m2`.
+- Run modes 1, 2, and 3 concurrently via `run_phase("mode_prep", ...)`.
+  Each task must use `isolated_cfg(cfg)` so `mode` / empty-input flags do
+  not race.
+- Keep `all_und_final_m2` and `fn_input_lines_m2` inside mode-2 prep.
 - Materialize `state_lines_m3` before its dated/non-dated fan-out.
-- Run dated, non-dated, and transfer pre-CPBT checkpoints concurrently.
+- After prep returns, run dated, non-dated, and transfer pre-CPBT
+  checkpoints concurrently via `run_phase("mode_prep_boundaries", ...)`.
+  Do **not** leave those three checkpoints sequential inside the mode loop.
 - Batch six footnote line-ID lookups into one Spark action.
 - Share and materialize the PFIC allocation-input base across passes 2–6 when
   the loaded helper supports `checkpoint_fn`.
@@ -169,15 +203,18 @@ no profiler, no A/B notebook.
   `TrackingKeyMatch`.
 - Drop `TrackingKeyMatch` after its final use.
 - Optionally materialize `all_ent_post_tag_m0` only through its outputV3 flag.
-- Materialize temp and transfer outputs concurrently.
+- Materialize temp and transfer outputs concurrently
+  (`tcp_by_type_fused`, `txfr_adj_fused`).
 - Materialize post-missing dated, post-missing non-dated, and final cost
-  concurrently.
+  concurrently (`nde_post_miss_fused`, `de_post_miss_fused`,
+  `final_cost_pct_fused`).
 - Broadcast `entity_partners` for final-cost construction.
 
 ### 6. Apply proven effective-calculation changes
 
-- Materialize post-minimum-quarter dated entities and minimum-quarter data
-  concurrently before effective calculation.
+- After `compute_minimum_quarter`, materialize
+  `de_post_minq_fused` and `cost_pct_min_q_fused` concurrently via
+  `run_phase("effective_inputs", ...)` before effective calculation.
 - Run dated and non-dated effective calculations concurrently.
 - Preserve dated helper barriers:
   - `eff_pct_dated_post_transfer`
@@ -187,11 +224,14 @@ no profiler, no A/B notebook.
   - `eff_dated_s6_m0`
 - Use one pickup anti-join plus controlled row expansion to preserve the
   production duplicate-row multiset.
-- Materialize plugged dated and non-dated outputs concurrently.
+- Materialize `eff_dt_fused` / `eff_nd_fused` concurrently, then plugged
+  dated and non-dated outputs concurrently
+  (`eff_dt_plug_fused`, `eff_nd_plug_fused`).
 
 ### 7. Apply output changes
 
-- Build all valid per-mode outputs concurrently.
+- Build all valid per-mode outputs concurrently via
+  `run_phase("output_build", ...)` with `isolated_cfg` per mode.
 - Write the three distinct target tables concurrently.
 - Observe every future before propagating a failure.
 - Preserve production save logging and return contracts.
@@ -220,15 +260,19 @@ The locked reference run is 2026-09-28, RunID `17376`, EntityID `4137`,
 modes `[1, 2, 3]`, CheckpointMode `4`, shuffle `32`, MaxThreads `4`,
 experiment `baseline`:
 
-- production `run_modes`: `155.7s`
-- Development outputV2 wall: `51.808s` (`103.9s` / `66.7%` faster)
-- gap to the 50s target: `1.808s`
+- unoptimized production helper path: `155.7s`
+- locked optimized wall: `51.808s` / proven `53.487s` (~54s)
+- gap to the 50s target: about `1.8s`–`3.5s`
 - `yearly_lines.isEmpty` present (`SkipYearlyEmptyProbe` off)
 - `tcp_post_et_m0`: `2.287s` (healthy; the 16s regression is not this run)
 - CPBT helper: `12.866s`
 - writes: all three tables
 
-Critical checkpoints from that run:
+A Production-inline run that only ports CheckpointMode 4 / fusion but
+keeps sequential mode prep lands near **71s**. That is a concurrency
+regression against the locked ~54s path, not a new baseline.
+
+Critical checkpoints from the locked run:
 
 - `tcp_post_tag_m0`: `4.273s`
 - `fn_input_lines_m2`: `3.820s`
@@ -236,9 +280,11 @@ Critical checkpoints from that run:
 - `all_ent_pre_tag_m0`: `2.760s`
 - `nde_pre_cpbt_m2`: `2.723s`
 - `tcp_post_et_m0`: `2.287s`
+- `de_post_minq_fused` and `cost_pct_min_q_fused` present
 
 Do not treat a slower later run as the new baseline. Earlier historical
-walls (`57.736s`, `67.980s`, `68.688s`) are superseded by this lock.
+walls (`57.736s`, `67.980s`, `68.688s`, `70.7s` sequential-prep) are
+superseded by this lock.
 
 ## Known bad experiments
 

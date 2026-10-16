@@ -56,7 +56,7 @@ and notebooks. Use the child skill when the work is that SP:
 
 | SP | Skill |
 |---|---|
-| `usp_get_final_effective_percentage` | [usp-get-final-effective-percentage/SKILL.md](usp-get-final-effective-percentage/SKILL.md) |
+| `usp_get_final_effective_percentage` | [usp-get-final-effective-percentage/SKILL.md](usp-get-final-effective-percentage/SKILL.md) — Production must keep concurrent `mode_prep`, `mode_prep_boundaries`, post-miss/final-cost, `effective_inputs` (`de_post_minq_fused` / `cost_pct_min_q_fused`), `output_build`; CheckpointMode 4 alone is not enough (~71s vs locked ~54s) |
 | `usp_load_footnotes_allocation_to_output` | [usp-load-footnotes-allocation-to-output/SKILL.md](usp-load-footnotes-allocation-to-output/SKILL.md) |
 | `usp_load_lookthrough_allocation_input` | [usp-load-lookthrough-allocation-input/SKILL.md](usp-load-lookthrough-allocation-input/SKILL.md) |
 | `usp_load_lookthrough_footnote_effective_allocation_pct` | [usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md](usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md) |
