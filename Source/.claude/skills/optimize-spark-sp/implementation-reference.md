@@ -382,6 +382,10 @@ track_plan
 
 Provide no-op fallbacks with the same signatures, including
 `plan_profile_report(source, threshold=None, label="")`.
+`track_plan` fallback must be an identity decorator (`return fn`),
+never a function that returns `None`. `profile_action` fallback must
+call `action()`. Wrapping builders with a None-returning fallback
+makes the updated A/B run raise `TypeError: 'NoneType' object is not callable`.
 
 Wrap builders used by the orchestrator with `track_plan`. For one
 invocation:

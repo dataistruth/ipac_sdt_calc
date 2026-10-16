@@ -16,6 +16,14 @@ def _empty_start(*args, **kwargs):
     return None, []
 
 
+def _identity_track(fn):
+    return fn
+
+
+def _passthrough_action(name, df, action, cfg=None):
+    return action()
+
+
 def plan_profile_report(source, threshold=None, label=""):
     return list(source or [])
 
@@ -90,13 +98,13 @@ except Exception:
     finish_checkpoint_plan_profile = _noop
     finish_plan_profile = _noop
     measure_plan = _noop
-    profile_action = _noop
+    profile_action = _passthrough_action
     start_action_profile = _empty_start
     start_checkpoint_plan_profile = _empty_start
     start_plan_profile = _empty_start
     track_action_plan = _noop
     track_checkpoint_plan = _noop
-    track_plan = _noop
+    track_plan = _identity_track
 
 __all__ = [
     "LAST_PLAN_PROFILE",

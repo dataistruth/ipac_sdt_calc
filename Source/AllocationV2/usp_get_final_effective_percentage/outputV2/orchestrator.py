@@ -222,7 +222,9 @@ for _builder_name in (
 ):
     _fn = globals().get(_builder_name)
     if callable(_fn):
-        globals()[_builder_name] = _track_plan(_fn)
+        _wrapped = _track_plan(_fn)
+        if callable(_wrapped):
+            globals()[_builder_name] = _wrapped
 
 if not logger.handlers:
     _handler = logging.StreamHandler()
