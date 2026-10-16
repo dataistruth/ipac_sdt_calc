@@ -29,7 +29,7 @@ def fingerprint(df):
         df.select(row_hash.alias("_h"))
         .agg(
             F.count("*").alias("rows"),
-            F.sum("_h").alias("hash_sum"),
+            F.sum(F.col("_h").cast("decimal(38,0)")).alias("hash_sum"),
             F.min("_h").alias("hash_min"),
             F.max("_h").alias("hash_max"),
         )
