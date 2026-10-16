@@ -172,8 +172,10 @@ overrides identity because it does not run on the FEP entity:
 EntityID `4032`, RunID `18263`, SchemaName `IPC_2025_QA7_15348`.
 Hardcode RankForRulePickup `1`. Widget 10 is `ProfilePlan` (`off`/`on`).
 No ExecutionOrder / MaxThreads / shuffle / CheckpointMode widgets.
-Last display cell uses explicit Spark schemas (`skip_reason` can be
-empty; do not infer types from all-None columns).
+Last display cell uses the parent-skill locked schemas
+(`runtime_schema` / `parity_schema`). `reported` and `skip_reason` can
+be None/empty — do not infer types. Hash sum is
+`sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`.
 
 ### 6. Validate
 
@@ -215,7 +217,8 @@ Do not promote these without a new isolated experiment:
 - parallelizing S4 quarter updates;
 - broadcasting fact tables;
 - FEP SkipYearlyEmptyProbe / CPBT fusion / three-table reconcile;
-- stacking experiments so the extra seams cannot be attributed.
+- stacking experiments so the extra seams cannot be attributed
+- `F.sum("_h")` hash_sum or schema-less `createDataFrame` display
 
 ## Completion report
 

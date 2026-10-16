@@ -168,8 +168,9 @@ ExecutionOrder / VolumePath / ResultType widgets. Hardcode ResultType
 `deltalake` and VolumePath `/Volumes/qa7/datavolume/databrickdata`.
 Pass `ExecutionProfile` and `ProfilePlan` only to updated. A/B order is
 **original then updated**. Inspect live columns before `WHERE RunID` /
-`UpperTierRunID`. Last display cell uses explicit Spark schemas so
-`skip_reason=None` does not fail inference.
+`UpperTierRunID`. Last display cell uses the parent-skill locked
+`runtime_schema` / `parity_schema` (`reported` / `skip_reason` can be
+None). Hash sum is `sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`.
 
 ## Implementation workflow
 
@@ -220,7 +221,8 @@ Do not promote these without a new isolated experiment:
 - parallelizing AllocationRun / AllocationRunErrors with result tables;
 - broadcasting unproven-large lookups;
 - FEP SkipYearlyEmptyProbe / CPBT fusion / footnotes plan-breaks;
-- eager `__init__.py` import of the orchestrator.
+- eager `__init__.py` import of the orchestrator
+- `F.sum("_h")` hash_sum or schema-less `createDataFrame` display
 
 ## Completion report
 

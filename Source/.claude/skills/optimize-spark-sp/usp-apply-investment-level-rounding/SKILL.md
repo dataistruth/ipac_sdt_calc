@@ -30,3 +30,10 @@ Keep same-table writes sequential. CallFrom is None (not a widget).
 
 Frozen 10 widgets. FEP identity 4137 / 17376 / QA7.
 ResultType `deltalake`, VolumePath `/Volumes/qa7/datavolume/databrickdata`.
+Hash sum is `sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`. Last
+display cells use the parent-skill locked `runtime_schema` /
+`parity_schema` (`reported` can be None).
+
+## Known bad
+
+- `F.sum("_h")` hash_sum or schema-less `createDataFrame` display

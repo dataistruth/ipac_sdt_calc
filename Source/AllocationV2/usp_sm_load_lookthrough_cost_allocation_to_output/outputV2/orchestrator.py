@@ -51,7 +51,10 @@ logger = get_logger(__name__)
 
 
 def _start_dev_plan_profile(enabled):
+    from .plan_profiler import disable_plan_profile
+
     if not enabled:
+        disable_plan_profile()
         return None
     from .plan_profiler import (
         start_action_profile,
@@ -66,7 +69,10 @@ def _start_dev_plan_profile(enabled):
 
 
 def _finish_dev_plan_profile(tokens, threshold=30):
+    from .plan_profiler import disable_plan_profile, store_last_plan_profile
+
     if not tokens:
+        disable_plan_profile()
         return
     from .plan_profiler import (
         finish_action_profile,
@@ -81,9 +87,11 @@ def _finish_dev_plan_profile(tokens, threshold=30):
     builder = plan_token[1] if isinstance(plan_token, tuple) else None
     checkpoints = cp_token[1] if isinstance(cp_token, tuple) else None
     actions = action_token[1] if isinstance(action_token, tuple) else None
-    plan_profile_report(builder, threshold, label="BUILDER")
-    plan_profile_report(checkpoints, threshold, label="CHECKPOINT")
-    plan_profile_report(actions, threshold, label="ACTION")
+    builder_rep = plan_profile_report(builder, threshold, label="BUILDER")
+    ckpt_rep = plan_profile_report(checkpoints, threshold, label="CHECKPOINT")
+    action_rep = plan_profile_report(actions, threshold, label="ACTION")
+    store_last_plan_profile(builder_rep, ckpt_rep, action_rep)
+    disable_plan_profile()
 
 
 def _blank(value):
@@ -2370,6 +2378,11 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
         logger.error(f"[FAIL] {e}", exc_info=True)
         raise
     finally:
+
+        try:
+            _finish_dev_plan_profile(locals().get("_plan_tokens"))
+        except Exception:
+            pass
         status["elapsed_seconds"] = round(time.time() - t0, 1)
         if orig_shuffle is not None:
             spark.conf.set("spark.sql.shuffle.partitions", orig_shuffle)

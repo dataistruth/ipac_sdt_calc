@@ -298,7 +298,10 @@ Do not promote these without a new isolated experiment:
 - removing parent, tag, transfer, or dated fan-out barriers;
 - `SkipYearlyEmptyProbe=True` (dropped `tcp_with_yearly_common`,
   `tcp_post_et_m0` ~2.5s to ~16s, wall ~68.7s);
-- stacked experiments that prevent attribution.
+- stacked experiments that prevent attribution
+- `F.sum("_h")` in `output_reconcile.py` (ANSI BIGINT overflow)
+- `display(spark.createDataFrame(runtime_rows))` without a schema
+  (`reported` is None on this SP)
 
 ## Deployment checks
 
@@ -321,6 +324,19 @@ No ExecutionOrder / MaxThreads / shuffle / CheckpointMode /
 MissingEntityIdentity widgets. Hardcode missing-entity identity **on**.
 A/B order is original then updated. Pass `ExecutionProfile` and
 `ProfilePlan` only to outputV2.
+
+`output_reconcile.fingerprint` must use
+`F.sum(F.col("_h").cast("decimal(38,0)"))` — FEP table hashes overflowed
+`F.sum("_h")` under ANSI (`ARITHMETIC_OVERFLOW`). Do not disable ANSI.
+Last display cells must use explicit schemas (`original_reported` /
+`updated_reported` are often `None` → `CANNOT_DETERMINE_TYPE`). See the
+parent skill locked `runtime_schema` / `parity_schema`.
+
+When ProfilePlan is **on**, a final cell must display BUILDER /
+CHECKPOINT / ACTION recommendation tables (keep/remove/add/measure).
+`df.explain` / `measure_plan` run only in that on-path. When the
+widget is **off**, disable leftover sinks so the updated A/B wall is
+not inflated.
 
 ## Completion report
 

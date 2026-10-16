@@ -45,5 +45,11 @@ Frozen 10 widgets. `removeAll()` in its own cell, then:
 
 Hardcode RankForRulePickup=0, ResultType `deltalake`, VolumePath
 `/Volumes/qa7/datavolume/databrickdata`. Original then updated. Restore
-both SM tables; do not purge Output. Last display cell uses explicit
-Spark schemas.
+both SM tables; do not purge Output. Last display cells use the
+parent-skill locked `runtime_schema` / `parity_schema`. Hash sum is
+`sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`.
+
+## Known bad
+
+- Parallel Output + Input writes
+- `F.sum("_h")` hash_sum or schema-less `createDataFrame` display

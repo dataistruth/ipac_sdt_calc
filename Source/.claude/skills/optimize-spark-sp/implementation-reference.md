@@ -349,7 +349,11 @@ Production orchestrators must not reference `plan_profiler` or
 In Mode 2, add a slim `outputV2/plan_profiler.py` that re-exports the
 shared `AllocationV2.plan_profiler` when present, else no-ops with the
 same signatures. Default `profile_plan=False`. The A/B notebook may turn
-it on with widget `ProfilePlan`.
+it on with widget `ProfilePlan`. `measure_plan` and `df.explain` run
+only in that on-path. When the widget is off, call
+`disable_plan_profile()` so leftover ContextVar sinks cannot tax the
+updated A/B run. The last notebook cell displays stored
+BUILDER / CHECKPOINT / ACTION tables only when the widget is on.
 
 Shared package: `AllocationV2.plan_profiler`. The slim shim must re-export:
 

@@ -50,8 +50,9 @@ Exactly the parent-skill 10 widgets. Identity:
 VolumePath `/Volumes/qa7/datavolume/databrickdata`. Pass
 `ExecutionProfile` and `ProfilePlan` only to updated. A/B order is
 **original then updated**. Inspect live columns before `WHERE RunID`.
-Last display cell uses explicit Spark schemas so `skip_reason=""` does
-not fail inference.
+Last display cell uses the parent-skill locked `runtime_schema` /
+`parity_schema` (`reported` / `skip_reason` can be None). Hash sum is
+`sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`.
 
 ## Phases
 
@@ -65,5 +66,6 @@ not fail inference.
 - Purging LookThroughAllocationOutput before variants
 - Parallel GenericResultStorer save
 - Eager `__init__.py`
+- `F.sum("_h")` hash_sum or schema-less `createDataFrame` display
 
 Do not leave `__pycache__` or `.pyc` files in the repository.

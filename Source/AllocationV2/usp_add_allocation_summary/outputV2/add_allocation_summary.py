@@ -60,7 +60,10 @@ _MULTI_CONSUMER_FRAMES = (
 
 
 def _start_dev_plan_profile(enabled):
+    from .plan_profiler import disable_plan_profile
+
     if not enabled:
+        disable_plan_profile()
         return None
     from .plan_profiler import (
         start_action_profile,
@@ -75,7 +78,10 @@ def _start_dev_plan_profile(enabled):
 
 
 def _finish_dev_plan_profile(tokens, threshold=30):
+    from .plan_profiler import disable_plan_profile, store_last_plan_profile
+
     if not tokens:
+        disable_plan_profile()
         return
     from .plan_profiler import (
         finish_action_profile,
@@ -90,9 +96,11 @@ def _finish_dev_plan_profile(tokens, threshold=30):
     builder = plan_token[1] if isinstance(plan_token, tuple) else None
     checkpoints = cp_token[1] if isinstance(cp_token, tuple) else None
     actions = action_token[1] if isinstance(action_token, tuple) else None
-    plan_profile_report(builder, threshold, label="BUILDER")
-    plan_profile_report(checkpoints, threshold, label="CHECKPOINT")
-    plan_profile_report(actions, threshold, label="ACTION")
+    builder_rep = plan_profile_report(builder, threshold, label="BUILDER")
+    ckpt_rep = plan_profile_report(checkpoints, threshold, label="CHECKPOINT")
+    action_rep = plan_profile_report(actions, threshold, label="ACTION")
+    store_last_plan_profile(builder_rep, ckpt_rep, action_rep)
+    disable_plan_profile()
 
 
 def _blank(value):
@@ -2110,6 +2118,11 @@ def run_add_allocation_summary(
         logger.error("uspAddAllocationSummary FAILED: %s", e)
         raise
     finally:
+
+        try:
+            _finish_dev_plan_profile(locals().get("_plan_tokens"))
+        except Exception:
+            pass
         spark.conf.set("spark.sql.shuffle.partitions", original_shuffle)
         if isinstance(cfg, dict):
             drop_checkpoints_V2(spark, cfg)

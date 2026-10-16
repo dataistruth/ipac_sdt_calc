@@ -140,7 +140,11 @@ Source/AllocationV2/<sp_name>/
 `AllocationV2.<sp>.outputV2.<entry>`. Use **only** the frozen widget
 set below. Purge/restore RunID between variants. Compare every output
 table: row count, schema, numeric sums, order-independent hash
-(`xxhash64` sum/min/max). `ProfilePlan` widget default **off**.
+(`xxhash64` min/max plus `sum(_h.cast("decimal(38,0)"))`). Never
+`F.sum("_h")` — ANSI Spark overflowed BIGINT on FEP
+(`[ARITHMETIC_OVERFLOW] long overflow`, SQLSTATE 22003). Do **not**
+set `spark.sql.ansi.enabled=false` to hide it. `ProfilePlan` widget
+default **off**.
 
 Snapshot, purge, restore, and hash **only after reading the live table
 columns**. Never `WHERE RunID` unless `RunID` is in that table’s schema.
@@ -152,6 +156,41 @@ The Databricks notebook `source_path` must be the same Source tree that
 contains the `outputV2/` just generated. Evict `AllocationV2.<sp>` and
 `Common_V2` from `sys.modules` after putting that path first. Do not mix a
 new notebook with a stale workspace copy of `output_reconcile.py`.
+
+**Mode 2 display (locked):** never
+`spark.createDataFrame(runtime_rows)` / `parity_rows` without a schema.
+`original_reported` / `updated_reported` are often `None`, and
+`skip_reason` can be empty — Spark then fails with
+`[CANNOT_DETERMINE_TYPE]`. Use explicit schemas:
+
+```python
+runtime_schema = (
+    "pass int, original_wall double, original_reported double, "
+    "updated_wall double, updated_reported double, "
+    "original_rows long, updated_rows long"
+)
+parity_schema = (
+    "pass int, table string, exact_match string, "
+    "orig_rows long, upd_rows long, "
+    "orig_hash_sum decimal(38,0), upd_hash_sum decimal(38,0)"
+)
+display(spark.createDataFrame(runtime_rows, schema=runtime_schema))
+display(spark.createDataFrame(parity_rows, schema=parity_schema))
+```
+
+**ProfilePlan last cell (Mode 2):** after the parity displays, add a cell
+that runs **only** `if profile_plan:`. It must `display` BUILDER
+(add/measure/collapse), CHECKPOINT (keep/measure/remove), and ACTION
+(add/measure) tables from `outputV2.plan_profiler.LAST_PLAN_PROFILE`
+via `build_plan_profile_display`. Do **not** call `df.explain` or
+`measure_plan` in that cell — only render stored records.
+
+`measure_plan` / `df.explain` are allowed **only** when the widget is
+`on` and `cfg["profile_plan"]` is True. When the widget is `off`, the
+updated A/B run must not start sinks, not explain, and must
+`disable_plan_profile()` so a leftover on-run cannot tax the next
+timing run. Pass `profile_plan=True` to updated only when the widget
+is on; do not pass it when off.
 
 ## Frozen notebook widgets (do not add extras)
 
@@ -292,6 +331,21 @@ only when the wrapper is defined in the patching module. After local
 Checkpoint V2, `toDF(*columns)` stays required.
 
 **Plan profiler:** Mode 2 only. See implementation reference.
+
+## Known bad (A/B hash + display)
+
+Do **not** regenerate these Mode 2 patterns. They fail after a passing
+SP run:
+
+```python
+F.sum("_h").alias("hash_sum")  # ARITHMETIC_OVERFLOW on xxhash64 BIGINT
+spark.conf.set("spark.sql.ansi.enabled", "false")  # hide overflow
+display(spark.createDataFrame(runtime_rows))  # CANNOT_DETERMINE_TYPE
+display(spark.createDataFrame(parity_rows))
+```
+
+Use `F.sum(F.col("_h").cast("decimal(38,0)"))` and the locked display
+schemas above. Hash min/max stay on the raw `_h` BIGINT.
 
 ## Workflow
 

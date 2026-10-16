@@ -53,6 +53,33 @@ _ACTION_SINK: ContextVar[list | None] = ContextVar(
     "alloc_action_profile_sink", default=None
 )
 
+# Master switch. start_* sets this True. disable_plan_profile / finish clears
+# it. measure_plan / explain must not run when this is False — leftover
+# ContextVar sinks from a prior ProfilePlan=on cell would otherwise add
+# explain cost to the next A/B updated run.
+_PROFILING_ACTIVE: ContextVar[bool] = ContextVar(
+    "alloc_plan_profile_active", default=False
+)
+
+
+def profiling_enabled(cfg: dict | None = None) -> bool:
+    """True only when the notebook ProfilePlan widget armed this invocation.
+
+    ``cfg['profile_plan']`` wins when present so a leftover sink cannot
+    force ``df.explain`` after the widget is turned off.
+    """
+    if isinstance(cfg, dict):
+        return bool(cfg.get("profile_plan"))
+    return bool(_PROFILING_ACTIVE.get())
+
+
+def disable_plan_profile() -> None:
+    """Drop leftover sinks. Call at the start of every outputV2 run."""
+    _PROFILING_ACTIVE.set(False)
+    _PLAN_SINK.set(None)
+    _CHECKPOINT_SINK.set(None)
+    _ACTION_SINK.set(None)
+
 # Operators worth counting individually in the per-function histogram.
 _OPERATORS = (
     "Join",
@@ -177,12 +204,15 @@ def _metrics_from_plan_text(text: str) -> dict:
     }
 
 
-def measure_plan(df) -> dict | None:
+def measure_plan(df, cfg: dict | None = None) -> dict | None:
     """Measure logical-plan size for ``df``.
 
     Returns ``{"nodes", "depth", "chars", "ops"}`` or ``None`` if the plan
     could not be inspected. Never raises. Uses analyze-only APIs (no Spark job).
+    Does **not** call ``explain`` unless ProfilePlan armed this run.
     """
+    if not profiling_enabled(cfg):
+        return None
     try:
         text = _optimized_plan_text(df)
         if not text:
@@ -203,6 +233,7 @@ def start_plan_profile() -> tuple:
     and read ``records`` for the report.
     """
     records: list = []
+    _PROFILING_ACTIVE.set(True)
     token = _PLAN_SINK.set(records)
     return token, records
 
@@ -226,6 +257,7 @@ def start_checkpoint_plan_profile() -> tuple:
     :func:`finish_checkpoint_plan_profile`. Independent of the builder sink.
     """
     records: list = []
+    _PROFILING_ACTIVE.set(True)
     token = _CHECKPOINT_SINK.set(records)
     return token, records
 
@@ -244,6 +276,7 @@ def finish_checkpoint_plan_profile(token) -> None:
 def start_action_profile() -> tuple:
     """Activate a fresh ACTION record sink for one invocation."""
     records: list = []
+    _PROFILING_ACTIVE.set(True)
     token = _ACTION_SINK.set(records)
     return token, records
 
@@ -264,13 +297,10 @@ def _record_action(
     elapsed_seconds: float | None,
 ) -> None:
     sink = _ACTION_SINK.get()
-    enabled = sink is not None or (
-        isinstance(cfg, dict) and cfg.get("profile_plan")
-    )
-    if not enabled:
+    if not profiling_enabled(cfg):
         return
     try:
-        metrics = measure_plan(df)
+        metrics = measure_plan(df, cfg)
         if not metrics:
             return
         record = {
@@ -314,12 +344,9 @@ def profile_action(name: str, df, action, cfg: dict | None = None):
     action are propagated unchanged.
     """
     sink = _ACTION_SINK.get()
-    enabled = sink is not None or (
-        isinstance(cfg, dict) and cfg.get("profile_plan")
-    )
-    if not enabled:
+    if not profiling_enabled(cfg):
         return action()
-    metrics = measure_plan(df)
+    metrics = measure_plan(df, cfg)
     started = time.perf_counter()
     try:
         return action()
@@ -350,17 +377,15 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
     materialization), so the record reflects the full plan that the break
     collapses. ``delta`` is set to ``nodes`` (the whole plan is truncated).
 
-    Enabled when ``start_checkpoint_plan_profile()`` is active **or**
-    ``cfg['profile_plan']`` is truthy (Allocation Input style). Never raises.
+    Enabled only when ProfilePlan armed this run (``cfg['profile_plan']``
+    or an active start_* from the widget). Never raises. Never ``explain``
+    when the widget is off.
     """
     sink = _CHECKPOINT_SINK.get()
-    enabled = sink is not None or (
-        isinstance(cfg, dict) and cfg.get("profile_plan")
-    )
-    if not enabled:
+    if not profiling_enabled(cfg):
         return
     try:
-        metrics = measure_plan(df)
+        metrics = measure_plan(df, cfg)
         if not metrics:
             return
         record = {
@@ -401,15 +426,12 @@ def track_plan(fn):
     def wrapper(*args, **kwargs):
         sink = _PLAN_SINK.get()
         cfg = _find_cfg(args, kwargs)
-        enabled = sink is not None or (
-            isinstance(cfg, dict) and cfg.get("profile_plan")
-        )
-        if not enabled:
+        if not profiling_enabled(cfg):
             return fn(*args, **kwargs)
 
         input_nodes = 0
         for df_in in _find_dataframes((*args, *kwargs.values())):
-            metrics = measure_plan(df_in)
+            metrics = measure_plan(df_in, cfg)
             if metrics:
                 input_nodes = max(input_nodes, metrics["nodes"])
 
@@ -417,7 +439,7 @@ def track_plan(fn):
 
         out_df = _first_dataframe(result)
         if out_df is not None:
-            metrics = measure_plan(out_df)
+            metrics = measure_plan(out_df, cfg)
             if metrics:
                 record = {
                     "func": fn.__name__,

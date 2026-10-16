@@ -141,7 +141,9 @@ def call_variant(module_name, updated):
     )
     if updated:
         kwargs["ExecutionProfile"] = execution_profile
-        kwargs["profile_plan"] = profile_plan
+        if profile_plan:
+            kwargs["profile_plan"] = True
+            kwargs["ProfilePlan"] = True
     started = time.time()
     result = fn(spark, **kwargs)
     wall = round(time.time() - started, 3)
@@ -212,3 +214,24 @@ parity_schema = (
 )
 display(spark.createDataFrame(runtime_rows, schema=runtime_schema))
 display(spark.createDataFrame(parity_rows, schema=parity_schema))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Plan profile (BUILDER / CHECKPOINT / ACTION). Runs only when ProfilePlan is on.
+# MAGIC Recommendations: add / keep / measure / collapse / remove.
+
+# COMMAND ----------
+
+if profile_plan:
+    profiler = importlib.import_module(f"{PACKAGE}.outputV2.plan_profiler")
+    last = getattr(profiler, "LAST_PLAN_PROFILE", {}) or {}
+    build = profiler.build_plan_profile_display
+    print("[plan-profile] BUILDER (add / measure / collapse)")
+    display(build(spark, last.get("builder"), threshold=30, kind="builder"))
+    print("[plan-profile] CHECKPOINT (keep / measure / remove)")
+    display(build(spark, last.get("checkpoint"), threshold=30, kind="checkpoint"))
+    print("[plan-profile] ACTION (add / measure)")
+    display(build(spark, last.get("action"), threshold=30, kind="action"))
+else:
+    print("[plan-profile] skipped (ProfilePlan=off); no df.explain / measure_plan")

@@ -107,7 +107,9 @@ package-qualified modules before importing production (notebook
 production imports.
 
 Restore `LookThroughAllocationOutput` and `LookThroughAllocationInput`
-before each variant (Output is also an input).
+before each variant (Output is also an input). Hash sum is
+`sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`. Last display
+cells use the parent-skill locked `runtime_schema` / `parity_schema`.
 
 ## Known bad
 
@@ -116,3 +118,4 @@ before each variant (Output is also an input).
 - Copying `_hierarchy` / `_allocation` into `outputV2/`
 - Purging Output before a variant
 - FEP CPBT rewrites
+- `F.sum("_h")` hash_sum or schema-less `createDataFrame` display

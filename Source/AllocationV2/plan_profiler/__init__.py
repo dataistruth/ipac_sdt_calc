@@ -30,12 +30,14 @@ from __future__ import annotations
 from .display import build_plan_profile_display
 from .profiler import (
     classify_plan_recommendation,
+    disable_plan_profile,
     finish_action_profile,
     finish_checkpoint_plan_profile,
     finish_plan_profile,
     measure_plan,
     plan_profile_report,
     profile_action,
+    profiling_enabled,
     start_action_profile,
     start_checkpoint_plan_profile,
     start_plan_profile,
@@ -46,6 +48,8 @@ from .profiler import (
 
 __all__ = [
     "classify_plan_recommendation",
+    "disable_plan_profile",
+    "profiling_enabled",
     "profile_action",
     "track_action_plan",
     "measure_plan",

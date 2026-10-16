@@ -135,7 +135,7 @@ fingerprint = (
     df.select(row_hash.alias("_h"))
     .agg(
         F.count("*").alias("rows"),
-        F.sum("_h").alias("hash_sum"),
+        F.sum(F.col("_h").cast("decimal(38,0)")).alias("hash_sum"),
         F.min("_h").alias("hash_min"),
         F.max("_h").alias("hash_max"),
     )
@@ -143,10 +143,36 @@ fingerprint = (
 )
 ```
 
+**Never** `F.sum("_h")`. `xxhash64` is signed BIGINT; summing many
+rows overflowed ANSI Spark on FEP (`[ARITHMETIC_OVERFLOW] long
+overflow`, SQLSTATE 22003). Cast the sum to `decimal(38,0)`. Do **not**
+disable `spark.sql.ansi.enabled`. Keep `hash_min` / `hash_max` on the
+raw BIGINT.
+
 Display one row per table: `table`, `exact_match`, original hash fields,
 updated hash fields, mismatch detail. For floats, compare the exact
 fingerprint and rounded aggregates. Do not hide a mismatch behind an
 undocumented tolerance.
+
+**Never** infer types for the last `display` cells. Both
+`original_reported` and `updated_reported` can be `None` (FEP returns
+no reported seconds), which fails with `[CANNOT_DETERMINE_TYPE]`.
+Always pass explicit schemas:
+
+```python
+runtime_schema = (
+    "pass int, original_wall double, original_reported double, "
+    "updated_wall double, updated_reported double, "
+    "original_rows long, updated_rows long"
+)
+parity_schema = (
+    "pass int, table string, exact_match string, "
+    "orig_rows long, upd_rows long, "
+    "orig_hash_sum decimal(38,0), upd_hash_sum decimal(38,0)"
+)
+display(spark.createDataFrame(runtime_rows, schema=runtime_schema))
+display(spark.createDataFrame(parity_rows, schema=parity_schema))
+```
 
 ### Required reports (Mode 2)
 
@@ -159,7 +185,10 @@ undocumented tolerance.
 [parallel] <phase>: tasks=... workers=... wall=...s
 ```
 
-When `ProfilePlan` is on, also emit BUILDER / CHECKPOINT / ACTION reports.
+When `ProfilePlan` is on, emit BUILDER / CHECKPOINT / ACTION **tables**
+in a **last notebook cell** (`keep` / `remove` / `add` / `measure` /
+`collapse`). That cell must not call `explain`. When the widget is
+off, skip the cell and do not measure plans on the updated run.
 
 Display DataFrames for runtime, per-table parity hashes, and optional
 profiler rankings.

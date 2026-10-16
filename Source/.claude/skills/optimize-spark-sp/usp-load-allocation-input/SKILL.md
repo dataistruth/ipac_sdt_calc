@@ -233,7 +233,9 @@ Put `source_path` first on `sys.path`. Evict
 `ProfilePlan` **only** to updated. Purge only tables that have a `RunID`
 column. Restore snapshots in `finally`.
 
-Default `ProfilePlan` **off** for fair timing.
+Default `ProfilePlan` **off** for fair timing. Last display cells use
+the parent-skill locked `runtime_schema` / `parity_schema`. Hash sum is
+`sum(_h.cast("decimal(38,0)"))`.
 
 ## Target configuration
 
@@ -260,7 +262,8 @@ RunID `16560`, profile `low`, CheckpointMode 4:
 ## Non-negotiable contracts
 
 1. Production `output/` behavior is authoritative.
-2. Exact fingerprints on reconcile tables (schema, rows, sums, xxhash64).
+2. Exact fingerprints on reconcile tables (schema, rows, sums,
+   `xxhash64` with `hash_sum = sum(_h.cast("decimal(38,0)"))`).
 3. FAIL / SKIPPED gates unchanged.
 4. No `__pycache__`. No `Common_V2.core.checkpoint` in the orchestrator.
 5. Mode 1 Production: inline `output/` only, no profiler, no outputV2 mix.
@@ -277,6 +280,8 @@ RunID `16560`, profile `low`, CheckpointMode 4:
 - Snapshotting PFICUpdateAlert / PFICAlertDetails with `WHERE RunID`
 - Inlining snapshot SQL in the notebook instead of `output_reconcile.py`
 - Forcing SqlShufflePartitions=16 (overrides profile low)
+- `F.sum("_h")` hash_sum (ANSI BIGINT overflow)
+- Schema-less `display(spark.createDataFrame(runtime_rows|parity_rows))`
 
 ## Completion report
 

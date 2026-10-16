@@ -23,4 +23,11 @@ inline in `output/`.
 ## Notebook
 
 Frozen 10 widgets. Same LT identity 4755 / 18266 / qa7. Restore both SM
-tables.
+tables. Hash sum is `sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`.
+Last display cells use the parent-skill locked `runtime_schema` /
+`parity_schema` (`reported` can be None).
+
+## Known bad
+
+- Parallel Output + Input writes
+- `F.sum("_h")` hash_sum or schema-less `createDataFrame` display

@@ -90,7 +90,9 @@ allocation input (QA job):
 
 `removeAll()` in its own cell. Pass `ExecutionProfile` and `ProfilePlan`
 only to updated. Original then updated. Restore Output and Input (do
-not purge Output). Last display cell uses explicit Spark schemas.
+not purge Output). Last display cells use the parent-skill locked
+`runtime_schema` / `parity_schema`. Hash sum is
+`sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`.
 
 Updated always returns a status dict (`elapsed_seconds`, `skip_reason`).
 
@@ -104,3 +106,4 @@ Updated always returns a status dict (`elapsed_seconds`, `skip_reason`).
 - FEP CPBT / footnotes `cost_snapshot` *rewrites* (extra **seams** are OK)
 - Checkpoint `distinct_mappings` before `load_temp_allocation_input`
 - A/B restore via `DELETE` + `INSERT` without `refreshTable`
+- `F.sum("_h")` hash_sum or schema-less `createDataFrame` display
