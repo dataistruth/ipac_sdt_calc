@@ -196,5 +196,15 @@ for pass_no in range(1, number_of_runs + 1):
         )
         reconcile.unpersist_snaps(snaps)
 
-display(spark.createDataFrame(runtime_rows))
-display(spark.createDataFrame(parity_rows))
+runtime_schema = (
+    "pass int, original_wall double, original_reported double, "
+    "updated_wall double, updated_reported double, "
+    "original_rows long, updated_rows long"
+)
+parity_schema = (
+    "pass int, table string, exact_match string, "
+    "orig_rows long, upd_rows long, "
+    "orig_hash_sum decimal(38,0), upd_hash_sum decimal(38,0)"
+)
+display(spark.createDataFrame(runtime_rows, schema=runtime_schema))
+display(spark.createDataFrame(parity_rows, schema=parity_schema))
