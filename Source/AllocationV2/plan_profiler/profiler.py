@@ -29,6 +29,9 @@ from contextvars import ContextVar
 
 logger = logging.getLogger(__name__)
 
+# Printed at start so a Databricks import can be confirmed.
+PROFILER_VERSION = "v4-failsafe-connect-local"
+
 # Builders may run inside a ThreadPoolExecutor, so guard the shared sink.
 _LOCK = threading.Lock()
 
@@ -245,40 +248,31 @@ def _extract_section(text: str, header: str) -> str | None:
     return text[start:nxt] if nxt != -1 else text[start:]
 
 
-def _optimized_plan_text(df) -> str | None:
-    """Return the optimized-logical-plan text for a DataFrame, or None.
+def _local_connect_plan_text(df) -> str | None:
+    """Best-effort plan text without a server AnalyzePlan RPC.
 
-    Never raises. After one analyze/explain failure, skip the rest of
-    the run so Connect ``UNRESOLVED_COLUMN`` cannot fail the A/B cell.
-    If ``_explain_string`` exists and fails, do not also call ``df.explain``.
+    ``_explain_string`` / ``df.explain`` on Spark Connect can fail the
+    Databricks cell with ``UNRESOLVED_COLUMN`` even when Python catches it.
+    """
+    plan = getattr(df, "_plan", None)
+    if plan is None:
+        return None
+    try:
+        text = str(plan)
+    except Exception:
+        return None
+    return text if text and text.strip() else None
+
+
+def _optimized_plan_text(df) -> str | None:
+    """Return logical-plan text for ``df``, or None.
+
+    Never raises. Classic Spark uses ``_jdf``. Spark Connect uses the
+    local ``_plan`` proto only — no ``_explain_string`` / ``df.explain``.
     """
     if _explain_skip_armed():
         return None
     try:
-        explainer = getattr(df, "_explain_string", None)
-        if callable(explainer):
-            for kwargs in (
-                {"extended": True},
-                {"mode": "extended"},
-                {"extended": True, "mode": "extended"},
-                {},
-            ):
-                try:
-                    text = explainer(**kwargs)
-                except TypeError:
-                    continue
-                except Exception as exc:
-                    _arm_explain_skip(f"{type(exc).__name__}: {exc}")
-                    return None
-                if text and str(text).strip():
-                    full = str(text)
-                    return (
-                        _extract_section(full, "Optimized Logical Plan")
-                        or _extract_section(full, "Analyzed Logical Plan")
-                        or full
-                    )
-            return None
-
         jdf = getattr(df, "_jdf", None)
         if jdf is not None:
             try:
@@ -286,29 +280,7 @@ def _optimized_plan_text(df) -> str | None:
             except Exception as exc:
                 _arm_explain_skip(f"{type(exc).__name__}: {exc}")
                 return None
-
-        buffer = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buffer):
-                df.explain(mode="extended")
-        except TypeError:
-            try:
-                with contextlib.redirect_stdout(buffer):
-                    df.explain(True)
-            except Exception as exc:
-                _arm_explain_skip(f"{type(exc).__name__}: {exc}")
-                return None
-        except Exception as exc:
-            _arm_explain_skip(f"{type(exc).__name__}: {exc}")
-            return None
-        full = buffer.getvalue()
-        if not full.strip():
-            return None
-        return (
-            _extract_section(full, "Optimized Logical Plan")
-            or _extract_section(full, "Analyzed Logical Plan")
-            or full
-        )
+        return _local_connect_plan_text(df)
     except Exception as exc:
         _arm_explain_skip(f"{type(exc).__name__}: {exc}")
         return None
@@ -379,6 +351,7 @@ def start_plan_profile() -> tuple:
     LAST_PLAN_PROFILE["action"] = []
     with _EXPLAIN_SKIP_LOCK:
         _EXPLAIN_SKIP = False
+    print(f"[plan-profile] {PROFILER_VERSION}")
     token = _PLAN_SINK.set(records)
     return token, records
 

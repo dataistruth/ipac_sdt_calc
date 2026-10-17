@@ -30,6 +30,7 @@ from __future__ import annotations
 from .display import build_plan_profile_display
 from .profiler import (
     LAST_PLAN_PROFILE,
+    PROFILER_VERSION,
     classify_plan_recommendation,
     disable_plan_profile,
     finish_action_profile,
@@ -50,6 +51,7 @@ from .profiler import (
 
 __all__ = [
     "LAST_PLAN_PROFILE",
+    "PROFILER_VERSION",
     "store_last_plan_profile",
     "classify_plan_recommendation",
     "disable_plan_profile",
