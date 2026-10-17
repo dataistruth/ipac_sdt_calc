@@ -30,7 +30,7 @@ from contextvars import ContextVar
 logger = logging.getLogger(__name__)
 
 # Printed at start so a Databricks import can be confirmed.
-PROFILER_VERSION = "v4-failsafe-connect-local"
+PROFILER_VERSION = "v6-catalyst-explain"
 
 # Builders may run inside a ThreadPoolExecutor, so guard the shared sink.
 _LOCK = threading.Lock()
@@ -249,11 +249,6 @@ def _extract_section(text: str, header: str) -> str | None:
 
 
 def _local_connect_plan_text(df) -> str | None:
-    """Best-effort plan text without a server AnalyzePlan RPC.
-
-    ``_explain_string`` / ``df.explain`` on Spark Connect can fail the
-    Databricks cell with ``UNRESOLVED_COLUMN`` even when Python catches it.
-    """
     plan = getattr(df, "_plan", None)
     if plan is None:
         return None
@@ -264,29 +259,71 @@ def _local_connect_plan_text(df) -> str | None:
     return text if text and text.strip() else None
 
 
-def _optimized_plan_text(df) -> str | None:
-    """Return logical-plan text for ``df``, or None.
+def _looks_unresolved(text: str) -> bool:
+    low = text.lower().replace("`", "")
+    return "unresolved" in low or "d.underlyingentityid" in low
 
-    Never raises. Classic Spark uses ``_jdf``. Spark Connect uses the
-    local ``_plan`` proto only — no ``_explain_string`` / ``df.explain``.
-    """
-    if _explain_skip_armed():
-        return None
-    try:
-        jdf = getattr(df, "_jdf", None)
-        if jdf is not None:
+
+def _looks_like_catalyst(text: str) -> bool:
+    return any(
+        token in text
+        for token in ("Join", "Project", "Filter", "Aggregate", "+-", "== ")
+    )
+
+
+def _server_explain_text(df) -> str | None:
+    """Catalyst plan text. Never raises. Does not call ``df.explain``."""
+    explainer = getattr(df, "_explain_string", None)
+    if callable(explainer):
+        for kwargs in ({"mode": "extended"}, {"extended": True}, {}):
             try:
-                return jdf.queryExecution().optimizedPlan().numberedTreeString()
+                text = explainer(**kwargs)
+            except TypeError:
+                continue
             except Exception as exc:
-                _arm_explain_skip(f"{type(exc).__name__}: {exc}")
+                print(
+                    f"[plan-profile] explain skipped: {type(exc).__name__}: {exc}"
+                )
                 return None
-        return _local_connect_plan_text(df)
+            if text and str(text).strip():
+                full = str(text)
+                return (
+                    _extract_section(full, "Optimized Logical Plan")
+                    or _extract_section(full, "Analyzed Logical Plan")
+                    or full
+                )
+        return None
+    jdf = getattr(df, "_jdf", None)
+    if jdf is not None:
+        try:
+            return jdf.queryExecution().optimizedPlan().numberedTreeString()
+        except Exception as exc:
+            print(f"[plan-profile] explain skipped: {type(exc).__name__}: {exc}")
+            return None
+    return None
+
+
+def _optimized_plan_text(df) -> str | None:
+    """Return Catalyst logical-plan text, or None. Never raises.
+
+    Skips server explain when the local Connect proto already looks
+    unresolved (``D.UnderlyingEntityID``). Does not use the proto as
+    node counts — that is not a Catalyst tree and reports nodes=1.
+    """
+    try:
+        local = _local_connect_plan_text(df)
+        if local and _looks_unresolved(local):
+            return None
+        text = _server_explain_text(df)
+        if text and _looks_like_catalyst(text):
+            return text
+        return None
     except Exception as exc:
-        _arm_explain_skip(f"{type(exc).__name__}: {exc}")
+        print(f"[plan-profile] explain skipped: {type(exc).__name__}: {exc}")
         return None
 
 
-def _metrics_from_plan_text(text: str) -> dict:
+def _metrics_from_plan_text(text: str) -> dict | None:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     depth = 0
     for ln in lines:
@@ -304,6 +341,8 @@ def _metrics_from_plan_text(text: str) -> dict:
     if scans:
         ops["Scan"] = scans
 
+    if not lines:
+        return None
     return {
         "nodes": len(lines),
         "depth": depth,
@@ -321,15 +360,13 @@ def measure_plan(df, cfg: dict | None = None) -> dict | None:
     """
     if not profiling_enabled(cfg):
         return None
-    if _explain_skip_armed():
-        return None
     try:
         text = _optimized_plan_text(df)
-        if not text:
+        if not text or not _looks_like_catalyst(text):
             return None
         return _metrics_from_plan_text(text)
     except Exception as exc:
-        _arm_explain_skip(f"{type(exc).__name__}: {exc}")
+        print(f"[plan-profile] measure skipped: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -539,15 +576,10 @@ def track_plan(fn):
         if not profiling_enabled(cfg):
             return fn(*args, **kwargs)
 
-        input_nodes = 0
-        try:
-            for df_in in _find_dataframes((*args, *kwargs.values())):
-                metrics = measure_plan(df_in, cfg)
-                if metrics:
-                    input_nodes = max(input_nodes, metrics["nodes"])
-        except Exception as exc:
-            _arm_explain_skip(f"{type(exc).__name__}: {exc}")
-
+        # Do not measure inputs. Explain/analyze on a live pipeline frame
+        # (especially after localCheckpoint) can raise UNRESOLVED_COLUMN
+        # on alias-qualified names like D.UnderlyingEntityID and fail the
+        # Databricks cell. Only measure the returned DataFrame.
         result = fn(*args, **kwargs)
 
         out_df = _first_dataframe(result)
@@ -557,13 +589,13 @@ def track_plan(fn):
             except Exception as exc:
                 _arm_explain_skip(f"{type(exc).__name__}: {exc}")
                 return result
-            if not metrics:
+            if not metrics or int(metrics.get("nodes") or 0) <= 2:
                 return result
             record = {
                 "func": fn.__name__,
                 "nodes": metrics["nodes"],
                 "depth": metrics["depth"],
-                "delta": metrics["nodes"] - input_nodes,
+                "delta": metrics["nodes"],
                 "ops": metrics["ops"],
             }
             target = _sink_list("plan", cfg)
