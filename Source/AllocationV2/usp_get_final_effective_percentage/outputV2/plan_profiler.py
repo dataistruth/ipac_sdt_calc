@@ -73,6 +73,12 @@ def store_last_plan_profile(builder=None, checkpoint=None, action=None):
     LAST_PLAN_PROFILE["builder"] = list(builder or [])
     LAST_PLAN_PROFILE["checkpoint"] = list(checkpoint or [])
     LAST_PLAN_PROFILE["action"] = list(action or [])
+    try:
+        from AllocationV2.plan_profiler import store_last_plan_profile as _store
+
+        _store(builder, checkpoint, action)
+    except Exception:
+        pass
 
 
 try:

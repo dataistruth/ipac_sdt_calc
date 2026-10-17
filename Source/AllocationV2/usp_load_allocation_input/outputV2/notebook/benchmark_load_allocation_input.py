@@ -233,15 +233,28 @@ display(spark.createDataFrame(parity_rows, schema=parity_schema))
 # COMMAND ----------
 
 if profile_plan:
-    shim = importlib.import_module(f"{PACKAGE}.outputV2.plan_profiler")
-    last = getattr(shim, "LAST_PLAN_PROFILE", {}) or {}
+    last = {}
+    build = None
     try:
         shared = importlib.import_module("AllocationV2.plan_profiler")
+        last = getattr(shared, "LAST_PLAN_PROFILE", {}) or {}
         build = shared.build_plan_profile_display
         print("[plan-profile] using AllocationV2.plan_profiler")
     except Exception as exc:
-        build = shim.build_plan_profile_display
         print(f"[plan-profile] shared profiler missing ({exc}); using SP shim")
+    shim = importlib.import_module(f"{PACKAGE}.outputV2.plan_profiler")
+    if not any(last.get(key) for key in ("builder", "checkpoint", "action")):
+        last = getattr(shim, "LAST_PLAN_PROFILE", {}) or {}
+    if build is None:
+        build = shim.build_plan_profile_display
+    print(
+        "[plan-profile] records builder=%s checkpoint=%s action=%s"
+        % (
+            len(last.get("builder") or []),
+            len(last.get("checkpoint") or []),
+            len(last.get("action") or []),
+        )
+    )
     print("[plan-profile] BUILDER (add / measure / collapse)")
     display(build(spark, last.get("builder"), threshold=30, kind="builder"))
     print("[plan-profile] CHECKPOINT (keep / measure / remove)")

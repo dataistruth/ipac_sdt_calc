@@ -130,6 +130,10 @@ def disable_plan_profile() -> None:
     _ACTION_SINK.set(None)
     _clear_active_sinks()
 
+
+def _empty_metrics(reason: str = "explain_unavailable") -> dict:
+    return {"nodes": 0, "depth": 0, "chars": 0, "ops": {"explain": reason}}
+
 # Operators worth counting individually in the per-function histogram.
 _OPERATORS = (
     "Join",
@@ -145,6 +149,24 @@ _OPERATORS = (
 _SCAN_MARKERS = ("Relation", "Scan", "LogicalRDD", "InMemory")
 
 _DEFAULT_CHECKPOINT_THRESHOLD = 30
+
+# Durable copy for A/B last cells. Survives ContextVar reset and is what
+# notebooks should read: AllocationV2.plan_profiler.LAST_PLAN_PROFILE
+LAST_PLAN_PROFILE = {"builder": [], "checkpoint": [], "action": []}
+
+
+def store_last_plan_profile(builder=None, checkpoint=None, action=None):
+    LAST_PLAN_PROFILE["builder"] = list(builder or [])
+    LAST_PLAN_PROFILE["checkpoint"] = list(checkpoint or [])
+    LAST_PLAN_PROFILE["action"] = list(action or [])
+
+
+def _remember(kind: str, record: dict) -> None:
+    key = {"plan": "builder", "builder": "builder"}.get(kind, kind)
+    if key not in LAST_PLAN_PROFILE:
+        key = kind if kind in LAST_PLAN_PROFILE else "builder"
+    with _LOCK:
+        LAST_PLAN_PROFILE[key].append(dict(record))
 
 
 # --------------------------------------------------------------------------- #
@@ -202,20 +224,48 @@ def _extract_section(text: str, header: str) -> str | None:
 def _optimized_plan_text(df) -> str | None:
     """Return the optimized-logical-plan text for a DataFrame, or None.
 
-    Classic fast path uses ``_jdf`` when present; otherwise falls back to the
-    portable, Connect-safe ``explain(mode="extended")`` capture.
+    Databricks Connect / serverless often does not honor stdout redirect
+    around ``df.explain``. Prefer ``_explain_string`` when present.
     """
+    explainer = getattr(df, "_explain_string", None)
+    if callable(explainer):
+        for kwargs in (
+            {"extended": True},
+            {"mode": "extended"},
+            {"extended": True, "mode": "extended"},
+            {},
+        ):
+            try:
+                text = explainer(**kwargs)
+            except TypeError:
+                continue
+            except Exception:
+                text = None
+            if text and str(text).strip():
+                full = str(text)
+                return (
+                    _extract_section(full, "Optimized Logical Plan")
+                    or _extract_section(full, "Analyzed Logical Plan")
+                    or full
+                )
+
     jdf = getattr(df, "_jdf", None)
     if jdf is not None:
         try:
             return jdf.queryExecution().optimizedPlan().numberedTreeString()
         except Exception:
-            pass  # fall through to the portable path
+            pass
 
     buffer = io.StringIO()
     try:
         with contextlib.redirect_stdout(buffer):
             df.explain(mode="extended")
+    except TypeError:
+        try:
+            with contextlib.redirect_stdout(buffer):
+                df.explain(True)
+        except Exception:
+            return None
     except Exception:
         return None
     full = buffer.getvalue()
@@ -285,6 +335,9 @@ def start_plan_profile() -> tuple:
     records: list = []
     _PROFILING_ACTIVE.set(True)
     _set_active_sink("plan", records)
+    LAST_PLAN_PROFILE["builder"] = []
+    LAST_PLAN_PROFILE["checkpoint"] = []
+    LAST_PLAN_PROFILE["action"] = []
     token = _PLAN_SINK.set(records)
     return token, records
 
@@ -352,9 +405,7 @@ def _record_action(
     if not profiling_enabled(cfg):
         return
     try:
-        metrics = measure_plan(df, cfg)
-        if not metrics:
-            return
+        metrics = measure_plan(df, cfg) or _empty_metrics()
         record = {
             "func": name,
             "nodes": metrics["nodes"],
@@ -368,10 +419,10 @@ def _record_action(
             ),
         }
         target = _sink_list("action", cfg)
-        if target is None:
-            return
-        with _LOCK:
-            target.append(record)
+        if target is not None:
+            with _LOCK:
+                target.append(record)
+        _remember("action", record)
     except Exception:
         logger.debug("[PLAN-ACTION] record failed", exc_info=True)
 
@@ -401,19 +452,20 @@ def profile_action(name: str, df, action, cfg: dict | None = None):
         return action()
     finally:
         elapsed = time.perf_counter() - started
-        if metrics:
-            record = {
-                "func": name,
-                "nodes": metrics["nodes"],
-                "depth": metrics["depth"],
-                "delta": metrics["nodes"],
-                "ops": metrics["ops"],
-                "elapsed_seconds": round(elapsed, 3),
-            }
-            target = _sink_list("action", cfg)
-            if target is not None:
-                with _LOCK:
-                    target.append(record)
+        metrics = metrics or _empty_metrics()
+        record = {
+            "func": name,
+            "nodes": metrics["nodes"],
+            "depth": metrics["depth"],
+            "delta": metrics["nodes"],
+            "ops": metrics["ops"],
+            "elapsed_seconds": round(elapsed, 3),
+        }
+        target = _sink_list("action", cfg)
+        if target is not None:
+            with _LOCK:
+                target.append(record)
+        _remember("action", record)
 
 
 def track_checkpoint_plan(name: str, df, cfg=None) -> None:
@@ -430,9 +482,7 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
     if not profiling_enabled(cfg):
         return
     try:
-        metrics = measure_plan(df, cfg)
-        if not metrics:
-            return
+        metrics = measure_plan(df, cfg) or _empty_metrics()
         record = {
             "func": name,
             "nodes": metrics["nodes"],
@@ -441,10 +491,10 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
             "ops": metrics["ops"],
         }
         target = _sink_list("checkpoint", cfg)
-        if target is None:
-            return
-        with _LOCK:
-            target.append(record)
+        if target is not None:
+            with _LOCK:
+                target.append(record)
+        _remember("checkpoint", record)
         ops = " ".join(f"{k}={v}" for k, v in sorted(record["ops"].items()))
         logger.info(
             "[PLAN-CKPT] %s: nodes=%d depth=%d%s",
@@ -481,31 +531,30 @@ def track_plan(fn):
 
         out_df = _first_dataframe(result)
         if out_df is not None:
-            metrics = measure_plan(out_df, cfg)
-            if metrics:
-                record = {
-                    "func": fn.__name__,
-                    "nodes": metrics["nodes"],
-                    "depth": metrics["depth"],
-                    "delta": metrics["nodes"] - input_nodes,
-                    "ops": metrics["ops"],
-                }
-                target = _sink_list("plan", cfg)
-                if target is None:
-                    return result
+            metrics = measure_plan(out_df, cfg) or _empty_metrics()
+            record = {
+                "func": fn.__name__,
+                "nodes": metrics["nodes"],
+                "depth": metrics["depth"],
+                "delta": metrics["nodes"] - input_nodes,
+                "ops": metrics["ops"],
+            }
+            target = _sink_list("plan", cfg)
+            if target is not None:
                 with _LOCK:
                     target.append(record)
-                ops = " ".join(
-                    f"{k}={v}" for k, v in sorted(record["ops"].items())
-                )
-                logger.info(
-                    "[PLAN] %s: nodes=%d depth=%d (+%d)%s",
-                    fn.__name__,
-                    record["nodes"],
-                    record["depth"],
-                    record["delta"],
-                    f"  {ops}" if ops else "",
-                )
+            _remember("builder", record)
+            ops = " ".join(
+                f"{k}={v}" for k, v in sorted(record["ops"].items())
+            )
+            logger.info(
+                "[PLAN] %s: nodes=%d depth=%d (+%d)%s",
+                fn.__name__,
+                record["nodes"],
+                record["depth"],
+                record["delta"],
+                f"  {ops}" if ops else "",
+            )
         return result
 
     return wrapper

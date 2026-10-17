@@ -240,7 +240,11 @@ if not logger.handlers:
 def _start_dev_plan_profile(enabled):
     from .plan_profiler import disable_plan_profile
 
-    if not enabled:
+    on = bool(enabled) and str(enabled).strip().lower() not in {
+        "0", "false", "off", "no", "",
+    }
+    print(f"[plan-profile] armed={on}")
+    if not on:
         disable_plan_profile()
         return None
     from .plan_profiler import (
@@ -259,6 +263,7 @@ def _finish_dev_plan_profile(tokens, threshold=30, cfg=None):
     from .plan_profiler import disable_plan_profile, store_last_plan_profile
 
     if not tokens:
+        print("[plan-profile] skipped (not armed)")
         disable_plan_profile()
         return
     from .plan_profiler import (
@@ -284,10 +289,25 @@ def _finish_dev_plan_profile(tokens, threshold=30, cfg=None):
         builder = builder + list(cfg.get("_plan_profile") or [])
         checkpoints = checkpoints + list(cfg.get("_checkpoint_plan_profile") or [])
         actions = actions + list(cfg.get("_action_plan_profile") or [])
+    try:
+        from AllocationV2.plan_profiler import LAST_PLAN_PROFILE as _shared_last
+
+        if not builder:
+            builder = list(_shared_last.get("builder") or [])
+        if not checkpoints:
+            checkpoints = list(_shared_last.get("checkpoint") or [])
+        if not actions:
+            actions = list(_shared_last.get("action") or [])
+    except Exception:
+        pass
     builder_rep = plan_profile_report(builder, threshold, label="BUILDER") or []
     ckpt_rep = plan_profile_report(checkpoints, threshold, label="CHECKPOINT") or []
     action_rep = plan_profile_report(actions, threshold, label="ACTION") or []
     store_last_plan_profile(builder_rep, ckpt_rep, action_rep)
+    print(
+        f"[plan-profile] stored builder={len(builder_rep)} "
+        f"checkpoint={len(ckpt_rep)} action={len(action_rep)}"
+    )
     disable_plan_profile()
 
 
@@ -1978,6 +1998,13 @@ def run_final_effective_percentages(
         raise ValueError(
             f"mode must be 0 (fused 1+2+3), 1, 2, 3, or 4, got {mode}."
         )
+
+    if not profile_plan:
+        extra = kwargs.get("ProfilePlan", kwargs.get("profile_plan"))
+        if extra is not None:
+            profile_plan = str(extra).strip().lower() in {
+                "1", "true", "on", "yes",
+            }
 
     # Delegate to run_modes (raises on any sub-mode failure).
     inner = run_modes(
