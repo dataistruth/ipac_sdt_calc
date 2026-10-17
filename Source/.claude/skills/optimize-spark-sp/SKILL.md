@@ -180,25 +180,53 @@ display(spark.createDataFrame(parity_rows, schema=parity_schema))
 
 **ProfilePlan last cell (Mode 2):** after the parity displays, add a cell
 that runs **only** `if profile_plan:`. Import shared
-`AllocationV2.plan_profiler` in `load_runner` before the SP module so
-the per-SP shim binds to the real implementation. The last cell reads
-`LAST_PLAN_PROFILE` from the SP shim and calls
-`AllocationV2.plan_profiler.build_plan_profile_display` (shim display
-only if the shared package is missing). Display BUILDER
-(add/measure/collapse), CHECKPOINT (keep/measure/remove), and ACTION
-(add/measure). Do **not** call `df.explain` or
-`measure_plan` in that cell — only render stored records.
-Checkpoint rows come from Checkpoint V2 on every seam (including
-worker threads). Builder rows require wrapping Mode 2 builder imports
-with `track_plan`. ACTION stays empty unless `profile_action` wraps
-Spark actions.
+`AllocationV2.plan_profiler` in `load_runner` **before** the SP module.
+The last cell reads `AllocationV2.plan_profiler.LAST_PLAN_PROFILE`
+first (fallback: SP shim). Display BUILDER / CHECKPOINT / ACTION.
+Do **not** call `df.explain` or `measure_plan` in that cell.
 
-`measure_plan` / `df.explain` are allowed **only** when the widget is
-`on` and `cfg["profile_plan"]` is True. When the widget is `off`, the
-updated A/B run must not start sinks, not explain, and must
-`disable_plan_profile()` so a leftover on-run cannot tax the next
-timing run. Pass `profile_plan=True` to updated only when the widget
-is on; do not pass it when off.
+CHECKPOINT (keep/measure/remove) is the plan-size source of truth
+(incoming plan at each Checkpoint V2 seam). BUILDER only records
+outputs that are still fat Catalyst plans (skip 1-node post-checkpoint
+scans). ACTION stays empty unless `profile_action` wraps actions.
+
+`measure_plan` uses Catalyst `_explain_string` / `_jdf` only when the
+widget is on. Never count the Connect `_plan` proto as node counts
+(that reports `nodes=1`). If explain/analyze fails
+(`UNRESOLVED_COLUMN`), skip **that** frame only — never fail the SP.
+Do not measure **inputs** to `track_plan` (localCheckpoint strips join
+aliases like `D.UnderlyingEntityID`; explaining those inputs fails the
+Databricks cell). Do **not** wrap FEP
+`compute_effective_percentage_dated` / `non_dated`, `apply_plugging`,
+`apply_type_id_update`, `compute_form199a_effective_percentage`, or
+`compute_missing_entities`. When the widget is off, call
+`disable_plan_profile()`. Pass `profile_plan=True` to updated only
+when the widget is on.
+
+Confirm a live import with `[plan-profile] v6-catalyst-explain` then
+`armed=True`. Shim `track_plan` fallback must be identity (`return fn`).
+
+## Databricks deploy (A/B)
+
+Copy **all** of these under the notebook `source_path`:
+
+1. `Source/AllocationV2/plan_profiler/` (shared implementation)
+2. `Source/AllocationV2/<sp>/output/` (original + helpers
+   `outputV2` imports — footnotes needs `join_optimizations.py`)
+3. `Source/AllocationV2/<sp>/outputV2/`
+
+Copying only `outputV2/` causes `ModuleNotFoundError` on
+`output.join_optimizations` and similar production helpers.
+
+## Production `output/` (locked inline)
+
+Each of the 12 SPs already has Mode 1 inline in `output/`: Checkpoint
+V2, `resolve_execution_profile`, locked seams/waves, production run
+notebook, **no** `plan_profiler` / `profile_plan`. That tree is
+`sdt_d` production plus the locked optimization overlay. Do not
+replace it with vanilla `sdt_d` and do not add profiler code.
+`outputV2` may differ only by packaging (absolute `output.*` imports,
+shim, `track_plan` wraps, start/finish). Business logic must match.
 
 ## Frozen notebook widgets (do not add extras)
 
@@ -282,7 +310,9 @@ The notebook does not call `resolve_execution_profile`.
    same-table writes, gating validation, and AllocationRun status updates
    sequential. Build each Spark writer inside its task.
 5. No `output/*_updated.py`. No SP-root `notebooks/`.
-6. Mode 1: no plan profiler code at all. Mode 2: slim profiler only.
+6. Mode 1: no plan profiler code at all. Mode 2: slim profiler only
+   (`AllocationV2.plan_profiler` + shim). Production `output/` must
+   stay profiler-free.
    Notebook widget `ProfilePlan` default **off**. No `ExecutionOrder`
    widget.
 7. Mode 2: never report success until every table hash matches.

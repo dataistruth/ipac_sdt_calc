@@ -81,12 +81,17 @@ def clear_modules(package):
     importlib.invalidate_caches()
 ```
 
-Evict both `AllocationV2.<sp>.output` and `...outputV2` plus `Common_V2`.
+Evict both `AllocationV2.<sp>.output` and `...outputV2` plus `Common_V2`
+and `AllocationV2.plan_profiler`.
 Import `Common_V2.core.checkpoint_V2` after putting `source_path` first.
+In `load_runner`, `importlib.import_module("AllocationV2.plan_profiler")`
+before the SP module so the shim binds to the shared package (look for
+`[plan-profile] v6-catalyst-explain`).
 Do not use `os.path.isfile` on `/Workspace/...` paths.
 
 Validate `outputV2/` has entry module, `plan_profiler.py`,
-`output_reconcile.py`, and this notebook.
+`output_reconcile.py`, and this notebook. Also deploy sibling
+`output/` (helpers) and `AllocationV2/plan_profiler/`.
 
 ### Fair execution
 

@@ -95,7 +95,9 @@ Leave production `output/` unchanged unless the user asked for Production
 mode. In Development mode, create `outputV2/` that:
 
 - reuses production helpers via `parent.py` / `..output.*` (this SP’s
-  live `output/` package);
+  live `output/` package — Databricks A/B must also copy `output/`,
+  including `join_optimizations.py`; `outputV2` alone raises
+  `ModuleNotFoundError`);
 - keeps public API `run_load_footnotes_allocation_to_output`;
 - does **not** copy production modules into `outputV2/` except the
   orchestrator and the two SP-local optimization modules.

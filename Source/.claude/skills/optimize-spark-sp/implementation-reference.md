@@ -349,21 +349,25 @@ Production orchestrators must not reference `plan_profiler` or
 In Mode 2, add a slim `outputV2/plan_profiler.py` that re-exports the
 shared `AllocationV2.plan_profiler` when present, else no-ops with the
 same signatures. Default `profile_plan=False`. The A/B notebook may turn
-it on with widget `ProfilePlan`. `measure_plan` and `df.explain` run
+it on with widget `ProfilePlan`. `measure_plan` and Catalyst `_explain_string` run
 only in that on-path. If explain/analyze fails (for example
-`UNRESOLVED_COLUMN`), skip that measurement and skip further
-explains for the rest of the run — never fail the SP. When the widget is off, call
+`UNRESOLVED_COLUMN`), skip **that frame only** — never fail the SP.
+Do not explain `track_plan` inputs. Do not wrap FEP effective-calc /
+Form 199A / type-id / missing-entity helpers (localCheckpoint drops
+alias `D`). Never use Connect `_plan` proto for node counts.
+When the widget is off, call
 `disable_plan_profile()` so leftover sinks cannot tax the
 updated A/B run. The last notebook cell displays stored
 BUILDER / CHECKPOINT / ACTION tables only when the widget is on.
 
 Record sinks must be process-wide (module list + lock), not
-ContextVar-only. Checkpoint V2 and builders run inside
+ContextVar-only. Checkpoint V2 runs inside
 `ThreadPoolExecutor` workers that do not inherit ContextVars; otherwise
-CHECKPOINT keep/remove tables stay empty. Wrap Mode 2 builder imports
-with `track_plan` so BUILDER add/measure/collapse has rows. Finish must
+CHECKPOINT keep/remove tables stay empty. Optionally wrap Mode 2
+builder imports with `track_plan` (output only). Finish must
 merge `cfg["_plan_profile"]` / `cfg["_checkpoint_plan_profile"]` /
-`cfg["_action_plan_profile"]` into `LAST_PLAN_PROFILE`.
+`cfg["_action_plan_profile"]` into shared
+`AllocationV2.plan_profiler.LAST_PLAN_PROFILE`.
 
 Shared package: `AllocationV2.plan_profiler`. The slim shim must re-export:
 

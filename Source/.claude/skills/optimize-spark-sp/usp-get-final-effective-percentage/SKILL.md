@@ -21,7 +21,7 @@ Portable two-mode rules live in the parent
 | Mode | Where the optimizations live |
 |---|---|
 | **2 Development** | Flat `outputV2/`. Isolated orchestrator + pipeline. Optimized helper **copies** in the **same folder** (`cost_pct_loader.py`, `state_allocation.py`, `pfic_footnotes.py`, `effective_calc.py`, `entity_hierarchy.py`). Bind them onto the isolated production orchestrator. No `business/`, `tests/`, or `updated/`. A/B notebook + hashes. |
-| **1 Production** | **Inline** the same optimizations in `output/` (orchestrator and existing helper modules). No `outputV2/`, no profiler, no reconcile. |
+| **1 Production** | **Inline** the same optimizations in `output/` (orchestrator and existing helper modules). No `outputV2/`, no profiler, no reconcile. Do not wrap builders with `track_plan`. |
 
 Historical log names `outputV3` / `outputV4` mean this locked candidate;
 generate **outputV2** (Development) or edit **output/** (Production).
@@ -124,6 +124,15 @@ Reject a Production generate if a Mode-1 notebook log shows sequential
 `[START] mode 2 prep` only after mode 1 finishes, or if
 `de_post_minq_fused` / `cost_pct_min_q_fused` are absent after
 `final_cost_pct_fused`.
+
+Mode 2 `track_plan` must **not** wrap
+`compute_effective_percentage_dated`, `compute_effective_percentage_non_dated`,
+`apply_plugging`, `apply_type_id_update`,
+`compute_form199a_effective_percentage`, or `compute_missing_entities`.
+Those use alias-qualified columns (`D.UnderlyingEntityID`). Mode 4
+`localCheckpoint` strips alias context; explaining those frames fails
+the A/B cell with `UNRESOLVED_COLUMN`. Measure builder **outputs**
+only. CHECKPOINT seams remain the keep/remove source of truth.
 
 ## Implementation workflow
 
