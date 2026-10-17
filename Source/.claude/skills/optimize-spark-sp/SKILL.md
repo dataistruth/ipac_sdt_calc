@@ -202,8 +202,10 @@ is on; do not pass it when off.
 
 ## Frozen notebook widgets (do not add extras)
 
-This set is locked. Next generate must match it. Put
-`dbutils.widgets.removeAll()` in its **own** cell, then create widgets.
+This set is locked. Next generate must match it. Keep
+`# dbutils.widgets.removeAll()` commented in its **own** cell so
+widget values persist across Run all; uncomment only to reset
+defaults. Then create widgets.
 
 **Mode 2 A/B** — exactly these 10 widgets, in this order, with these
 defaults (FEP Development run):

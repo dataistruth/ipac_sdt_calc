@@ -124,15 +124,39 @@ def profiling_enabled(cfg: dict | None = None) -> bool:
 
 def disable_plan_profile() -> None:
     """Drop leftover sinks. Call at the start of every outputV2 run."""
+    global _EXPLAIN_SKIP
     _PROFILING_ACTIVE.set(False)
     _PLAN_SINK.set(None)
     _CHECKPOINT_SINK.set(None)
     _ACTION_SINK.set(None)
     _clear_active_sinks()
+    with _EXPLAIN_SKIP_LOCK:
+        _EXPLAIN_SKIP = False
 
 
 def _empty_metrics(reason: str = "explain_unavailable") -> dict:
     return {"nodes": 0, "depth": 0, "chars": 0, "ops": {"explain": reason}}
+
+
+# After one explain/analyze failure, skip the rest of the run. A failed
+# Connect analyze can surface in the notebook even when Python catches it.
+_EXPLAIN_SKIP = False
+_EXPLAIN_SKIP_LOCK = threading.Lock()
+
+
+def _explain_skip_armed() -> bool:
+    with _EXPLAIN_SKIP_LOCK:
+        return _EXPLAIN_SKIP
+
+
+def _arm_explain_skip(reason: str) -> None:
+    global _EXPLAIN_SKIP
+    with _EXPLAIN_SKIP_LOCK:
+        already = _EXPLAIN_SKIP
+        _EXPLAIN_SKIP = True
+    if not already:
+        print(f"[plan-profile] measure/explain skipped: {reason}")
+        logger.info("[PLAN] measure/explain skipped: %s", reason)
 
 # Operators worth counting individually in the per-function histogram.
 _OPERATORS = (
@@ -224,58 +248,70 @@ def _extract_section(text: str, header: str) -> str | None:
 def _optimized_plan_text(df) -> str | None:
     """Return the optimized-logical-plan text for a DataFrame, or None.
 
-    Databricks Connect / serverless often does not honor stdout redirect
-    around ``df.explain``. Prefer ``_explain_string`` when present.
+    Never raises. After one analyze/explain failure, skip the rest of
+    the run so Connect ``UNRESOLVED_COLUMN`` cannot fail the A/B cell.
+    If ``_explain_string`` exists and fails, do not also call ``df.explain``.
     """
-    explainer = getattr(df, "_explain_string", None)
-    if callable(explainer):
-        for kwargs in (
-            {"extended": True},
-            {"mode": "extended"},
-            {"extended": True, "mode": "extended"},
-            {},
-        ):
-            try:
-                text = explainer(**kwargs)
-            except TypeError:
-                continue
-            except Exception:
-                text = None
-            if text and str(text).strip():
-                full = str(text)
-                return (
-                    _extract_section(full, "Optimized Logical Plan")
-                    or _extract_section(full, "Analyzed Logical Plan")
-                    or full
-                )
-
-    jdf = getattr(df, "_jdf", None)
-    if jdf is not None:
-        try:
-            return jdf.queryExecution().optimizedPlan().numberedTreeString()
-        except Exception:
-            pass
-
-    buffer = io.StringIO()
+    if _explain_skip_armed():
+        return None
     try:
-        with contextlib.redirect_stdout(buffer):
-            df.explain(mode="extended")
-    except TypeError:
+        explainer = getattr(df, "_explain_string", None)
+        if callable(explainer):
+            for kwargs in (
+                {"extended": True},
+                {"mode": "extended"},
+                {"extended": True, "mode": "extended"},
+                {},
+            ):
+                try:
+                    text = explainer(**kwargs)
+                except TypeError:
+                    continue
+                except Exception as exc:
+                    _arm_explain_skip(f"{type(exc).__name__}: {exc}")
+                    return None
+                if text and str(text).strip():
+                    full = str(text)
+                    return (
+                        _extract_section(full, "Optimized Logical Plan")
+                        or _extract_section(full, "Analyzed Logical Plan")
+                        or full
+                    )
+            return None
+
+        jdf = getattr(df, "_jdf", None)
+        if jdf is not None:
+            try:
+                return jdf.queryExecution().optimizedPlan().numberedTreeString()
+            except Exception as exc:
+                _arm_explain_skip(f"{type(exc).__name__}: {exc}")
+                return None
+
+        buffer = io.StringIO()
         try:
             with contextlib.redirect_stdout(buffer):
-                df.explain(True)
-        except Exception:
+                df.explain(mode="extended")
+        except TypeError:
+            try:
+                with contextlib.redirect_stdout(buffer):
+                    df.explain(True)
+            except Exception as exc:
+                _arm_explain_skip(f"{type(exc).__name__}: {exc}")
+                return None
+        except Exception as exc:
+            _arm_explain_skip(f"{type(exc).__name__}: {exc}")
             return None
-    except Exception:
+        full = buffer.getvalue()
+        if not full.strip():
+            return None
+        return (
+            _extract_section(full, "Optimized Logical Plan")
+            or _extract_section(full, "Analyzed Logical Plan")
+            or full
+        )
+    except Exception as exc:
+        _arm_explain_skip(f"{type(exc).__name__}: {exc}")
         return None
-    full = buffer.getvalue()
-    if not full.strip():
-        return None
-    return (
-        _extract_section(full, "Optimized Logical Plan")
-        or _extract_section(full, "Analyzed Logical Plan")
-        or full
-    )
 
 
 def _metrics_from_plan_text(text: str) -> dict:
@@ -313,13 +349,15 @@ def measure_plan(df, cfg: dict | None = None) -> dict | None:
     """
     if not profiling_enabled(cfg):
         return None
+    if _explain_skip_armed():
+        return None
     try:
         text = _optimized_plan_text(df)
         if not text:
             return None
         return _metrics_from_plan_text(text)
-    except Exception:
-        logger.debug("[PLAN] measure_plan failed", exc_info=True)
+    except Exception as exc:
+        _arm_explain_skip(f"{type(exc).__name__}: {exc}")
         return None
 
 
@@ -332,12 +370,15 @@ def start_plan_profile() -> tuple:
     Returns ``(token, records)`` — pass ``token`` to :func:`finish_plan_profile`
     and read ``records`` for the report.
     """
+    global _EXPLAIN_SKIP
     records: list = []
     _PROFILING_ACTIVE.set(True)
     _set_active_sink("plan", records)
     LAST_PLAN_PROFILE["builder"] = []
     LAST_PLAN_PROFILE["checkpoint"] = []
     LAST_PLAN_PROFILE["action"] = []
+    with _EXPLAIN_SKIP_LOCK:
+        _EXPLAIN_SKIP = False
     token = _PLAN_SINK.set(records)
     return token, records
 
@@ -405,7 +446,9 @@ def _record_action(
     if not profiling_enabled(cfg):
         return
     try:
-        metrics = measure_plan(df, cfg) or _empty_metrics()
+        metrics = measure_plan(df, cfg)
+        if not metrics:
+            return
         record = {
             "func": name,
             "nodes": metrics["nodes"],
@@ -452,20 +495,20 @@ def profile_action(name: str, df, action, cfg: dict | None = None):
         return action()
     finally:
         elapsed = time.perf_counter() - started
-        metrics = metrics or _empty_metrics()
-        record = {
-            "func": name,
-            "nodes": metrics["nodes"],
-            "depth": metrics["depth"],
-            "delta": metrics["nodes"],
-            "ops": metrics["ops"],
-            "elapsed_seconds": round(elapsed, 3),
-        }
-        target = _sink_list("action", cfg)
-        if target is not None:
-            with _LOCK:
-                target.append(record)
-        _remember("action", record)
+        if metrics:
+            record = {
+                "func": name,
+                "nodes": metrics["nodes"],
+                "depth": metrics["depth"],
+                "delta": metrics["nodes"],
+                "ops": metrics["ops"],
+                "elapsed_seconds": round(elapsed, 3),
+            }
+            target = _sink_list("action", cfg)
+            if target is not None:
+                with _LOCK:
+                    target.append(record)
+            _remember("action", record)
 
 
 def track_checkpoint_plan(name: str, df, cfg=None) -> None:
@@ -482,7 +525,9 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
     if not profiling_enabled(cfg):
         return
     try:
-        metrics = measure_plan(df, cfg) or _empty_metrics()
+        metrics = measure_plan(df, cfg)
+        if not metrics:
+            return
         record = {
             "func": name,
             "nodes": metrics["nodes"],
@@ -522,16 +567,25 @@ def track_plan(fn):
             return fn(*args, **kwargs)
 
         input_nodes = 0
-        for df_in in _find_dataframes((*args, *kwargs.values())):
-            metrics = measure_plan(df_in, cfg)
-            if metrics:
-                input_nodes = max(input_nodes, metrics["nodes"])
+        try:
+            for df_in in _find_dataframes((*args, *kwargs.values())):
+                metrics = measure_plan(df_in, cfg)
+                if metrics:
+                    input_nodes = max(input_nodes, metrics["nodes"])
+        except Exception as exc:
+            _arm_explain_skip(f"{type(exc).__name__}: {exc}")
 
         result = fn(*args, **kwargs)
 
         out_df = _first_dataframe(result)
         if out_df is not None:
-            metrics = measure_plan(out_df, cfg) or _empty_metrics()
+            try:
+                metrics = measure_plan(out_df, cfg)
+            except Exception as exc:
+                _arm_explain_skip(f"{type(exc).__name__}: {exc}")
+                return result
+            if not metrics:
+                return result
             record = {
                 "func": fn.__name__,
                 "nodes": metrics["nodes"],

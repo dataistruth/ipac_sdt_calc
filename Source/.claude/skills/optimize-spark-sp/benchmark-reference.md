@@ -48,7 +48,8 @@ Source/AllocationV2/<sp_name>/outputV2/notebook/benchmark_<sp_name>.py
 Widgets: **frozen Mode 2 set only** (parent skill). Exactly 10 widgets:
 `source_path`, `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`,
 `CatalogName`, `SchemaName`, `ExecutionProfile` `low`, `number_of_runs`
-`1`, `ProfilePlan` `off` (`off` / `on`). `removeAll()` in its own cell.
+`1`, `ProfilePlan` `off` (`off` / `on`). Keep `# dbutils.widgets.removeAll()`
+commented in its own cell so values persist; uncomment only to reset.
 A/B order is always original then updated (no `ExecutionOrder` widget).
 
 Do **not** add MaxThreads, shuffle, CheckpointMode, ExecutionOrder,
