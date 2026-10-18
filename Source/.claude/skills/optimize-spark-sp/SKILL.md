@@ -182,8 +182,12 @@ display(spark.createDataFrame(parity_rows, schema=parity_schema))
 that runs **only** `if profile_plan:`. Import shared
 `AllocationV2.plan_profiler` in `load_runner` **before** the SP module.
 The last cell reads `AllocationV2.plan_profiler.LAST_PLAN_PROFILE`
-first (fallback: SP shim). Display BUILDER / CHECKPOINT / ACTION.
-Do **not** call `df.explain` or `measure_plan` in that cell.
+first (fallback: SP shim). Use **one** `display()` of
+`build_combined_plan_profile_display` (column `kind` =
+checkpoint / builder / action). Databricks keeps one table widget
+per cell; three `display()` calls hide CHECKPOINT behind an empty
+BUILDER table. Do **not** call `df.explain` or `measure_plan` in
+that cell.
 
 CHECKPOINT (keep/measure/remove) is the plan-size source of truth
 (incoming plan at each Checkpoint V2 seam). BUILDER only records

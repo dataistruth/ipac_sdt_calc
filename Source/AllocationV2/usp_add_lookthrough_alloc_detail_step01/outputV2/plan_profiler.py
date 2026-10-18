@@ -36,6 +36,43 @@ def profiling_enabled(cfg=None):
     return False
 
 
+def build_combined_plan_profile_display(spark, last, threshold=30):
+    from pyspark.sql.types import LongType, StringType, StructField, StructType
+
+    schema = StructType(
+        [
+            StructField("kind", StringType(), True),
+            StructField("func", StringType(), True),
+            StructField("nodes", LongType(), True),
+            StructField("depth", LongType(), True),
+            StructField("delta", LongType(), True),
+            StructField("checkpoint_candidate", StringType(), True),
+            StructField("recommendation", StringType(), True),
+            StructField("ops", StringType(), True),
+        ]
+    )
+    payload = last if isinstance(last, dict) else {}
+    rows = []
+    for kind in ("checkpoint", "builder", "action"):
+        for raw in list(payload.get(kind) or []):
+            rec = dict(raw)
+            recommendation = rec.get("recommendation") or ""
+            candidate = "yes" if recommendation in {"add", "keep"} else ""
+            rows.append(
+                (
+                    kind,
+                    str(rec.get("func")),
+                    int(rec.get("nodes", 0) or 0),
+                    int(rec.get("depth", 0) or 0),
+                    int(rec.get("delta", 0) or 0),
+                    candidate,
+                    recommendation,
+                    str(rec.get("ops") or ""),
+                )
+            )
+    return spark.createDataFrame(rows, schema=schema)
+
+
 def build_plan_profile_display(spark, records, threshold=30, kind="builder"):
     from pyspark.sql.types import LongType, StringType, StructField, StructType
 
@@ -83,6 +120,7 @@ def store_last_plan_profile(builder=None, checkpoint=None, action=None):
 
 try:
     from AllocationV2.plan_profiler import (
+        build_combined_plan_profile_display,
         build_plan_profile_display,
         disable_plan_profile,
         finish_action_profile,
@@ -114,6 +152,7 @@ except Exception:
 
 __all__ = [
     "LAST_PLAN_PROFILE",
+    "build_combined_plan_profile_display",
     "build_plan_profile_display",
     "disable_plan_profile",
     "finish_checkpoint_plan_profile",

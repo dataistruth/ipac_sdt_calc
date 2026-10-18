@@ -239,7 +239,7 @@ if profile_plan:
     try:
         shared = importlib.import_module("AllocationV2.plan_profiler")
         last = getattr(shared, "LAST_PLAN_PROFILE", {}) or {}
-        build = shared.build_plan_profile_display
+        build = getattr(shared, "build_combined_plan_profile_display", None)
         print("[plan-profile] using AllocationV2.plan_profiler")
     except Exception as exc:
         print(f"[plan-profile] shared profiler missing ({exc}); using SP shim")
@@ -247,7 +247,7 @@ if profile_plan:
     if not any(last.get(key) for key in ("builder", "checkpoint", "action")):
         last = getattr(shim, "LAST_PLAN_PROFILE", {}) or {}
     if build is None:
-        build = shim.build_plan_profile_display
+        build = shim.build_combined_plan_profile_display
     print(
         "[plan-profile] records builder=%s checkpoint=%s action=%s"
         % (
@@ -256,11 +256,7 @@ if profile_plan:
             len(last.get("action") or []),
         )
     )
-    print("[plan-profile] BUILDER (add / measure / collapse)")
-    display(build(spark, last.get("builder"), threshold=30, kind="builder"))
-    print("[plan-profile] CHECKPOINT (keep / measure / remove)")
-    display(build(spark, last.get("checkpoint"), threshold=30, kind="checkpoint"))
-    print("[plan-profile] ACTION (add / measure)")
-    display(build(spark, last.get("action"), threshold=30, kind="action"))
+    # One display(): Databricks keeps the first/only table widget in the cell.
+    display(build(spark, last, threshold=30))
 else:
     print("[plan-profile] skipped (ProfilePlan=off); no df.explain / measure_plan")

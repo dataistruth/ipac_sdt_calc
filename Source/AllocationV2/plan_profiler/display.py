@@ -17,11 +17,52 @@ from .profiler import classify_plan_recommendation
 _DEFAULT_THRESHOLD = 30
 
 
-def _format_ops(ops: dict | None) -> str:
+def _format_ops(ops) -> str:
     if not ops:
         return ""
+    if isinstance(ops, str):
+        return ops
+    if not isinstance(ops, dict):
+        return str(ops)
     items = sorted(ops.items(), key=lambda kv: kv[1], reverse=True)
     return " · ".join(f"{name} {count}" for name, count in items)
+
+
+def _profile_rows(records, threshold, kind):
+    try:
+        limit = int(threshold)
+    except (TypeError, ValueError):
+        limit = _DEFAULT_THRESHOLD
+    normalized_kind = str(kind).strip().lower()
+    report_kind = (
+        normalized_kind
+        if normalized_kind in {"builder", "checkpoint", "action"}
+        else "builder"
+    )
+    ranked = sorted(
+        list(records or []),
+        key=lambda r: int(r.get("delta", 0) or 0),
+        reverse=True,
+    )
+    rows = []
+    for raw in ranked:
+        rec = dict(raw)
+        recommendation = rec.get("recommendation") or classify_plan_recommendation(
+            rec, limit, report_kind
+        )
+        candidate = "yes" if recommendation in {"add", "keep"} else ""
+        rows.append(
+            (
+                str(rec.get("func")),
+                int(rec.get("nodes", 0) or 0),
+                int(rec.get("depth", 0) or 0),
+                int(rec.get("delta", 0) or 0),
+                candidate,
+                recommendation,
+                _format_ops(rec.get("ops")),
+            )
+        )
+    return rows
 
 
 def build_plan_profile_display(
@@ -55,39 +96,43 @@ def build_plan_profile_display(
             StructField("ops", StringType(), True),
         ]
     )
-
-    try:
-        limit = int(threshold)
-    except (TypeError, ValueError):
-        limit = _DEFAULT_THRESHOLD
-
-    normalized_kind = str(kind).strip().lower()
-    report_kind = (
-        normalized_kind
-        if normalized_kind in {"builder", "checkpoint", "action"}
-        else "builder"
+    return spark.createDataFrame(
+        _profile_rows(records, threshold, kind), schema=schema
     )
-    ranked = sorted(
-        list(records or []),
-        key=lambda r: int(r.get("delta", 0) or 0),
-        reverse=True,
+
+
+def build_combined_plan_profile_display(
+    spark,
+    last,
+    threshold: int = _DEFAULT_THRESHOLD,
+):
+    """One DataFrame for the A/B last cell (Databricks shows one display()).
+
+    Adds ``kind`` (builder / checkpoint / action). Empty kinds are omitted
+    so a footnotes-style run (checkpoint only) still populates the table.
+    """
+    from pyspark.sql.types import (
+        LongType,
+        StringType,
+        StructField,
+        StructType,
     )
+
+    schema = StructType(
+        [
+            StructField("kind", StringType(), True),
+            StructField("func", StringType(), True),
+            StructField("nodes", LongType(), True),
+            StructField("depth", LongType(), True),
+            StructField("delta", LongType(), True),
+            StructField("checkpoint_candidate", StringType(), True),
+            StructField("recommendation", StringType(), True),
+            StructField("ops", StringType(), True),
+        ]
+    )
+    payload = last if isinstance(last, dict) else {}
     rows = []
-    for raw in ranked:
-        rec = dict(raw)
-        recommendation = rec.get("recommendation") or classify_plan_recommendation(
-            rec, limit, report_kind
-        )
-        candidate = "yes" if recommendation in {"add", "keep"} else ""
-        rows.append(
-            (
-                str(rec.get("func")),
-                int(rec.get("nodes", 0) or 0),
-                int(rec.get("depth", 0) or 0),
-                int(rec.get("delta", 0) or 0),
-                candidate,
-                recommendation,
-                _format_ops(rec.get("ops")),
-            )
-        )
+    for kind in ("checkpoint", "builder", "action"):
+        for rec in _profile_rows(payload.get(kind), threshold, kind):
+            rows.append((kind,) + rec)
     return spark.createDataFrame(rows, schema=schema)

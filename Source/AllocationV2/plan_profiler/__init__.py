@@ -27,7 +27,10 @@ fully guarded so it can never break a run. See ``profiler`` for details.
 
 from __future__ import annotations
 
-from .display import build_plan_profile_display
+from .display import (
+    build_combined_plan_profile_display,
+    build_plan_profile_display,
+)
 from .profiler import (
     LAST_PLAN_PROFILE,
     PROFILER_VERSION,
@@ -69,4 +72,5 @@ __all__ = [
     "finish_action_profile",
     "track_checkpoint_plan",
     "build_plan_profile_display",
+    "build_combined_plan_profile_display",
 ]
