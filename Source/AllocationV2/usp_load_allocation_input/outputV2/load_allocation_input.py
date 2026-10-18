@@ -16,40 +16,40 @@ from Common_V2.core.config import load_common_config
 from Common_V2.core.execution_profiles import resolve_execution_profile
 from Common_V2.core.helpers import log_section, log_timing
 
-from AllocationV2.usp_load_allocation_input.outputV2.ai_config_service import load_config
-from AllocationV2.usp_load_allocation_input.outputV2.ai_finalization_service import (
+from .ai_config_service import load_config
+from .ai_finalization_service import (
     apply_blocker_entity_cleanup,
     apply_distribution_line_suppression,
     apply_master_feed_override,
     apply_tag_percentages,
     purge_output_tables,
 )
-from AllocationV2.usp_load_allocation_input.outputV2.ai_form_service import build_all_form_inputs
-from AllocationV2.usp_load_allocation_input.outputV2.ai_hierarchy_service import (
+from .ai_form_service import build_all_form_inputs
+from .ai_hierarchy_service import (
     build_entity_hierarchy,
     build_lower_tier_funds,
     build_workflows,
 )
-from AllocationV2.usp_load_allocation_input.outputV2.ai_k1_service import build_k1_and_related_inputs
-from AllocationV2.usp_load_allocation_input.outputV2.ai_pfic_flowup_service import (
+from .ai_k1_service import build_k1_and_related_inputs
+from .ai_pfic_flowup_service import (
     build_custom_footnote_input,
     build_pfic_flowup_pipeline,
     check_pfic_xml_override_alert,
 )
-from AllocationV2.usp_load_allocation_input.outputV2.ai_pfic_service import (
+from .ai_pfic_service import (
     apply_part_v_vii_flags,
     apply_pfic_election_deletes,
     build_pfic_allocation_input,
     build_pfic_snapshot,
 )
-from AllocationV2.usp_load_allocation_input.outputV2.ai_shared_views import register_shared_views
-from AllocationV2.usp_load_allocation_input.outputV2.ai_validation_service import run_validations
-from AllocationV2.usp_load_allocation_input.outputV2.parallel_helpers import (
+from .ai_shared_views import register_shared_views
+from .ai_validation_service import run_validations
+from .parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
     run_parallel,
 )
-from AllocationV2.usp_load_allocation_input.outputV2.write_helpers import (
+from .write_helpers import (
     collect_output_frames_parallel,
     flush_collected_results,
 )

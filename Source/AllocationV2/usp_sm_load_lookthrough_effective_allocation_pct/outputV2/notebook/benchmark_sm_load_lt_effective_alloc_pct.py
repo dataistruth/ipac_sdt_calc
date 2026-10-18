@@ -90,6 +90,16 @@ def clear_modules(package):
 
 sys.path[:] = [entry for entry in sys.path if entry != source_path]
 sys.path.insert(0, source_path)
+import os
+_v2_dir = os.path.join(
+    source_path, "AllocationV2", PACKAGE.rsplit(".", 1)[-1], "outputV2"
+)
+print("[outputV2] source_path=", source_path)
+print("[outputV2] dir=", _v2_dir, "exists=", os.path.isdir(_v2_dir))
+if os.path.isdir(_v2_dir):
+    print("[outputV2] files=", sorted(os.listdir(_v2_dir)))
+else:
+    print("[outputV2] widget source_path is not the Source root that contains this outputV2")
 clear_modules(PACKAGE)
 importlib.import_module("Common_V2.core.checkpoint_V2")
 reconcile = importlib.import_module(f"{PACKAGE}.outputV2.output_reconcile")

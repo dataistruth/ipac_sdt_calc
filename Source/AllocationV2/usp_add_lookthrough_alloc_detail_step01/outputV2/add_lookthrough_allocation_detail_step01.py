@@ -52,7 +52,7 @@ from Common_V2.core.execution_profiles import resolve_execution_profile
 
 checkpoint = checkpoint_V2
 
-from AllocationV2.usp_add_lookthrough_alloc_detail_step01.outputV2.parallel_helpers import (
+from .parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
     run_parallel,

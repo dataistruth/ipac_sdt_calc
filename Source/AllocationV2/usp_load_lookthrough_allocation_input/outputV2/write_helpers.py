@@ -12,7 +12,7 @@ import time
 import pyspark.sql.functions as F
 from pyspark.sql import Window
 
-from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_helpers import (
+from .lt_helpers import (
     logger,
     log_section,
     log_timing,

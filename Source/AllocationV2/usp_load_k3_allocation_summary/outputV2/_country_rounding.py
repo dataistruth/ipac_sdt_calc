@@ -23,7 +23,7 @@ from pyspark.sql import DataFrame, SparkSession, Window
 from Common_V2.core.helpers import get_logger, log_timing, sql_round as _sql_round
 from Common_V2.core.checkpoint_V2 import checkpoint_V2
 
-from AllocationV2.usp_load_k3_allocation_summary.outputV2._prep import _apply_6a6b
+from ._prep import _apply_6a6b
 
 def _checkpoint_frame(spark, df, name, cfg):
     if df is None:

@@ -77,35 +77,35 @@ from Common_V2.core.checkpoint_V2 import (
     resolve_checkpoint_mode,
 )
 from Common_V2.core.execution_profiles import resolve_execution_profile
-from AllocationV2.usp_get_final_effective_percentage.outputV2.parallel_helpers import (
+from .parallel_helpers import (
     isolated_cfg,
     normalize_workers,
     parse_enabled_groups,
     run_phase,
 )
 
-from AllocationV2.usp_get_final_effective_percentage.outputV2.config_loader import (
+from .config_loader import (
     load_config,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.input_builder import (
+from .input_builder import (
     build_allocation_input,
     build_sm_lookthrough_allocation_input,
     build_lookthrough_allocation_input,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.entity_hierarchy import (
+from .entity_hierarchy import (
     build_entity_partners,
     build_asset_class_relationship,
     build_cost_underlying_types,
     build_entity_hierarchy,
     build_underlyings_combined,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.cost_percentage import (
+from .cost_percentage import (
     build_cost_percentage_snapshot_modes123,
     build_cost_percentage_snapshot_mode4,
     build_mode1_704c_pe_book_allocations,
     build_temp_cost_percentage,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.book_effective import (
+from .book_effective import (
     load_allocation_rules,
     load_line_items,
     load_book_effective_data,
@@ -116,34 +116,34 @@ from AllocationV2.usp_get_final_effective_percentage.outputV2.book_effective imp
     build_footnote_lines,
     build_footnote_book_effective,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.underlyings import (
+from .underlyings import (
     filter_asset_class_underlyings,
     build_underlyings_hlevel_ordered,
     build_underlying_mod,
     build_all_underlyings_ordered,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.input_lines import (
+from .input_lines import (
     build_input_lines,
     compute_amount_based_allocation,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.entities import (
+from .entities import (
     build_non_dated_entities,
     build_dated_entities,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.pfic_footnotes import (
+from .pfic_footnotes import (
     build_footnote_underlyings_ordered,
     build_footnote_input_lines,
     build_footnote_dated_entities,
     _get_custom_footnote_line_types,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.form199a import (
+from .form199a import (
     compute_form199a_effective_percentage,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.state_allocation import (
+from .state_allocation import (
     build_state_allocation_input,
     build_state_entities,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.cost_pct_loader import (
+from .cost_pct_loader import (
     build_entity_underlyings,
     load_transfers_adj_cost,
     build_cost_percentage_by_type,
@@ -152,18 +152,18 @@ from AllocationV2.usp_get_final_effective_percentage.outputV2.cost_pct_loader im
     validate_cost_percentage_sum,
     compute_minimum_quarter,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.effective_calc import (
+from .effective_calc import (
     compute_effective_percentage_dated,
     compute_effective_percentage_non_dated,
     apply_plugging,
     apply_type_id_update,
     build_final_output,
 )
-from AllocationV2.usp_get_final_effective_percentage.outputV2.result_saver import (
+from .result_saver import (
     build_all_results,
 )
 from Common_V2.core.generic_result_storer import GenericResultStorer
-from AllocationV2.usp_get_final_effective_percentage.outputV2.plan_profiler import (
+from .plan_profiler import (
     track_plan as _track_plan,
 )
 

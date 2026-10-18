@@ -1,5 +1,5 @@
 """Entry point for run_conversion.py runner (naming convention: run_<sp_name>)."""
-from AllocationV2.usp_load_allocation_input.outputV2.load_allocation_input import run_load_allocation_input
+from .load_allocation_input import run_load_allocation_input
 
 
 def run_usp_load_allocation_input(spark, cfg: dict = None, **kwargs) -> dict:

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from AllocationV2.usp_apply_investment_level_rounding.outputV2.parallel_helpers import isolated_cfg, run_parallel
-from AllocationV2.usp_apply_investment_level_rounding.outputV2.write_service import update_is_rounded_flag, write_allocation_summaries
+from .parallel_helpers import isolated_cfg, run_parallel
+from .write_service import update_is_rounded_flag, write_allocation_summaries
 
 
 def flush_post_summary_writes(

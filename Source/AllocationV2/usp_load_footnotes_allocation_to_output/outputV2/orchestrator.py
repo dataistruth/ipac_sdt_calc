@@ -22,44 +22,44 @@ from Common_V2.core.checkpoint_V2 import (
 from Common_V2.core.config import load_common_config
 from Common_V2.core.execution_profiles import resolve_execution_profile
 
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.allocation_704c import (
+from .allocation_704c import (
     apply_704c_deduction,
     build_704c_allocation_output,
     build_704c_config,
     build_allocation_percentage_temp,
 )
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.allocation_effective import (
+from .allocation_effective import (
     build_effective_pct_allocation,
     resolve_min_quarter,
 )
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.allocation_input import (
+from .allocation_input import (
     build_allocation_input,
     build_temp_allocation_input,
     build_temp_book_effective,
     build_temp_final_effective_pct,
     build_zero_exclude_lines,
 )
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.config import load_sp_config, validate_run_preconditions
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.join_optimizations import (
+from .config import load_sp_config, validate_run_preconditions
+from .join_optimizations import (
     broadcast_part_v_lines,
     broadcast_zero_exclude_lines,
     build_custom_footnote_line_types,
     derive_cost_underlying_types,
     quarter_join_hints,
 )
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.parallel_helpers import parse_enabled_groups, run_phase
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.quarter_logic import (
+from .parallel_helpers import parse_enabled_groups, run_phase
+from .quarter_logic import (
     update_form_quarters,
     update_pfic_partv_quarters,
     update_pfic_quarters_by_config,
 )
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.underlyings import (
+from .underlyings import (
     build_cost_percentage_data,
     build_entity_hierarchy,
     build_underlyings_footnotes_ordered,
     filter_asset_class,
 )
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.writers import apply_deduction, write_allocation_output
+from .writers import apply_deduction, write_allocation_output
 
 logger = logging.getLogger(__name__)
 

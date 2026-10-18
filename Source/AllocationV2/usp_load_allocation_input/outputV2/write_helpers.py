@@ -9,12 +9,12 @@ from Common_V2.core.generic_result_storer import GenericResultStorer
 from Common_V2.core.helpers import table_prefix
 from pyspark.sql import functions as _F
 
-from AllocationV2.usp_load_allocation_input.outputV2.ai_finalization_service import (
+from .ai_finalization_service import (
     write_allocation_input,
     write_form_flowups,
     write_pfic_flowup,
 )
-from AllocationV2.usp_load_allocation_input.outputV2.parallel_helpers import isolated_cfg, run_parallel
+from .parallel_helpers import isolated_cfg, run_parallel
 
 SMALL_TABLES = {
     "Form926Flowup",
