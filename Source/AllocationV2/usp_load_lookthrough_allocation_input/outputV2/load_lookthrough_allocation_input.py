@@ -15,14 +15,14 @@ from Common_V2.core.checkpoint_V2 import (
 from Common_V2.core.config import load_common_config
 from Common_V2.core.execution_profiles import resolve_execution_profile
 
-from .lt_config_service import (
+from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_config_service import (
     build_fx_rates,
     load_config,
     load_lower_tier_funds,
     load_reclass_k1_data,
     load_workflows,
 )
-from .lt_finalization_service import (
+from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_finalization_service import (
     apply_blocker_entity,
     apply_line_exclusions,
     apply_master_feed_exclusion,
@@ -30,31 +30,31 @@ from .lt_finalization_service import (
     build_box_jkl_input,
     validate_k3_rules,
 )
-from .lt_flowup_service import (
+from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_flowup_service import (
     build_lt_flowup_adjustment,
     build_lt_flowup_m1,
 )
-from .lt_helpers import logger
-from .lt_k1_service import (
+from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_helpers import logger
+from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_k1_service import (
     build_adjustments_input,
     build_k1_input,
     build_lt_flowup_k1,
     build_rounding_diff,
     recompute_lt_input_from_lower_tier,
 )
-from .lt_pfic_conversion_service import (
+from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_pfic_conversion_service import (
     build_pfic_conversion,
 )
-from .lt_pfic_service import (
+from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_pfic_service import (
     build_pfic_elections,
     build_pfic_mapped_lines,
 )
-from .parallel_helpers import (
+from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
     run_parallel,
 )
-from .write_helpers import (
+from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.write_helpers import (
     build_pfic_income_attributes,
     write_final_output_parallel,
 )

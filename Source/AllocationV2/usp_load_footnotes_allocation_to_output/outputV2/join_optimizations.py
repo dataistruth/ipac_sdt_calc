@@ -10,10 +10,10 @@ from contextlib import contextmanager
 import pyspark.sql.functions as F
 
 from Common_V2.core.helpers import ns
-from . import (
+from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2 import (
     quarter_logic as _quarter_logic,
 )
-from .allocation_704c import (
+from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.allocation_704c import (
     build_custom_footnote_line_types as _build_custom_types,
 )
 

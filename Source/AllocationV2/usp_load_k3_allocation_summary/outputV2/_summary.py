@@ -18,7 +18,7 @@ from pyspark.sql import DataFrame, SparkSession
 
 from Common_V2.core.helpers import get_logger, log_timing, sql_round as _sql_round
 
-from ._prep import _apply_6a6b
+from AllocationV2.usp_load_k3_allocation_summary.outputV2._prep import _apply_6a6b
 
 logger = get_logger(__name__)
 

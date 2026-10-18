@@ -45,13 +45,13 @@ from Common_V2.core.execution_profiles import resolve_execution_profile
 
 checkpoint = checkpoint_V2
 
-from .parallel_helpers import (
+from AllocationV2.usp_apply_investment_level_rounding.outputV2.parallel_helpers import (
     isolated_cfg,
     normalize_workers,
     parse_enabled_groups,
     run_parallel,
 )
-from .write_helpers import flush_post_summary_writes
+from AllocationV2.usp_apply_investment_level_rounding.outputV2.write_helpers import flush_post_summary_writes
 
 logger = get_logger("apply_investment_level_rounding")
 
@@ -170,37 +170,37 @@ def _load_lookthrough(spark, cfg):
         return build_lookthrough_output_entity_callfrom(spark, cfg)
     return build_lookthrough_output_entity_no_callfrom(spark, cfg)
 
-from .config_service import (
+from AllocationV2.usp_apply_investment_level_rounding.outputV2.config_service import (
     load_sp_config,
 )
-from .lookthrough_service import (
+from AllocationV2.usp_apply_investment_level_rounding.outputV2.lookthrough_service import (
     build_lookthrough_output_inv_level_callfrom,
     build_lookthrough_output_inv_level_no_callfrom,
     build_lookthrough_output_entity_callfrom,
     build_lookthrough_output_entity_no_callfrom,
 )
-from .input_service import (
+from AllocationV2.usp_apply_investment_level_rounding.outputV2.input_service import (
     build_allocation_input,
     build_ubti_passive_input,
 )
-from .aggregation_service import (
+from AllocationV2.usp_apply_investment_level_rounding.outputV2.aggregation_service import (
     build_temp_allocation_output,
     compute_rounding_diff,
     compute_max_allocation_type,
 )
-from .partner_service import (
+from AllocationV2.usp_apply_investment_level_rounding.outputV2.partner_service import (
     build_partner_snapshots,
     build_highest_percent_partner,
     build_nocost_partner,
 )
-from .rounding_service import (
+from AllocationV2.usp_apply_investment_level_rounding.outputV2.rounding_service import (
     apply_rounding_override,
     apply_rounding_plugged_to_gp,
     apply_rounding_highest_percent,
     apply_rounding_highest_amount,
     apply_rounding_none,
 )
-from .write_service import (
+from AllocationV2.usp_apply_investment_level_rounding.outputV2.write_service import (
     apply_book_k1_not_rounded_passthrough,
     write_final_summaries,
     write_allocation_summaries,

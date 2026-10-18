@@ -51,12 +51,12 @@ from Common_V2.core.execution_profiles import resolve_execution_profile
 checkpoint = checkpoint_V2
 from Common_V2.core.generic_result_storer import GenericResultStorer
 
-from .parallel_helpers import (
+from AllocationV2.usp_load_k3_allocation_summary.outputV2.parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
     run_parallel,
 )
-from ._prep import (
+from AllocationV2.usp_load_k3_allocation_summary.outputV2._prep import (
     build_country_sic_lines,
     build_income_attr_rounding_import,
     build_k3_detail,
@@ -65,10 +65,10 @@ from ._prep import (
     has_mapped_lines,
     build_k1_summary_amounts,
 )
-from ._summary import build_k3_summary_rounded, build_rounding_difference
-from ._country_rounding import apply_country_level_rounding
-from ._rounding import apply_standard_rounding
-from ._finalize import finalize_summary
+from AllocationV2.usp_load_k3_allocation_summary.outputV2._summary import build_k3_summary_rounded, build_rounding_difference
+from AllocationV2.usp_load_k3_allocation_summary.outputV2._country_rounding import apply_country_level_rounding
+from AllocationV2.usp_load_k3_allocation_summary.outputV2._rounding import apply_standard_rounding
+from AllocationV2.usp_load_k3_allocation_summary.outputV2._finalize import finalize_summary
 
 logger = get_logger(__name__)
 

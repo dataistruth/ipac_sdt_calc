@@ -35,7 +35,7 @@ from Common_V2.core.checkpoint_V2 import (
     resolve_checkpoint_mode,
 )
 from Common_V2.core.execution_profiles import resolve_execution_profile
-from .parallel_helpers import (
+from AllocationV2.usp_sm_load_lookthrough_cost_allocation_to_output.outputV2.parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
     run_parallel,
