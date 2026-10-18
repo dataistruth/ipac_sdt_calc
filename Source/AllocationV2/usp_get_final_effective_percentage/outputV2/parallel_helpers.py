@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Bounded parallel phases for Final Effective Percentage."""
 
 from __future__ import annotations

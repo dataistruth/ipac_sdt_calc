@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Bounded executor for distinct-table writes."""
 
 from __future__ import annotations

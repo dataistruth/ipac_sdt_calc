@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Allocation input builder for uspLoadFootnotesAllocationToOutput.
 

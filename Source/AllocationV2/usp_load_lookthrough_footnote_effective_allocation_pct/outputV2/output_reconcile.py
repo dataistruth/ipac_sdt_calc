@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Per-table snapshot / restore / xxhash64 fingerprints for Development A/B."""
 
 from __future__ import annotations

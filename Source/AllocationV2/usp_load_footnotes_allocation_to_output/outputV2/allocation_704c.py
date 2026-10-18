@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 704c allocation logic for uspLoadFootnotesAllocationToOutput.
 

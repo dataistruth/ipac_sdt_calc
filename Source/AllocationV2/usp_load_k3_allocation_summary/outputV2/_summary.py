@@ -1,3 +1,4 @@
+# Databricks notebook source
 """_summary.py — K3 rounded summary + rounding difference.
 
 Sections:

@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Write operations for uspLoadFootnotesAllocationToOutput.
 

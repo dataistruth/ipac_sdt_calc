@@ -103,18 +103,57 @@ def clear_modules(package):
     importlib.invalidate_caches()
 
 
-sys.path[:] = [entry for entry in sys.path if entry != source_path]
-sys.path.insert(0, source_path)
-import os
-_v2_dir = os.path.join(
-    source_path, "AllocationV2", PACKAGE.rsplit(".", 1)[-1], "outputV2"
-)
-print("[outputV2] source_path=", source_path)
-print("[outputV2] dir=", _v2_dir, "exists=", os.path.isdir(_v2_dir))
-if os.path.isdir(_v2_dir):
-    print("[outputV2] files=", sorted(os.listdir(_v2_dir)))
-else:
-    print("[outputV2] widget source_path is not the Source root that contains this outputV2")
+def _workspace_source_roots(widget_source):
+    roots = []
+
+    def _add(path):
+        if not path:
+            return
+        path = str(path).rstrip("/")
+        if path.startswith("/Users/") and not path.startswith("/Workspace/"):
+            path = "/Workspace" + path
+        if path not in roots:
+            roots.append(path)
+
+    _add(widget_source)
+    try:
+        raw = (
+            dbutils.notebook.entry_point.getDbutils()
+            .notebook()
+            .getContext()
+            .notebookPath()
+            .get()
+        )
+        print("[outputV2] notebook=", raw)
+        parts = [part for part in str(raw).split("/") if part]
+        if "Source" in parts:
+            index = len(parts) - 1 - parts[::-1].index("Source")
+            discovered = "/" + "/".join(parts[: index + 1])
+            _add(discovered)
+    except Exception as exc:
+        print("[outputV2] notebook path lookup failed", exc)
+    return roots
+
+
+for _root in reversed(_workspace_source_roots(source_path)):
+    sys.path[:] = [entry for entry in sys.path if entry != _root]
+    sys.path.insert(0, _root)
+    print("[outputV2] sys.path+=", _root)
+_v2_dir = None
+for _root in list(sys.path[:4]):
+    candidate = "/".join(
+        [_root, "AllocationV2", PACKAGE.rsplit(".", 1)[-1], "outputV2"]
+    )
+    try:
+        names = sorted(__import__("os").listdir(candidate))
+    except OSError:
+        continue
+    _v2_dir = candidate
+    print("[outputV2] dir=", candidate)
+    print("[outputV2] files=", names)
+    break
+if _v2_dir is None:
+    print("[outputV2] could not list outputV2 under sys.path Source roots")
 clear_modules(PACKAGE)
 importlib.import_module("Common_V2.core.checkpoint_V2")
 reconcile = importlib.import_module(f"{PACKAGE}.outputV2.output_reconcile")

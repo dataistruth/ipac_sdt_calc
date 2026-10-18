@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 config_service.py — Section 1: Configuration loading for uspLoadLookThroughAllocationInput.
 

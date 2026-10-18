@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Production orchestrator for look-through allocation input."""
 
 from __future__ import annotations

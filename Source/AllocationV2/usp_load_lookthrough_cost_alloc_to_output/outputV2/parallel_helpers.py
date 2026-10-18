@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Bounded workers for this SP. Output/Input writes stay sequential."""
 
 from __future__ import annotations

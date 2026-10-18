@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 Entity hierarchy and underlying type resolution for uspLoadFootnotesAllocationToOutput.
 

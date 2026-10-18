@@ -1,3 +1,4 @@
+# Databricks notebook source
 """_rounding.py — S9 standard rounding-difference plug (SQL 455-500, ELSE branch).
 
 Plug the per-partner rounding difference to the partner's highest-amount

@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Bounded executor for independent loads. Output/Input writes stay sequential."""
 
 from __future__ import annotations

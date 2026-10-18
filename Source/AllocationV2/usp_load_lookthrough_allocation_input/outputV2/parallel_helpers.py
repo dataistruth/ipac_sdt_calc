@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Bounded executor for independent, read-only plan builders."""
 
 from __future__ import annotations

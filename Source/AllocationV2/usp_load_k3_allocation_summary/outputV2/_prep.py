@@ -1,3 +1,4 @@
+# Databricks notebook source
 """_prep.py — input preparation for uspLoadK3AllocationSummary.
 
 Sections (see _plan.md / logic_review.md):

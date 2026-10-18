@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 pfic_conversion_service.py — Sections 13-14: PFIC-to-K1 conversion and income attributes.
 

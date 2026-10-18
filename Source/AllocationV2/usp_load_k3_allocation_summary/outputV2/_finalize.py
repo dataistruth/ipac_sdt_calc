@@ -1,3 +1,4 @@
+# Databricks notebook source
 """_finalize.py — S10 post-branch finalization (SQL 502-541).
 
   1. 6a/6b "after" adjustment (SQL 502-523, IF mapped): Amount = a.Amount + b.Amount.

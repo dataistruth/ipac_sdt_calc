@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Entity hierarchy building and asset class filtering."""
 
 import logging

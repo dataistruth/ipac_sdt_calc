@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Development-only bounded join hints for footnote allocation.
 
 This module is intentionally owned by ``outputV2``. The A/B benchmark may

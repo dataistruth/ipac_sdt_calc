@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Development outputV2 package. Lazy exports only."""
 
 from __future__ import annotations
@@ -25,17 +26,25 @@ class _OutputV2Finder:
         rest = fullname[len(self.pkg) + 1 :]
         parts = rest.split(".")
         file_py = self.directory.joinpath(*parts).with_suffix(".py")
-        if file_py.is_file():
+        # Databricks /Workspace files: os.path.isfile is often False.
+        try:
+            with open(file_py, "rb") as handle:
+                handle.read(1)
             return importlib.util.spec_from_file_location(fullname, file_py)
+        except OSError:
+            pass
         pkg_dir = self.directory.joinpath(*parts)
         init_py = pkg_dir / "__init__.py"
-        if init_py.is_file():
+        try:
+            with open(init_py, "rb") as handle:
+                handle.read(1)
             return importlib.util.spec_from_file_location(
                 fullname,
                 init_py,
                 submodule_search_locations=[str(pkg_dir)],
             )
-        return None
+        except OSError:
+            return None
 
 
 def _install_v2_finder():

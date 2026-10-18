@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Distinct-table writes after production summary flush."""
 
 from __future__ import annotations

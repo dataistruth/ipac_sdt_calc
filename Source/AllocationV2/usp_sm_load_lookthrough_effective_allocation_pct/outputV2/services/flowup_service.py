@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Flow-up partner pipeline for SM LookThrough Effective Allocation Percentage.
 
 Functions:

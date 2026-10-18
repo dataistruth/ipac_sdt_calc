@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Slim plan-profiler shim. No-op unless AllocationV2.plan_profiler is present.
 
 measure_plan / df.explain run only when ProfilePlan armed the invocation.

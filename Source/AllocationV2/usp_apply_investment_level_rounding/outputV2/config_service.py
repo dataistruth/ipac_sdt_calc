@@ -1,3 +1,4 @@
+# Databricks notebook source
 """SP-specific config aliases and BookK1 transaction lookup.
 
 All scalar config comes from Common_V2.load_common_config. This module:

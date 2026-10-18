@@ -1,3 +1,4 @@
+# Databricks notebook source
 """
 load_lt_footnote_effective_allocation_pct.py
 
