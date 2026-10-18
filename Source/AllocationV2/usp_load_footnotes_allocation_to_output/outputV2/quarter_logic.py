@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 Quarter resolution logic for uspLoadFootnotesAllocationToOutput.
 

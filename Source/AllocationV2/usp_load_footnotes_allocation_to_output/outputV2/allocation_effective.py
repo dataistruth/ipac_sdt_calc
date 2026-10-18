@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 Effective percentage allocation logic for uspLoadFootnotesAllocationToOutput.
 

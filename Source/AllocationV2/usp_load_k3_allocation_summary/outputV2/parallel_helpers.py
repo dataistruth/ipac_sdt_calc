@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Bounded executor for independent early loads and inputs."""
 
 from __future__ import annotations

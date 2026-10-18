@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 finalization_service.py — Sections 15-21: Box JKL, exclusions, tags, validation, final write.
 

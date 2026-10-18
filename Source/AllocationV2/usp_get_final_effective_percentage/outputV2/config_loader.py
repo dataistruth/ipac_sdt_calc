@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 config_loader.py
 

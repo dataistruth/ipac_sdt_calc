@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Effective percentage calculation for SM LookThrough Effective Allocation Percentage.
 
 Functions:

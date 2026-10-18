@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 pfic_footnotes.py
 

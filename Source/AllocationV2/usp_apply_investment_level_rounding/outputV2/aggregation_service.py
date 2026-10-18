@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 Aggregation and computation services (Sections 9-11).
 

@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Mapping setup for SM LookThrough Effective Allocation Percentage.
 
 Functions:

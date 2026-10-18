@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 ai_config_service.py
 

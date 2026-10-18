@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 add_allocation_summary.py
 

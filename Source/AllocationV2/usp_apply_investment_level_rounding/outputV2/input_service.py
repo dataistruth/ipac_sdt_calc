@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 Allocation input building services (Sections 7-8).
 

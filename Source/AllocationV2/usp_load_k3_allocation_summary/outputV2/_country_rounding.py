@@ -1,4 +1,3 @@
-# Databricks notebook source
 """_country_rounding.py — S8 country-level rounding (SQL 242-454).
 
 Runs when @IsCountryLevelRounding='C'. The T-SQL block is an order-dependent

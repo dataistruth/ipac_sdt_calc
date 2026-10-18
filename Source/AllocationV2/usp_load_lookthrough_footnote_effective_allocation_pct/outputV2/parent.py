@@ -1,4 +1,3 @@
-# Databricks notebook source
 """outputV2 is self-contained. Helpers live in this package."""
 
 from __future__ import annotations

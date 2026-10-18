@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Input preparation, validation, and allocation processing.
 
 Consolidates: prepare_lookthrough_input, allocation validation,

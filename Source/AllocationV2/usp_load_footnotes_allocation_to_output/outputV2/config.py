@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 SP-local config aliasing for uspLoadFootnotesAllocationToOutput.
 

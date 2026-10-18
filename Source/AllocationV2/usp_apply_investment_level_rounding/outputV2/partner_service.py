@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 Partner-related services (Sections 12, 15, 16).
 

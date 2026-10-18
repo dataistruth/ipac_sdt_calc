@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 pfic_service.py — Sections 11-12: PFIC elections and mapped K1 lines setup.
 

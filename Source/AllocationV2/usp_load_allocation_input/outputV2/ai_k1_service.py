@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 ai_k1_service.py
 

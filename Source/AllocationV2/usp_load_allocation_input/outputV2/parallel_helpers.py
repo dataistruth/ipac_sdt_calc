@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Bounded executor for independent plan builders and collect-phase writes."""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 apply_investment_level_rounding — Main orchestrator.
 

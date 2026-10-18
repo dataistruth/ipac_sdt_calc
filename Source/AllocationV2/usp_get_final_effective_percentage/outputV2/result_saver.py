@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 result_saver.py
 

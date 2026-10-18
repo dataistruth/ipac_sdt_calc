@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 k1_service.py — Sections 5-8: K1 input, adjustments, LT flowup, rounding diff.
 

@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 cost_percentage.py
 

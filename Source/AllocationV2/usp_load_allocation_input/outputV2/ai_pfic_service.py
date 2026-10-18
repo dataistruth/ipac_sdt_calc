@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 ai_pfic_service.py
 

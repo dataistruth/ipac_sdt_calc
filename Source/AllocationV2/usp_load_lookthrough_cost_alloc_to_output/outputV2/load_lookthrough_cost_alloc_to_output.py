@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 load_lookthrough_cost_alloc_to_output.py
 

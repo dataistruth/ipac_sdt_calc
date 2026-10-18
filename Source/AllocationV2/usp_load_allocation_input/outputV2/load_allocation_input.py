@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Production orchestrator for uspLoadAllocationInput."""
 
 from __future__ import annotations

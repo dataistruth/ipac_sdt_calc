@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Data loading functions for lookthrough cost allocation.
 
 Consolidates all data retrieval: partners, line items, input, rules,

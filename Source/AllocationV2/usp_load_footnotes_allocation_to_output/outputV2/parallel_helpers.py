@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Bounded parallel phases for footnote allocation."""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-# Databricks notebook source
 """usp_load_k3_allocation_summary.py
 
 Converted from: dbo.uspLoadK3AllocationSummary

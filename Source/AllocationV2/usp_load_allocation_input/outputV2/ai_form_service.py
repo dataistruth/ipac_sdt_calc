@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 ai_form_service.py
 

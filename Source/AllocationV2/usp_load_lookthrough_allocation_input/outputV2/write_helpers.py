@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Distinct-table final writes for look-through allocation input.
 
 Same filters, aggregations, casts, and appends as production

@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Collect result frames, then write flow-up tables in parallel."""
 
 from __future__ import annotations

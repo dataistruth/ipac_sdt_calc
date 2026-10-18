@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 add_lookthrough_allocation_detail_step01.py
 

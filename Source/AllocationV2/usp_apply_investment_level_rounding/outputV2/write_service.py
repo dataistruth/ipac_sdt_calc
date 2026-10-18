@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 Write services (Sections 20-22).
 

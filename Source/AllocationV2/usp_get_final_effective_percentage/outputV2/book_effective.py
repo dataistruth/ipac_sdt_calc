@@ -1,4 +1,3 @@
-# Databricks notebook source
 """
 book_effective.py
 

@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Config loading and validation for SM LookThrough Effective Allocation Percentage.
 
 All scalar lookups now come from load_common_config. This module:
