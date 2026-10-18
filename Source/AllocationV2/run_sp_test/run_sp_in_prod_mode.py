@@ -2,12 +2,12 @@
 # MAGIC %md
 # MAGIC # Run 12 SPs in Production mode
 # MAGIC
-# MAGIC First cell is the locked list. This notebook runs **only**
-# MAGIC `AllocationV2.<sp>.output.<entry>` — the production inline path.
+# MAGIC First cell is the locked list. Each SP is run by its own
+# MAGIC `output/notebook/run_*.py`. Child notebooks keep their own
+# MAGIC Entity / Client / Run / catalog widgets.
 # MAGIC
+# MAGIC Suite widgets: `source_path`, `ExecutionProfile`, `run_in_parallel`.
 # MAGIC `run_in_parallel=3` runs 12 SPs three at a time.
-# MAGIC `invoke=entry` calls the production orchestrator. `invoke=notebook`
-# MAGIC runs the existing `output/notebook/run_*.py` notebooks.
 
 # COMMAND ----------
 
@@ -31,8 +31,7 @@ for index, name in enumerate(SP_LIST, start=1):
 
 # COMMAND ----------
 
-# Uncomment to reset widgets to notebook defaults.
-# dbutils.widgets.removeAll()
+dbutils.widgets.removeAll()
 
 # COMMAND ----------
 
@@ -41,32 +40,13 @@ dbutils.widgets.text(
     "/Workspace/Users/usa-mukessingh@deloitte.com/iPACSCore_SDT_Databricks/Source",
     "1. Source root",
 )
-dbutils.widgets.text("ClientID", "15348", "2. ClientID")
-dbutils.widgets.text("TaxPeriodID", "1", "3. TaxPeriodID")
-dbutils.widgets.text("CatalogName", "QA7", "4. Catalog override")
-dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "5. Schema override")
-dbutils.widgets.text("EntityID", "4137", "6. Entity override")
-dbutils.widgets.text("RunID", "17376", "7. RunID override")
-dbutils.widgets.dropdown(
-    "use_sp_identity",
-    "on",
-    ["on", "off"],
-    "8. Use each SP locked identity",
-)
 dbutils.widgets.dropdown(
     "ExecutionProfile",
     "low",
     ["low", "medium", "big"],
-    "9. Execution profile",
+    "2. Execution profile",
 )
-dbutils.widgets.text("run_in_parallel", "1", "10. SPs at a time")
-dbutils.widgets.text("sp_filter", "", "11. Comma SP names (blank=all)")
-dbutils.widgets.dropdown(
-    "invoke",
-    "entry",
-    ["entry", "notebook"],
-    "12. Call entry or output run notebook",
-)
+dbutils.widgets.text("run_in_parallel", "1", "3. SPs at a time")
 
 # COMMAND ----------
 
@@ -76,6 +56,9 @@ import time
 import traceback
 
 source_path = dbutils.widgets.get("source_path").strip()
+execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "low"
+run_in_parallel = max(1, int(dbutils.widgets.get("run_in_parallel") or 1))
+
 sys.path[:] = [entry for entry in sys.path if entry != source_path]
 sys.path.insert(0, source_path)
 importlib.invalidate_caches()
@@ -84,75 +67,26 @@ from AllocationV2.run_sp_test.sp_catalog import SP_SPECS
 from AllocationV2.run_sp_test import suite_runtime as suite
 
 assert [spec["name"] for spec in SP_SPECS] == SP_LIST, "SP_LIST drifted from catalog"
-
-overrides = {
-    "use_sp_identity": dbutils.widgets.get("use_sp_identity").strip().lower() == "on",
-    "client_id": dbutils.widgets.get("ClientID"),
-    "tax_period_id": dbutils.widgets.get("TaxPeriodID"),
-    "catalog": dbutils.widgets.get("CatalogName").strip(),
-    "schema": dbutils.widgets.get("SchemaName").strip(),
-    "entity_id": dbutils.widgets.get("EntityID"),
-    "run_id": dbutils.widgets.get("RunID"),
+specs = suite.all_specs()
+child_args = {
+    "source_path": source_path,
+    "ExecutionProfile": execution_profile,
 }
-execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "low"
-run_in_parallel = max(1, int(dbutils.widgets.get("run_in_parallel") or 1))
-invoke = dbutils.widgets.get("invoke").strip().lower() or "entry"
-specs = suite.selected_specs(dbutils.widgets.get("sp_filter"))
-suite.prepare_source(source_path)
 print(
-    f"[suite] prod invoke={invoke} parallel={run_in_parallel} "
-    f"profile={execution_profile} sps={[spec['name'] for spec in specs]}",
+    f"[suite] prod notebooks parallel={run_in_parallel} profile={execution_profile}",
     flush=True,
 )
 
 
 def run_one(spec):
-    identity = suite.identity_for(spec, overrides)
-    row = {
-        "sp": spec["name"],
-        "entity_id": identity["EntityID"],
-        "run_id": identity["RunID"],
-        "catalog": identity["CatalogName"],
-        "schema": identity["SchemaName"],
-        "wall": None,
-        "reported": None,
-        "status": "FAIL",
-        "error": "",
-    }
+    row = {"sp": spec["name"], "wall": None, "status": "FAIL", "error": ""}
     try:
-        if invoke == "notebook":
-            args = suite.notebook_args(
-                spec,
-                identity,
-                execution_profile,
-                number_of_runs=None,
-                profile_plan=None,
-                source_path=source_path,
-            )
-            wall = suite.run_via_notebook(
-                dbutils, source_path, spec["prod_notebook"], args, 7200
-            )
-            row["wall"] = wall
-            row["status"] = "PASS"
-            print(f"[suite] {spec['name']} production notebook wall={wall}s", flush=True)
-            return row
-        wall, reported = suite.call_entry(
-            spark,
-            spec,
-            spec["original_module"],
-            identity,
-            spec["extra"],
-            updated=True,
-            execution_profile=execution_profile,
-            profile_plan=False,
+        wall = suite.run_via_notebook(
+            dbutils, source_path, spec["prod_notebook"], child_args
         )
         row["wall"] = wall
-        row["reported"] = reported
         row["status"] = "PASS"
-        print(
-            f"[suite] {spec['name']} production wall={wall} reported={reported}",
-            flush=True,
-        )
+        print(f"[suite] {spec['name']} production notebook wall={wall}s", flush=True)
         return row
     except Exception as exc:
         row["error"] = f"{type(exc).__name__}: {exc}"
@@ -167,8 +101,9 @@ print(f"[suite] finished wall={suite_wall}s", flush=True)
 
 # COMMAND ----------
 
-runtime_schema = (
-    "sp string, entity_id int, run_id int, catalog string, schema string, "
-    "wall double, reported double, status string, error string"
+display(
+    spark.createDataFrame(
+        runtime_rows,
+        schema="sp string, wall double, status string, error string",
+    )
 )
-display(spark.createDataFrame(runtime_rows, schema=runtime_schema))

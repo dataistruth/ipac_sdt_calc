@@ -415,12 +415,12 @@ schemas above. Hash min/max stay on the raw `_h` BIGINT.
 
 To time all 12 SPs as a suite, use
 `Source/AllocationV2/run_sp_test/`. First cell is the locked SP list.
-`run_sp_in_dev_mode` runs `output` then `outputV2` and records wall
-times. `run_sp_in_prod_mode` runs `output` only. Widget
-`run_in_parallel` is how many SPs run at once (`3` = four batches of
-three). `invoke=entry` calls the public orchestrator; `invoke=notebook`
-reuses the per-SP run / A/B notebooks. Default identities stay per-SP
-(`use_sp_identity=on`) so parallel batches do not all write one RunID.
+Suite widgets are only `source_path`, `ExecutionProfile`, and
+`run_in_parallel`. Both notebooks always call the per-SP notebooks
+(`outputV2/notebook/benchmark_*.py` in dev, `output/notebook/run_*.py`
+in prod) and pass only those two path/profile values so each SP keeps
+its own Entity / Client / Run / catalog defaults. `run_in_parallel=3`
+runs 12 SPs three at a time.
 
 ## Completion summary
 
