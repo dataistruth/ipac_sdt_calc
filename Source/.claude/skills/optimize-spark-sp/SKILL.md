@@ -211,12 +211,17 @@ Confirm a live import with `[plan-profile] v6-catalyst-explain` then
 Copy **all** of these under the notebook `source_path`:
 
 1. `Source/AllocationV2/plan_profiler/` (shared implementation)
-2. `Source/AllocationV2/<sp>/output/` (original + helpers
-   `outputV2` imports — footnotes needs `join_optimizations.py`)
-3. `Source/AllocationV2/<sp>/outputV2/`
-
-Copying only `outputV2/` causes `ModuleNotFoundError` on
-`output.join_optimizations` and similar production helpers.
+2. `Source/AllocationV2/<sp>/output/` — **old unoptimized baseline**.
+   Current ipac `output/` is already optimized production. For A/B
+   original, copy or checkout
+   `/Users/mukesh.singh/spark/sdt_d/Source/AllocationV2/<sp>/output/`
+   into this folder. Do not treat ipac `output/` as “old.”
+3. `Source/AllocationV2/<sp>/outputV2/` — optimized Development package.
+   **Self-contained:** every helper it needs lives under `outputV2/`
+   (or `outputV2/services/`). `outputV2` must not import
+   `AllocationV2.<sp>.output.*`. Public entry names stay identical
+   to `sdt_d`. The A/B notebook `ORIGINAL` line is the only
+   remaining pointer at `output/`.
 
 ## Production `output/` (locked inline)
 
@@ -225,8 +230,9 @@ V2, `resolve_execution_profile`, locked seams/waves, production run
 notebook, **no** `plan_profiler` / `profile_plan`. That tree is
 `sdt_d` production plus the locked optimization overlay. Do not
 replace it with vanilla `sdt_d` and do not add profiler code.
-`outputV2` may differ only by packaging (absolute `output.*` imports,
-shim, `track_plan` wraps, start/finish). Business logic must match.
+`outputV2` is a full copy of the optimized package (helpers included)
+plus shim / `track_plan` / start-finish. It does not import `output/`.
+Business logic must match production `output/`.
 
 ## Frozen notebook widgets (do not add extras)
 

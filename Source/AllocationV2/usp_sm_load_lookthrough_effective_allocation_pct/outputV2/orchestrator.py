@@ -45,37 +45,37 @@ from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.para
     parse_enabled_groups,
     run_parallel,
 )
-from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.output.services import (
+from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.services import (
     amount_service,
     effective_pct_service,
     flowup_service,
     mapping_service,
 )
-from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.output.services.config_service import (
+from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.services.config_service import (
     load_sp_config,
     validate_allocation_type,
 )
-from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.output.services.mapping_service import (
+from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.services.mapping_service import (
     build_mapping_data,
 )
-from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.output.services.flowup_service import (
+from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.services.flowup_service import (
     build_flowup_k1_amounts,
     compute_flowup_mapped_amounts,
     compute_flowup_effective_amounts,
     write_flowup_allocation_output,
 )
-from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.output.services.amount_service import (
+from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.services.amount_service import (
     _build_sm_lt_input_and_state_lines,
     build_k1_amounts,
     build_ubti_amounts,
     compute_state_mapped_amounts,
 )
-from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.output.services.effective_pct_service import (
+from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.services.effective_pct_service import (
     compute_effective_percentages,
     apply_exclude_from_residual,
     apply_pe_book_unmapped_lines,
 )
-from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.output.services.writer_service import (
+from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.services.writer_service import (
     write_allocation_output,
     update_allocation_input,
 )

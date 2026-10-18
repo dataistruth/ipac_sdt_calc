@@ -50,21 +50,24 @@ Source/AllocationV2/<sp>/outputV2/updated/
 Shared profiler package (Development import only):
 `Source/AllocationV2/plan_profiler/`.
 
-Mode 2 imports unchanged production services from the same SP’s
-`output/` package (the live production folder). Do not import a remote
-repo copy.
+Mode 2 `outputV2/` is self-contained. Copy every helper the
+orchestrator needs into `outputV2/` (keep `services/` as a
+subpackage when the SP already uses one). Import as
+`AllocationV2.<sp>.outputV2.<module>` or relative `.module`.
+**Never** import `AllocationV2.<sp>.output.*` from `outputV2`.
+The A/B notebook `ORIGINAL` constant is the only allowed
+reference to `output/` (the `sdt_d` checkout). Current ipac
+`output/` is already optimized — do not use it as original.
+Keep the public entry name exactly as in `sdt_d`.
 
 ```python
 import importlib
 
-PARENT = __package__.rsplit(".", 1)[0]  # ...<sp>.outputV2 → ...<sp>
+_OUTPUT_PACKAGE = __package__  # this outputV2 package
 
 def output_module(name: str):
-    return importlib.import_module(f"{PARENT}.{name}")
+    return importlib.import_module(f"{_OUTPUT_PACKAGE}.{name}")
 ```
-
-Example: `output_module("output.underlyings")` is
-`AllocationV2.<sp>.output.underlyings`.
 
 Mode 1 has no `parent.py` and no `_pre_opt`. Inline edits live in
 `output/` itself.

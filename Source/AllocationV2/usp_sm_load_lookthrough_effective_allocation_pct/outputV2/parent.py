@@ -1,10 +1,10 @@
-"""Import unchanged production helpers from the sibling output/ package."""
+"""outputV2 is self-contained. Helpers live in this package."""
 
 from __future__ import annotations
 
 import importlib
 
-_OUTPUT_PACKAGE = f"{__package__.rsplit('.', 1)[0]}.output"
+_OUTPUT_PACKAGE = __package__
 
 
 def output_module(name: str):
