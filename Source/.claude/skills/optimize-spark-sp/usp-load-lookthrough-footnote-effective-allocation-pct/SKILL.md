@@ -9,10 +9,9 @@ Use this skill only for
 `AllocationV2/usp_load_lookthrough_footnote_effective_allocation_pct`.
 
 Production `output/load_lt_footnote_effective_allocation_pct.py` is the
-correctness baseline. `outputV2` imports those builders via `parent.py`
-and only changes scheduling, Checkpoint V2, and packaging. Development:
-flat `outputV2/` (no `business/`, `tests/`). Production: inline in
-`output/`.
+correctness baseline. Development `outputV2/` is self-contained (copy
+the entry module; import `...outputV2.*` only). Lazy `__init__.py`.
+No `business/`, `tests/`. Production: inline in `output/`.
 
 Public entry: `run_load_lt_footnote_effective_allocation_pct`.
 

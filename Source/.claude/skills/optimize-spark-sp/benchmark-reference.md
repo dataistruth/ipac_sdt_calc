@@ -89,9 +89,12 @@ before the SP module so the shim binds to the shared package (look for
 `[plan-profile] v6-catalyst-explain`).
 Do not use `os.path.isfile` on `/Workspace/...` paths.
 
-Validate `outputV2/` has entry module, `plan_profiler.py`,
-`output_reconcile.py`, and this notebook. Also deploy sibling
-`output/` (helpers) and `AllocationV2/plan_profiler/`.
+Validate `outputV2/` is **self-contained**: entry module, every
+helper it imports, lazy `__init__.py`, `plan_profiler.py`,
+`output_reconcile.py`, and this notebook. Deploy
+`AllocationV2/plan_profiler/` and `output/` (A/B original = `sdt_d`
+checkout). Import helpers as workspace **files**. Do not add
+`# Databricks notebook source` to `outputV2` modules.
 
 ### Fair execution
 

@@ -52,7 +52,7 @@ Source/AllocationV2/usp_load_allocation_input/
     ├── __init__.py                  # export run_load_allocation_input only
     ├── usp_load_allocation_input.py # run_usp_load_allocation_input adapter
     ├── load_allocation_input.py     # orchestrator (public API)
-    ├── parent.py                    # output_module("ai_*") → sibling output/
+    ├── parent.py                    # unused / self package; copy ai_*.py into outputV2/
     ├── parallel_helpers.py
     ├── write_helpers.py             # output_collect + output_writes
     ├── plan_profiler.py             # slim shim; no-op unless ProfilePlan on

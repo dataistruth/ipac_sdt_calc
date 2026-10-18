@@ -111,13 +111,18 @@ widget, **no** table-hash A/B.
 
 Leave production `output/` unchanged. Candidate lives in a **flat**
 `outputV2/` (no nested `business/`, `tests/`, `updated/`, or
-`_pre_opt/`). Import production helpers from the sibling `output/`
-package (`parent.py`). Copy a production helper into `outputV2/` only
-when that file itself holds gated optimizations (FEP:
-`cost_pct_loader.py`, `state_allocation.py`, `pfic_footnotes.py`,
-`effective_calc.py`, `entity_hierarchy.py` sit in the `outputV2/` root
-and are bound onto the isolated production orchestrator). Keep every
-locked optimization; only the folder nesting changes.
+`_pre_opt/`). **`outputV2` is self-contained.** Copy every helper the
+orchestrator needs into `outputV2/` (keep `services/` only when the SP
+already uses that subpackage). Import
+`AllocationV2.<sp>.outputV2.<module>` (or relative `.module`). **Never**
+import `AllocationV2.<sp>.output.*` from `outputV2`.
+
+`__init__.py` is the **simple lazy export only** (no `_OutputV2Finder`,
+no `sys.meta_path` install). That finder broke Databricks
+`import-dir --overwrite` (`RESOURCE_ALREADY_EXISTS` when a file is
+replaced by a notebook). Do **not** add `# Databricks notebook source`
+to helper `.py` files — only the `notebook/benchmark_*.py` files are
+notebooks. Keep every locked optimization.
 
 ```text
 Source/AllocationV2/<sp_name>/
@@ -125,7 +130,7 @@ Source/AllocationV2/<sp_name>/
 └── outputV2/                    # FLAT — all candidate .py here
     ├── __init__.py
     ├── orchestrator.py          # candidate (same public API)
-    ├── parent.py                # import unchanged prod helpers
+    ├── parent.py                # unused / self package; do not import output/
     ├── parallel_helpers.py
     ├── plan_profiler.py         # slim shim; no-op unless ProfilePlan on
     ├── output_reconcile.py      # per-table fingerprints / hashes

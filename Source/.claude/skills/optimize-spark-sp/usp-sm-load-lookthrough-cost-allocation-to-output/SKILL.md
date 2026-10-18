@@ -8,9 +8,10 @@ description: Development outputV2 for usp_SM_LoadLookThroughCostAllocationToOutp
 Use only for
 `AllocationV2/usp_sm_load_lookthrough_cost_allocation_to_output`.
 
-Do **not** copy `output/orchestrator.py`. Import it via `parent.py` and
-wrap `run_sm_load_lookthrough_cost_allocation_to_output`. Patch
-production `checkpoint` to Checkpoint V2 for recursive `hier_level_*`.
+Development `outputV2/` is self-contained (own `orchestrator.py`).
+Public entry `run_sm_load_lookthrough_cost_allocation_to_output`.
+Do not import `...output.*`. Lazy `__init__.py`. Patch
+`checkpoint` to Checkpoint V2 for recursive `hier_level_*`.
 
 **Production inline:** do not rebind this module’s `checkpoint` to
 `_checkpoint` if `_checkpoint` still calls `checkpoint(...)`. That is

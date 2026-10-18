@@ -77,18 +77,19 @@ Source/AllocationV2/usp_load_lookthrough_allocation_input/
 ```
 
 **Do not create:** `pfic_income_attributes.py`, nested `business/`,
-`tests/`, `updated/`, `output/*_updated.py`, copies of `lt_*.py` inside
-`outputV2/`. Production services stay in `output/` and are imported via
-`parent.py`.
+`tests/`, `updated/`, `output/*_updated.py`. Copy `lt_*.py` into
+`outputV2/` so the package does not import `...output.*`.
 Window `EffPercentage` lives in `write_helpers.py` so Databricks Source
 trees that already have that file pick it up. `__init__.py` must **not**
 eager-import the orchestrator (that pulled a missing submodule and
-broke `output_reconcile` import).
+broke `output_reconcile` import). Lazy exports only. No `_OutputV2Finder`.
 
-`parent.py` must be:
+If `parent.py` exists it must resolve inside `outputV2`, not `output`:
 
 ```python
-_OUTPUT_PACKAGE = f"{__package__.rsplit('.', 1)[0]}.output"
+import importlib
+
+_OUTPUT_PACKAGE = __package__
 
 def output_module(name: str):
     return importlib.import_module(f"{_OUTPUT_PACKAGE}.{name}")

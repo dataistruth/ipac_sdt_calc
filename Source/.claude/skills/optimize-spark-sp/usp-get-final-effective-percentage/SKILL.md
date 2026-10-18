@@ -20,7 +20,7 @@ Portable two-mode rules live in the parent
 
 | Mode | Where the optimizations live |
 |---|---|
-| **2 Development** | Flat `outputV2/`. Isolated orchestrator + pipeline. Optimized helper **copies** in the **same folder** (`cost_pct_loader.py`, `state_allocation.py`, `pfic_footnotes.py`, `effective_calc.py`, `entity_hierarchy.py`). Bind them onto the isolated production orchestrator. No `business/`, `tests/`, or `updated/`. A/B notebook + hashes. |
+| **2 Development** | Flat self-contained `outputV2/`. Orchestrator imports **only** `outputV2.*` helpers (`config_loader`, `input_builder`, `book_effective`, `underlyings`, `input_lines`, `entities`, `form199a`, `result_saver`, plus `cost_pct_loader`, `state_allocation`, `pfic_footnotes`, `effective_calc`, `entity_hierarchy`). Lazy `__init__.py` only. No `business/`, `tests/`, `updated/`, or `_OutputV2Finder`. A/B notebook + hashes. |
 | **1 Production** | **Inline** the same optimizations in `output/` (orchestrator and existing helper modules). No `outputV2/`, no profiler, no reconcile. Do not wrap builders with `track_plan`. |
 
 Historical log names `outputV3` / `outputV4` mean this locked candidate;
@@ -152,10 +152,10 @@ and output fingerprints.
 
 ### 2. Build or repair isolation (Development) or inline (Production)
 
-**Development:** isolated wrapper in **flat** `outputV2/`. Copy
-orchestration control flow. Import unchanged production helpers via
-`parent.py`. Place optimized helper copies in the `outputV2/` root and
-bind them in `orchestrator.py`.
+**Development:** isolated wrapper in **flat self-contained `outputV2/`**.
+Copy orchestration and **every** helper the orchestrator imports into
+`outputV2/`. Import `AllocationV2.usp_get_final_effective_percentage.outputV2.<module>`.
+Never import `...output.*`. Keep lazy `__init__.py` only.
 
 Required modules (all in `outputV2/`, not in a subpackage):
 
@@ -276,6 +276,20 @@ experiment `baseline`:
 - `tcp_post_et_m0`: `2.287s` (healthy; the 16s regression is not this run)
 - CPBT helper: `12.866s`
 - writes: all three tables
+
+Confirmed A/B on 2026-10-18 (same identity, `sdt_d` original vs
+self-contained `outputV2`, ProfilePlan **on**):
+
+- original wall `127.355s` (unoptimized `output/`)
+- updated wall `62.898s` (`outputV2`, profiler overhead included)
+- `run_modes([1,2,3])` reported `62.4s`; ExecutionProfile `low`
+- fingerprints PASS: Final `1` / FN `17` / SM `21` rows
+- locked phases present: `independent_builders`, `mode_prep`,
+  `mode_prep_boundaries`, fused CPBT, `effective_inputs`,
+  `output_build`, `output_writes`
+- mode 1 fast-exited (`lt_input` empty); modes 2/3 fully computed
+- ProfilePlan-off is the ~54s timing; do not treat 63s as the
+  locked production number
 
 A Production-inline run that only ports CheckpointMode 4 / fusion but
 keeps sequential mode prep lands near **71s**. That is a concurrency

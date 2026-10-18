@@ -8,10 +8,10 @@ description: Optimizes Development outputV2 for uspLoadLookThroughCostAllocation
 Use this skill only for
 `AllocationV2/usp_load_lookthrough_cost_alloc_to_output`.
 
-Production `output/` is the correctness baseline. `outputV2` imports
-`_data_loading`, `_hierarchy`, `_allocation`, and the production
-orchestrator helpers via `parent.py`. Do not copy those modules into
-`outputV2/`. Development: flat `outputV2/` (no `business/`, `tests/`).
+Production `output/` is the correctness baseline. Development
+`outputV2/` is self-contained: keep `_data_loading`, `_hierarchy`,
+`_allocation`, and the entry module in `outputV2/`. Import
+`...outputV2.*` only. Lazy `__init__.py`. No `business/`, `tests/`.
 Production: inline in `output/`.
 
 Public entry: `run_load_lookthrough_cost_alloc`.

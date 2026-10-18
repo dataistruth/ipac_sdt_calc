@@ -55,6 +55,8 @@ orchestrator needs into `outputV2/` (keep `services/` as a
 subpackage when the SP already uses one). Import as
 `AllocationV2.<sp>.outputV2.<module>` or relative `.module`.
 **Never** import `AllocationV2.<sp>.output.*` from `outputV2`.
+`__init__.py` stays lazy exports only — do not add `_OutputV2Finder`.
+Do not prefix helpers with `# Databricks notebook source`.
 The A/B notebook `ORIGINAL` constant is the only allowed
 reference to `output/` (the `sdt_d` checkout). Current ipac
 `output/` is already optimized — do not use it as original.
