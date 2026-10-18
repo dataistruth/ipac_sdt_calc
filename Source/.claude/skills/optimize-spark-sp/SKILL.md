@@ -413,6 +413,15 @@ schemas above. Hash min/max stay on the raw `_h` BIGINT.
    `outputV2/notebook/benchmark_<sp>.py` plus reconcile hashes.
 4. Syntax-check. Mode 2: require per-table hash parity before claiming a win.
 
+To time all 12 SPs as a suite, use
+`Source/AllocationV2/run_sp_test/`. First cell is the locked SP list.
+`run_sp_in_dev_mode` runs `output` then `outputV2` and records wall
+times. `run_sp_in_prod_mode` runs `output` only. Widget
+`run_in_parallel` is how many SPs run at once (`3` = four batches of
+three). `invoke=entry` calls the public orchestrator; `invoke=notebook`
+reuses the per-SP run / A/B notebooks. Default identities stay per-SP
+(`use_sp_identity=on`) so parallel batches do not all write one RunID.
+
 ## Completion summary
 
 - mode (1 Production or 2 Development)
