@@ -189,6 +189,7 @@ def _apply_execution_profile(
     checkpoint_mode,
     CheckpointMode,
     SqlShufflePartitions,
+    profile_plan=False,
 ):
     shuffle_override = _as_int(SqlShufflePartitions)
     if shuffle_override is None:
@@ -372,6 +373,9 @@ def run_usp_load_k3_allocation_summary(
     **kwargs,
 ) -> dict:
     """Execute the full SP conversion pipeline."""
+    profile_plan = bool(
+        profile_plan or kwargs.get("ProfilePlan") or kwargs.get("profile_plan")
+    )
     del kwargs
     entity_id = EntityID
     client_id = ClientID
@@ -451,6 +455,7 @@ def run_usp_load_k3_allocation_summary(
             checkpoint_mode,
             CheckpointMode,
             SqlShufflePartitions,
+            profile_plan,
         )
         status["run_id"] = cfg.get("run_id")
         status["entity_id"] = cfg.get("entity_id")
