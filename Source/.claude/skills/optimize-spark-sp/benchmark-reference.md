@@ -84,6 +84,10 @@ def clear_modules(package):
 Evict both `AllocationV2.<sp>.output` and `...outputV2` plus `Common_V2`
 and `AllocationV2.plan_profiler`.
 Import `Common_V2.core.checkpoint_V2` after putting `source_path` first.
+`load_runner` must also put the variant folder
+(`.../output` or `.../outputV2`) on `sys.path` so old `sdt_d` code that
+does `from services` / `from parallel_helpers` still imports. Remove the
+other variant’s folder before switching.
 In `load_runner`, `importlib.import_module("AllocationV2.plan_profiler")`
 before the SP module so the shim binds to the shared package (look for
 `[plan-profile] v6-catalyst-explain`).

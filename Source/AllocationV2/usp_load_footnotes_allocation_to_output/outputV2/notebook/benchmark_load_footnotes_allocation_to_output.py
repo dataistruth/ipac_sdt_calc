@@ -55,7 +55,10 @@ catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
 execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "low"
 number_of_runs = max(1, int(dbutils.widgets.get("number_of_runs") or 1))
-profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+try:
+    profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+except Exception:
+    profile_plan = False
 
 PACKAGE = "AllocationV2.usp_load_footnotes_allocation_to_output"
 ORIGINAL = "AllocationV2.usp_load_footnotes_allocation_to_output.output.orchestrator"
@@ -104,6 +107,9 @@ for name in required:
     importlib.import_module(name)
 
 
+_injected_variant_paths = []
+
+
 def load_runner(module_name):
     clear_modules(PACKAGE)
     importlib.import_module("Common_V2.core.checkpoint_V2")
@@ -111,6 +117,14 @@ def load_runner(module_name):
         importlib.import_module("AllocationV2.plan_profiler")
     except Exception as exc:
         print(f"[plan-profile] AllocationV2.plan_profiler not loaded: {exc}")
+    # sdt_d output uses bare `from services` / `from parallel_helpers`.
+    for path in list(_injected_variant_paths):
+        while path in sys.path:
+            sys.path.remove(path)
+        _injected_variant_paths.remove(path)
+    folder = source_path.rstrip("/") + "/" + "/".join(module_name.split(".")[:-1])
+    sys.path.insert(1, folder)
+    _injected_variant_paths.append(folder)
     return importlib.import_module(module_name)
 
 
@@ -144,7 +158,7 @@ def call_variant(module_name, updated):
     )
     if updated:
         kwargs["ExecutionProfile"] = execution_profile
-        if profile_plan:
+        if globals().get("profile_plan"):
             kwargs["profile_plan"] = True
             kwargs["ProfilePlan"] = True
     started = time.time()
