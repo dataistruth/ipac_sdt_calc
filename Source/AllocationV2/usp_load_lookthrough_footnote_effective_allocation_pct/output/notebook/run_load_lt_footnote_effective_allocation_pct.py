@@ -5,7 +5,8 @@
 
 # COMMAND ----------
 
-dbutils.widgets.removeAll()
+# Uncomment to reset widgets to notebook defaults.
+# dbutils.widgets.removeAll()
 
 # COMMAND ----------
 

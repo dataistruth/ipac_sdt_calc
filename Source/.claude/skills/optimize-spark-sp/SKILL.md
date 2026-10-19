@@ -243,6 +243,22 @@ replace it with vanilla `sdt_d` and do not add profiler code.
 plus shim / `track_plan` / start-finish. It does not import `output/`.
 Business logic must match production `output/`.
 
+**Production parity check (locked 2026-10-18):** after normalizing
+import paths and removing profiler code (`_start_dev_plan_profile`,
+`_finish_dev_plan_profile`, `track_plan` wraps, `profile_plan`),
+`output/` and `outputV2/` must be identical for all 12 SPs, including
+`services/` subpackages. Allowed differences are only import style
+(production keeps relative `try/except ImportError` fallbacks;
+`outputV2` uses absolute `...outputV2.*` imports) and the profiler. To
+promote a Development change, port the normalized diff into `output/`
+and keep `output/` free of `plan_profiler`, `output_reconcile`, and
+`profile_plan`.
+
+Production run notebooks (`output/notebook/run_*.py`) call only the
+`output` entry, take widgets 1–8, and do no data comparison. Keep
+`# dbutils.widgets.removeAll()` commented so values passed by
+`run_sp_test/run_sp_in_prod_mode` are not discarded.
+
 ## Frozen notebook widgets (do not add extras)
 
 This set is locked. Next generate must match it. Keep
