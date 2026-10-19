@@ -54,6 +54,14 @@ Last display cell uses the parent-skill locked `runtime_schema` /
 `parity_schema` (`reported` / `skip_reason` can be None). Hash sum is
 `sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`.
 
+## ProfilePlan wiring (locked)
+
+`run_add_allocation_summary` declares `profile_plan: bool = False`,
+normalizes legacy `ProfilePlan` from `kwargs`, and passes it explicitly
+to `_apply_execution_profile`. That helper declares
+`profile_plan=False` before it sets `cfg["profile_plan"]` or starts the
+Development profiler. ProfilePlan off must be a no-op.
+
 ## Phases
 
 1. Sequential config + working tables + partner PFIC
@@ -68,5 +76,6 @@ Last display cell uses the parent-skill locked `runtime_schema` /
 - Eager `__init__.py` import of the orchestrator
 - Mix Production/Development in one change set
 - `F.sum("_h")` hash_sum or schema-less `createDataFrame` display
+- `_apply_execution_profile` reading an unbound `profile_plan`
 
 Do not leave `__pycache__` or `.pyc` files in the repository.

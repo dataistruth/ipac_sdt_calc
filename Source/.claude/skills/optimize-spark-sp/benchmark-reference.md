@@ -52,6 +52,19 @@ Widgets: **frozen Mode 2 set only** (parent skill). Exactly 10 widgets:
 commented in its own cell so values persist; uncomment only to reset.
 A/B order is always original then updated (no `ExecutionOrder` widget).
 
+Read ProfilePlan defensively so a stale workspace notebook/widget cannot
+fail an otherwise valid run:
+
+```python
+try:
+    profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+except Exception:
+    profile_plan = False
+```
+
+At the updated call site use `if globals().get("profile_plan"):`. Do not
+reference a bare `profile_plan` that might not have been initialized.
+
 Do **not** add MaxThreads, shuffle, CheckpointMode, ExecutionOrder,
 threshold, ParallelGroups, VolumePath, ResultType, or LineType widgets.
 Hardcode SP-only constants in the notebook. Pass `ExecutionProfile` and
@@ -88,6 +101,8 @@ Import `Common_V2.core.checkpoint_V2` after putting `source_path` first.
 (`.../output` or `.../outputV2`) on `sys.path` so old `sdt_d` code that
 does `from services` / `from parallel_helpers` still imports. Remove the
 other variant’s folder before switching.
+Do not "fix" the old baseline orchestrator imports: it must remain the
+original `sdt_d` code. The compatibility belongs in the A/B loader.
 In `load_runner`, `importlib.import_module("AllocationV2.plan_profiler")`
 before the SP module so the shim binds to the shared package (look for
 `[plan-profile] v6-catalyst-explain`).
@@ -99,6 +114,13 @@ helper it imports, lazy `__init__.py`, `plan_profiler.py`,
 `AllocationV2/plan_profiler/` and `output/` (A/B original = `sdt_d`
 checkout). Import helpers as workspace **files**. Do not add
 `# Databricks notebook source` to `outputV2` modules.
+
+Workspace sync acceptance: after overwrite, open the imported A/B
+notebook and confirm widgets 9 (`number_of_runs`) and 10 (`ProfilePlan`)
+exist. A folder overwrite may leave an old Databricks notebook object in
+place; if so, delete that notebook and import the local benchmark file
+again. Helper/orchestrator `.py` files must be imported as files, not
+notebooks.
 
 ### Fair execution
 

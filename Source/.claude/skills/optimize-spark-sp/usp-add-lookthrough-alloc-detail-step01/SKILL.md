@@ -54,6 +54,14 @@ Last display cell uses the parent-skill locked `runtime_schema` /
 `parity_schema` (`reported` / `skip_reason` can be None). Hash sum is
 `sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`.
 
+## ProfilePlan wiring (locked)
+
+`run_add_lookthrough_allocation_detail_step01` declares
+`profile_plan: bool = False`, normalizes legacy `ProfilePlan` from
+`kwargs`, and passes it explicitly to `_apply_execution_profile`.
+That helper declares `profile_plan=False` before it sets
+`cfg["profile_plan"]` or starts the Development profiler.
+
 ## Phases
 
 1. Config + Checkpoint V2 `base_lt_out`
@@ -67,5 +75,6 @@ Last display cell uses the parent-skill locked `runtime_schema` /
 - Parallel GenericResultStorer save
 - Eager `__init__.py`
 - `F.sum("_h")` hash_sum or schema-less `createDataFrame` display
+- `_apply_execution_profile` reading an unbound `profile_plan`
 
 Do not leave `__pycache__` or `.pyc` files in the repository.

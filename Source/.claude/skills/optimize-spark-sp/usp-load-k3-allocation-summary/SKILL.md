@@ -54,6 +54,16 @@ Last display cell uses the parent-skill locked `runtime_schema` /
 `parity_schema` (`reported` / `skip_reason` can be None). Hash sum is
 `sum(_h.cast("decimal(38,0)"))`, never `F.sum("_h")`.
 
+## ProfilePlan wiring (locked)
+
+`run_usp_load_k3_allocation_summary` declares
+`profile_plan: bool = False`, normalizes legacy `ProfilePlan` from
+`kwargs`, and passes it explicitly to `_apply_execution_profile`.
+That helper declares `profile_plan=False` before it sets
+`cfg["profile_plan"]` or calls `_start_dev_plan_profile`.
+Do not regenerate the former unbound-helper pattern; it failed after
+the original run with `NameError: profile_plan is not defined`.
+
 ## Phases
 
 1. `independent_early_loads`: country_sic, income_attr_import
@@ -67,5 +77,7 @@ Last display cell uses the parent-skill locked `runtime_schema` /
 - Resolving profiles from Common_V2.core.__init__
 - Eager `__init__.py`
 - `F.sum("_h")` hash_sum or schema-less `createDataFrame` display
+- `_apply_execution_profile` reading `profile_plan` without declaring
+  and receiving it
 
 Do not leave `__pycache__` or `.pyc` files in the repository.

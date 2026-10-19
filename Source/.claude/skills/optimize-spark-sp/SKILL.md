@@ -285,6 +285,39 @@ must not add widgets.
 Pass `ExecutionProfile` and `ProfilePlan` only to the updated variant.
 The notebook does not call `resolve_execution_profile`.
 
+## ProfilePlan propagation contract (Mode 2)
+
+`profile_plan` must be defined at every scope that reads it. A notebook,
+entry function, and helper do not share local variables.
+
+1. The entry function declares `profile_plan: bool = False` and accepts
+   legacy `ProfilePlan` through `**kwargs`:
+
+```python
+profile_plan = bool(
+    profile_plan or kwargs.get("ProfilePlan") or kwargs.get("profile_plan")
+)
+```
+
+2. If `_apply_execution_profile(...)` starts profiling or writes
+   `cfg["profile_plan"]`, its signature must declare
+   `profile_plan=False`, and the entry function must pass
+   `profile_plan` explicitly at the call site.
+3. Never reference `profile_plan` in a helper unless it is a parameter.
+   This exact omission broke K3, allocation summary, and look-through
+   detail step01 with `NameError: name 'profile_plan' is not defined`.
+4. The A/B notebook must tolerate a stale/missing widget:
+
+```python
+try:
+    profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
+except Exception:
+    profile_plan = False
+```
+
+Use `if globals().get("profile_plan"):` before adding updated-only
+profiler kwargs. ProfilePlan off must never alter or fail the SP.
+
 ## Required inputs
 
 - SP directory and entry function
@@ -412,6 +445,9 @@ schemas above. Hash min/max stay on the raw `_h` BIGINT.
 3. Mode 1: add `output/notebook/run_<sp>.py`. Mode 2: add
    `outputV2/notebook/benchmark_<sp>.py` plus reconcile hashes.
 4. Syntax-check. Mode 2: require per-table hash parity before claiming a win.
+5. Before deployment, statically verify every use of `profile_plan` is
+   either in the entry-function scope or in a helper that declares it as
+   a parameter. Verify the helper call passes it explicitly.
 
 To time all 12 SPs as a suite, use
 `Source/AllocationV2/run_sp_test/`. First cell is the locked SP list.
