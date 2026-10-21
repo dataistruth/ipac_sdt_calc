@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-sm-load-lookthrough-cost-allocation-to-output
-description: Development outputV2 for usp_SM_LoadLookThroughCostAllocationToOutput. Imports production orchestrator builders; Checkpoint V2 extras; sequential SM Output then Input.
+description: Development outputV2 for usp_SM_LoadLookThroughCostAllocationToOutput. Imports production orchestrator builders; profile checkpoint extras; sequential SM Output then Input.
 ---
 
 # Optimize usp_SM_LoadLookThroughCostAllocationToOutput
@@ -11,12 +11,12 @@ Use only for
 Development `outputV2/` is self-contained (own `orchestrator.py`).
 Public entry `run_sm_load_lookthrough_cost_allocation_to_output`.
 Do not import `...output.*`. Lazy `__init__.py`. Patch
-`checkpoint` to Checkpoint V2 for recursive `hier_level_*`.
+`checkpoint` to profile checkpoint for recursive `hier_level_*`.
 
 **Production inline:** do not rebind this module’s `checkpoint` to
 `_checkpoint` if `_checkpoint` still calls `checkpoint(...)`. That is
 `maximum recursion depth exceeded` (seen 2026-10-01 on the production
-run notebook). `_checkpoint` must call `checkpoint_V2(...)` by the
+run notebook). `_checkpoint` must call `common_checkpoint(...)` by the
 imported name. Development `outputV2` patching `_prod.checkpoint` is
 safe because the wrapper is in a different module.
 
@@ -40,7 +40,7 @@ Frozen 10 widgets. `removeAll()` in its own cell, then:
 | 5 | `RunID` | `18266` |
 | 6 | `CatalogName` | `qa7` |
 | 7 | `SchemaName` | `iPC_2025_QA7_15348` |
-| 8 | `ExecutionProfile` | `low` |
+| 8 | `ExecutionProfile` | `default` |
 | 9 | `number_of_runs` | `1` |
 | 10 | `ProfilePlan` | `off` |
 

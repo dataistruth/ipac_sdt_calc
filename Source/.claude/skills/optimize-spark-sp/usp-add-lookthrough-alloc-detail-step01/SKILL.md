@@ -12,7 +12,7 @@ Public entry: `run_add_lookthrough_allocation_detail_step01`. Production
 `business/` or `tests/`). Production mode: inline in `output/`.
 
 The orchestrator resolves `ExecutionProfile` from
-`Common_V2.core.execution_profiles` at start (default **low**). Cap
+`Common_V2.core.execution_profiles` at start (default `DEFAULT_EXECUTION_PROFILE` (**small**)). Cap
 `MaxThreads` 1..4. Do not set AQE from the profile.
 
 ## Allowed outputV2 tree
@@ -24,7 +24,6 @@ Source/AllocationV2/usp_add_lookthrough_alloc_detail_step01/
     ├── __init__.py
     ├── add_lookthrough_allocation_detail_step01.py
     ├── parent.py
-    ├── parallel_helpers.py
     ├── plan_profiler.py
     ├── output_reconcile.py
     ├── OPTIMIZATION_REPORT.md
@@ -33,7 +32,7 @@ Source/AllocationV2/usp_add_lookthrough_alloc_detail_step01/
 
 ## Checkpoints
 
-Checkpoint V2 `base_lt_out` (LookThroughAllocationOutput filter). After local backend, `toDF(*columns)`.
+profile checkpoint `base_lt_out` (LookThroughAllocationOutput filter). After local mode, `checkpoint()` itself resets qualifiers with `toDF(*columns)`.
 
 ## Notebook widgets (frozen)
 
@@ -64,7 +63,7 @@ That helper declares `profile_plan=False` before it sets
 
 ## Phases
 
-1. Config + Checkpoint V2 `base_lt_out`
+1. Config + profile checkpoint `base_lt_out`
 2. `output_writes`: dated-transfer pair sequential in one task; other distinct tables parallel; merge `_parquet_results`
 3. Sequential GenericResultStorer
 

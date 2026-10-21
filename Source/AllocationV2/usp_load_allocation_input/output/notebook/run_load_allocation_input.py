@@ -21,8 +21,8 @@ dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
 dbutils.widgets.text("SchemaName", "IPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
-    "low",
-    ["low", "medium", "big"],
+    "default",
+    ["default", "small", "large"],
     "8. Execution profile",
 )
 
@@ -62,7 +62,7 @@ common_args = {
     "CatalogName": dbutils.widgets.get("CatalogName"),
     "SchemaName": dbutils.widgets.get("SchemaName"),
     "VolumePath": "/Volumes/qa7/datavolume/databrickdata",
-    "ExecutionProfile": dbutils.widgets.get("ExecutionProfile").strip() or "low",
+    "ExecutionProfile": dbutils.widgets.get("ExecutionProfile").strip() or "default",
 }
 
 
@@ -78,10 +78,10 @@ def _clear_modules():
 
 _clear_modules()
 try:
-    import Common_V2.core.checkpoint_V2 as _checkpoint_v2  # noqa: F401
+    import Common_V2.core.checkpoint as _checkpoint_module  # noqa: F401
 except ImportError as exc:
     raise ImportError(
-        "Could not import Common_V2.core.checkpoint_V2 after adding "
+        "Could not import Common_V2.core.checkpoint after adding "
         f"the Source folder to sys.path: {source_root}"
     ) from exc
 _clear_modules()

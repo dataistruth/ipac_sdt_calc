@@ -17,8 +17,23 @@ import logging
 import time
 
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
+from Common_V2.core.write_helpers import (
+    flush_collected_results as _flush_collected_results,
+    run_isolated_tasks,
+)
 
 logger = logging.getLogger(__name__)
+
+SMALL_TABLES = frozenset({
+    "Form926Flowup",
+    "Form199AFlowup",
+    "Form8865Flowup",
+    "Form8886Flowup",
+    "AtRiskFlowup",
+    "CustomFootnoteFlowup",
+    "Form200616Flowup",
+    "PFICFootnoteFlowup",
+})
 
 
 def purge_output_tables(spark: SparkSession, cfg: dict) -> None:
@@ -1568,3 +1583,63 @@ def write_form_flowups(spark: SparkSession, cfg: dict, k1_workflow_df: DataFrame
     # _collect_result(cfg, df, "Form200616Flowup")
 
     log_timing("write_form_flowups", t0)
+
+
+def collect_output_frames_parallel(
+    spark,
+    cfg,
+    allocation_input_df,
+    pfic_flowup_df,
+    k1_workflow_df,
+    workers,
+    activity,
+    enabled_groups,
+):
+    """Build disjoint collected frames concurrently. No disk writes."""
+    run_isolated_tasks(
+        spark,
+        cfg,
+        [
+            (
+                "AllocationInput",
+                lambda s, c: write_allocation_input(s, c, allocation_input_df),
+            ),
+            (
+                "PFICFootnoteFlowup",
+                lambda s, c: write_pfic_flowup(s, c, pfic_flowup_df),
+            ),
+            (
+                "FormFlowups",
+                lambda s, c: write_form_flowups(s, c, k1_workflow_df),
+            ),
+        ],
+        workers,
+        activity,
+        "output_collect",
+        enabled_groups,
+    )
+
+
+def flush_collected_results(
+    spark,
+    cfg,
+    client_id,
+    entity_id,
+    execution_id,
+    workers,
+    activity,
+    enabled_groups,
+):
+    """Write AllocationInput first (replaceWhere RunID), then flow-up tables in parallel."""
+    return _flush_collected_results(
+        spark,
+        cfg,
+        client_id,
+        entity_id,
+        execution_id,
+        workers,
+        activity,
+        enabled_groups,
+        replace_where_run_tables=("AllocationInput",),
+        small_tables=SMALL_TABLES,
+    )

@@ -25,8 +25,8 @@ dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
 dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
-    "low",
-    ["low", "medium", "big"],
+    "default",
+    ["default", "small", "large"],
     "8. Execution profile",
 )
 dbutils.widgets.text("number_of_runs", "1", "9. A/B passes")
@@ -53,7 +53,7 @@ tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
 run_id = int(dbutils.widgets.get("RunID"))
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
-execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "low"
+execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "default"
 number_of_runs = max(1, int(dbutils.widgets.get("number_of_runs") or 1))
 try:
     profile_plan = dbutils.widgets.get("ProfilePlan").strip().lower() == "on"
@@ -93,7 +93,7 @@ def clear_modules(package):
 sys.path[:] = [entry for entry in sys.path if entry != source_path]
 sys.path.insert(0, source_path)
 clear_modules(PACKAGE)
-importlib.import_module("Common_V2.core.checkpoint_V2")
+importlib.import_module("Common_V2.core.checkpoint")
 reconcile = importlib.import_module(f"{PACKAGE}.outputV2.output_reconcile")
 
 required = (
@@ -110,7 +110,7 @@ _injected_variant_paths = []
 
 def load_runner(module_name):
     clear_modules(PACKAGE)
-    importlib.import_module("Common_V2.core.checkpoint_V2")
+    importlib.import_module("Common_V2.core.checkpoint")
     try:
         importlib.import_module("AllocationV2.plan_profiler")
     except Exception as exc:

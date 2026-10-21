@@ -1,6 +1,6 @@
 ---
 name: optimize-spark-sp
-description: Optimizes Databricks PySpark AllocationV2 stored procedures in two modes. Production (mode 1) applies inline changes in output/ with a run notebook only—no plan profiler, no updated/, no business/. Development (mode 2) creates outputV2 with a side-by-side A/B notebook, optional plan profiler slim shim, and per-table validation hashes. Both modes use Checkpoint V2 and the same business logic. Use when optimizing an AllocationV2 SP, adding parallel thread phasing, or preparing an SP for production output or outputV2.
+description: Optimizes Databricks PySpark AllocationV2 stored procedures in two modes. Production (mode 1) applies inline changes in output/ with a run notebook only—no plan profiler, no updated/, no business/. Development (mode 2) creates outputV2 with a side-by-side A/B notebook, optional plan profiler slim shim, and per-table validation hashes. Both modes use the shared Common_V2.core checkpoint/parallel/write helpers and the same business logic. Use when optimizing an AllocationV2 SP, adding parallel thread phasing, or preparing an SP for production output or outputV2.
 ---
 
 # Optimize Spark Stored Procedure
@@ -9,31 +9,61 @@ Read [implementation-reference.md](implementation-reference.md) before
 editing. Read [benchmark-reference.md](benchmark-reference.md) before
 creating a notebook.
 
-The **pipeline logic is the same in both modes**: Checkpoint V2, parallel
-thread phasing, isolated `cfg`, RunID pruning, bounded broadcasts, and
-preserved join/filter/write semantics. Only packaging and notebooks differ.
+The **pipeline logic is the same in both modes**: profile-driven checkpoints,
+parallel thread phasing, isolated `cfg`, RunID pruning, bounded broadcasts,
+and preserved join/filter/write semantics. Only packaging and notebooks differ.
+
+## Shared Common_V2.core modules (never per-SP copies)
+
+| Module | Owns |
+|---|---|
+| `Common_V2.core.checkpoint` | `checkpoint`, `drop_checkpoints`, `DELTA_CHECKPOINT_MODE` (1), `LOCAL_CHECKPOINT_MODE` (2), `DEFAULT_CHECKPOINT_MODE` (= Delta) |
+| `Common_V2.core.execution_profiles` | `resolve_execution_profile`, `EXECUTION_PROFILES` (`small` / `large`), `DEFAULT_EXECUTION_PROFILE` |
+| `Common_V2.core.parallel_helpers` | `normalize_workers`, `parse_enabled_groups(..., known_groups=)`, `isolated_cfg`, `run_parallel`, `run_phase` |
+| `Common_V2.core.write_helpers` | `run_isolated_tasks`, `flush_collected_results`, `write_tables_parallel`, `merge_parquet_results`, `align_to_table`, `save_table_via_storer`, `merge_save_values` |
+
+There is no `checkpoint_V2.py` and no SP-folder `parallel_helpers.py` /
+`write_helpers.py`. Each SP declares its own `KNOWN_GROUPS` frozenset in the
+orchestrator and passes it as `known_groups=`. SP-specific write wrappers
+(table lists, PFIC math) live in that SP's existing service module
+(rounding `write_service`, allocation input `ai_finalization_service`,
+look-through allocation input `lt_finalization_service`) and call the
+common write helpers. `checkpoint.py` is the original `sdt_d` file plus one
+local mode: `checkpoint()` uses the `checkpoint_mode` argument, else
+`cfg["checkpoint_mode"]`; anything other than 4 is the original Delta path,
+so every SP outside these 12 keeps its behavior unchanged. Local mode runs
+`localCheckpoint(eager=True)` + `toDF(*columns)` (Delta fallback on error).
 
 ## Execution profile at orchestrator start
 
 The **SP orchestrator** (not `Common_V2.core.__init__`, not the notebook)
 imports the tier map and applies it once at the start of `run_*`, after
 `cfg` exists and **before** checkpoint init and before worker threads
-copy `cfg`. Default tier is **`low`**.
+copy `cfg`. The default tier is `DEFAULT_EXECUTION_PROFILE` in
+`execution_profiles.py` (currently **`small`**); SPs never hardcode it.
 
 ```python
 from Common_V2.core.execution_profiles import resolve_execution_profile
 
-# low    shuffle 32  CheckpointMode 4  MaxThreads 4
-# medium shuffle 48  CheckpointMode 2  MaxThreads 4
-# big    shuffle 64  CheckpointMode 1  MaxThreads 4
+# small  shuffle 32  CheckpointMode 2 (localCheckpoint)  MaxThreads 4
+# large  shuffle 64  CheckpointMode 1 (Delta)            MaxThreads 4
+# blank / "default" -> DEFAULT_EXECUTION_PROFILE
 profile = resolve_execution_profile(
-    ExecutionProfile or execution_profile or "low"
+    _blank(ExecutionProfile) or _blank(execution_profile),
+    checkpoint_mode=(
+        CheckpointMode if CheckpointMode is not None else checkpoint_mode
+    ),
 )
+profile_name = profile["name"]
+mode = profile["checkpoint_mode"]
+cfg["checkpoint_mode"] = mode
+cfg.setdefault("_checkpoint_tables", [])  # before worker threads copy cfg
 ```
 
-Then apply `profile["shuffle_partitions"]`, `profile["checkpoint_mode"]`,
-and `profile["max_threads"]`. Explicit `SqlShufflePartitions`,
-`CheckpointMode`, and `MaxThreads` override the profile. Do not set AQE.
+Then apply `profile["shuffle_partitions"]` and `profile["max_threads"]`.
+Explicit `SqlShufflePartitions` and `MaxThreads` override the profile;
+`CheckpointMode` is applied by `resolve_execution_profile` (2 = local, anything
+else = Delta; unknown profile names → `large`; it never raises). Do not set AQE.
 Do not `from Common_V2.core import resolve_execution_profile`.
 
 ## Choose the mode
@@ -51,12 +81,12 @@ is always **inline** in `output/` (same optimizations, no `outputV2/`).
 
 ## SP-specific skills
 
-Use the parent skill for packaging, Checkpoint V2, phasing, profiles,
+Use the parent skill for packaging, checkpoints, phasing, profiles,
 and notebooks. Use the child skill when the work is that SP:
 
 | SP | Skill |
 |---|---|
-| `usp_get_final_effective_percentage` | [usp-get-final-effective-percentage/SKILL.md](usp-get-final-effective-percentage/SKILL.md) — Production must keep concurrent `mode_prep`, `mode_prep_boundaries`, post-miss/final-cost, `effective_inputs` (`de_post_minq_fused` / `cost_pct_min_q_fused`), `output_build`; CheckpointMode 4 alone is not enough (~71s vs locked ~54s) |
+| `usp_get_final_effective_percentage` | [usp-get-final-effective-percentage/SKILL.md](usp-get-final-effective-percentage/SKILL.md) — Production must keep concurrent `mode_prep`, `mode_prep_boundaries`, post-miss/final-cost, `effective_inputs` (`de_post_minq_fused` / `cost_pct_min_q_fused`), `output_build`; CheckpointMode 2 alone is not enough (~71s vs locked ~54s) |
 | `usp_load_footnotes_allocation_to_output` | [usp-load-footnotes-allocation-to-output/SKILL.md](usp-load-footnotes-allocation-to-output/SKILL.md) |
 | `usp_load_lookthrough_allocation_input` | [usp-load-lookthrough-allocation-input/SKILL.md](usp-load-lookthrough-allocation-input/SKILL.md) |
 | `usp_load_lookthrough_footnote_effective_allocation_pct` | [usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md](usp-load-lookthrough-footnote-effective-allocation-pct/SKILL.md) |
@@ -77,9 +107,9 @@ collect FormFlowups as one task, keep `pfic_raw`, AllocationInput Delta
 then parallel `output_writes`). For look-through allocation input,
 Development generate must reproduce the locked `outputV2` in that child
 skill (no `pfic_income_attributes.py`, window PFIC `%` in
-`write_helpers.py`, extra Checkpoint V2 seams, lazy `__init__.py`,
+`lt_finalization_service.py`, extra checkpoint seams, lazy `__init__.py`,
 frozen 10 widgets with RunID `18266`). For look-through cost alloc, Development
-generate must keep extra Checkpoint V2 seams
+generate must keep extra checkpoint seams
 (`temp_alloc_input`, `fep`, `alloc_pass1`–`alloc_pass4`, `alloc_output`)
 and sequential Output-then-Input writes.
 
@@ -91,7 +121,6 @@ Inline edits in the live package. Ready to run as production.
 Source/AllocationV2/<sp_name>/output/
 ├── __init__.py
 ├── orchestrator.py              # modified in place (or the SP entry module)
-├── parallel_helpers.py          # only if phasing is added
 └── notebook/
     └── run_<sp_name>.py         # runs THIS orchestrator only
 ```
@@ -131,10 +160,8 @@ Source/AllocationV2/<sp_name>/
     ├── __init__.py
     ├── orchestrator.py          # candidate (same public API)
     ├── parent.py                # unused / self package; do not import output/
-    ├── parallel_helpers.py
     ├── plan_profiler.py         # slim shim; no-op unless ProfilePlan on
     ├── output_reconcile.py      # per-table fingerprints / hashes
-    ├── write_helpers.py         # optional, same folder
     ├── cost_pct_loader.py       # FEP only: optimized copy in this folder
     └── notebook/
         └── benchmark_<sp_name>.py
@@ -195,7 +222,7 @@ BUILDER table. Do **not** call `df.explain` or `measure_plan` in
 that cell.
 
 CHECKPOINT (keep/measure/remove) is the plan-size source of truth
-(incoming plan at each Checkpoint V2 seam). BUILDER only records
+(incoming plan at each checkpoint seam). BUILDER only records
 outputs that are still fat Catalyst plans (skip 1-node post-checkpoint
 scans). ACTION stays empty unless `profile_action` wraps actions.
 
@@ -278,7 +305,7 @@ defaults (FEP Development run):
 | 5 | `RunID` | RunID | `17376` |
 | 6 | `CatalogName` | Catalog | `QA7` |
 | 7 | `SchemaName` | Schema | `iPC_2025_QA7_15348` |
-| 8 | `ExecutionProfile` | Execution profile | `low` (`low` / `medium` / `big`) |
+| 8 | `ExecutionProfile` | Execution profile | `default` (`default` / `small` / `large`) |
 | 9 | `number_of_runs` | A/B passes | `1` |
 | 10 | `ProfilePlan` | Plan profile | `off` (`off` / `on`) |
 
@@ -345,29 +372,39 @@ profiler kwargs. ProfilePlan off must never alter or fail the SP.
 
 1. Same business logic in both modes. Do not “optimize” by changing filters,
    joins, schemas, or writes.
-2. Checkpoint **only** via `Common_V2.core.checkpoint_V2` (`checkpoint_V2`
-   aliased `checkpoint`, `initialize_checkpoint_V2`, `resolve_checkpoint_mode`).
-   No local `checkpoint.py`. No `Common_V2.core.checkpoint`.
-   `checkpoint_mode=None` / `CheckpointMode=None` then resolve. Initialize
+2. Checkpoint **only** via `Common_V2.core.checkpoint` imported as
+   `checkpoint as common_checkpoint` plus `drop_checkpoints`. No SP-local
+   `checkpoint.py`. No `checkpoint_V2` module or names. Keep `checkpoint.py`
+   the original `sdt_d` API (backward compatible for every other SP) plus
+   the local mode only — no extra resolver layers there.
+   Mode = `profile["checkpoint_mode"]` from `resolve_execution_profile`, stored
+   in `cfg["checkpoint_mode"]` with `cfg.setdefault("_checkpoint_tables", [])`
    once before worker threads copy `cfg`.
-   Modes: 1=Delta, 2=odd local/even Delta, 3=odd local/even Volume, 4=all
-   localCheckpoint. Inherit `DEFAULT_CHECKPOINT_MODE` unless overridden.
+   Modes: **1 = Delta (default)**, **2 = localCheckpoint(eager)** with Delta
+   fallback; `checkpoint()` itself resets qualifiers with `toDF(*columns)`
+   after local. Profile `small` → 2; `large` → 1. Development `outputV2`
+   wrappers call `track_checkpoint_plan(name, df, cfg)` (from the SP's
+   `.plan_profiler`) before `common_checkpoint`; production does not. Legacy direct
+   `checkpoint(...)` calls in SP services that were Delta before (e.g.
+   allocation input `base_flowup`, `reclass_data`) pass
+   `checkpoint_mode=DELTA_CHECKPOINT_MODE` so they stay Delta.
    **Production inline:** if builders call module-level `checkpoint` and you
-   rebind that name to a `_checkpoint` wrapper (for `toDF` after local
-   backends / hierarchy `hier_level_*`), the wrapper must call
-   **`checkpoint_V2(...)` by that imported name**, never `checkpoint(...)`.
+   rebind that name to a `_checkpoint` wrapper (hierarchy `hier_level_*`,
+   dev plan tracking), the wrapper must call
+   **`common_checkpoint(...)` by that imported name**, never `checkpoint(...)`.
    Rebinding `checkpoint = _checkpoint` while `_checkpoint` looks up
    `checkpoint` at runtime is infinite recursion (`maximum recursion depth
    exceeded`). Development `outputV2` may patch `output.orchestrator.checkpoint`
    because `_checkpoint` lives in a **different** module. That pattern is
    unsafe when inlined into the same production module.
-3. The **SP orchestrator** resolves `ExecutionProfile` (`low`/`medium`/`big`)
+3. The **SP orchestrator** resolves `ExecutionProfile` (`small`/`large`)
    at invocation start. Import
    `Common_V2.core.execution_profiles.resolve_execution_profile` directly.
    Do not resolve or re-export profiles from `Common_V2.core.__init__`.
    Explicit `CheckpointMode`, `SqlShufflePartitions`, and `MaxThreads`
-   override the profile. Do not set AQE from a profile.
-4. Parallelize only independent work, in **phases**. Cap workers **1..4**.
+   override the profile. No hardcoded default tier in SPs or notebooks. Do not set AQE from a profile.
+4. Parallelize only independent work, in **phases**, through
+   `Common_V2.core.parallel_helpers` / `write_helpers`. Cap workers **1..4**.
    Observe every future. Wave time is `max(task)`, not the sum.
    Parallelize **distinct-table writes** in an `output_writes` phase whenever
    tables (or proven-safe partitions) do not depend on each other. Keep
@@ -392,22 +429,22 @@ profiler kwargs. ProfilePlan off must never alter or fail the SP.
 | Parallel thread phasing | Independent loads/builders/writes |
 | Bounded ThreadPoolExecutor | Max 4; log START/DONE |
 | Isolated `cfg` | Parallel tasks that mutate config |
-| Checkpoint V2 | Existing seams |
+| Profile checkpoint (`Common_V2.core.checkpoint`) | Existing seams |
 | RunID / ClientID / TaxPeriodID prune | When columns exist |
 | Bounded broadcast | Proven-small lookups only |
 | DataFrame reuse / persist | Persist only for multi-action; unpersist in `finally` |
 | Concurrent distinct-table writes | Required `output_writes` phase when tables are independent; isolated `cfg`; writer constructed in-task |
-| Execution profile `low`/`medium`/`big` | Orchestrator resolves shuffle, checkpoint mode, MaxThreads=4 |
+| Execution profile `small`/`large` (default in `execution_profiles.py`) | Orchestrator resolves shuffle, checkpoint mode, MaxThreads=4 |
 
 Do not copy FEP CPBT/footnote/state rewrites into other SPs.
 Do not put AQE in the profile; it stays at the cluster default (`true`).
 
-## Known bad (Checkpoint V2 rebind)
+## Known bad (checkpoint rebind)
 
 Do **not** inline this Production pattern:
 
 ```python
-from Common_V2.core.checkpoint_V2 import checkpoint_V2 as checkpoint
+from Common_V2.core.checkpoint import checkpoint
 
 def _checkpoint(spark, df, name, cfg):
     result = checkpoint(spark, df, name, cfg)  # looks up module.checkpoint
@@ -419,20 +456,20 @@ mod.checkpoint = _checkpoint  # now checkpoint is _checkpoint → RecursionError
 Use:
 
 ```python
-from Common_V2.core.checkpoint_V2 import checkpoint_V2
+from Common_V2.core.checkpoint import checkpoint as common_checkpoint
 
-checkpoint = checkpoint_V2  # builders may call this name
+checkpoint = common_checkpoint  # builders may call this name
 
 def _checkpoint(spark, df, name, cfg):
-    result = checkpoint_V2(spark, df, name, cfg)
+    result = common_checkpoint(spark, df, name, cfg)
     ...
 
 mod.checkpoint = _checkpoint  # safe: wrapper never names the rebound alias
 ```
 
 Patch a **sibling** module’s `checkpoint` (Development `outputV2` → `output`)
-only when the wrapper is defined in the patching module. After local
-Checkpoint V2, `toDF(*columns)` stays required.
+only when the wrapper is defined in the patching module. After a local
+checkpoint, `toDF(*columns)` stays required.
 
 **Plan profiler:** Mode 2 only. See implementation reference.
 
@@ -454,7 +491,7 @@ schemas above. Hash min/max stay on the raw `_h` BIGINT.
 ## Workflow
 
 1. Map the DAG (stages, actions, `cfg`, checkpoints, writes).
-2. Apply phasing + Checkpoint V2 + portable read optimizations in the
+2. Apply phasing + profile checkpoints + portable read optimizations in the
    mode’s target package. The orchestrator resolves the execution profile
    at start. Parallelize independent distinct-table writes. Logic stays
    equivalent.
@@ -479,7 +516,7 @@ runs 12 SPs three at a time.
 - mode (1 Production or 2 Development)
 - files created or changed
 - phases and why they are independent
-- checkpoint V2 usage and which execution profile the orchestrator applied
+- checkpoint mode used and which execution profile the orchestrator applied
 - Mode 2: per-table hash result; profiler on/off
 
 ## Examples

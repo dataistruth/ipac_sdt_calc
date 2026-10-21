@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-load-lookthrough-cost-alloc
-description: Optimizes Development outputV2 for uspLoadLookThroughCostAllocationToOutput. Same production builders; Checkpoint V2 extras (footnotes-style plan breaks that saved ~12s) plus sequential Output then Input writes. Use when generating or diagnosing this SP.
+description: Optimizes Development outputV2 for uspLoadLookThroughCostAllocationToOutput. Same production builders; profile checkpoint extras (footnotes-style plan breaks that saved ~12s) plus sequential Output then Input writes. Use when generating or diagnosing this SP.
 ---
 
 # Optimize uspLoadLookThroughCostAllocationToOutput
@@ -17,7 +17,7 @@ Production: inline in `output/`.
 Public entry: `run_load_lookthrough_cost_alloc`.
 
 The **SP orchestrator** resolves `ExecutionProfile` from
-`Common_V2.core.execution_profiles` at start. Default **low**. No AQE.
+`Common_V2.core.execution_profiles` at start. Default `DEFAULT_EXECUTION_PROFILE` (**small**). No AQE.
 
 ## Extra checkpoints (the ~12s footnotes pattern)
 
@@ -56,7 +56,7 @@ used across the cost-% parts. Break it every level (footnotes
 `entity_levels`). Also swap `_hierarchy._checkpoint` to V2 for the
 other recursive CTE (`build_entity_hierarchy`).
 
-After a **local** Checkpoint V2 backend, `toDF(*columns)` like footnotes.
+After local mode, `checkpoint()` itself resets qualifiers with `toDF(*columns)`.
 Do not drop `alloc_output`. Do not edit production `_hierarchy.py`.
 
 ## Logic identity
@@ -87,7 +87,7 @@ reproduce this notebook, not a larger one.
 | 5 | `RunID` | RunID | `17376` |
 | 6 | `CatalogName` | Catalog | `QA7` |
 | 7 | `SchemaName` | Schema | `iPC_2025_QA7_15348` |
-| 8 | `ExecutionProfile` | Execution profile | `low` |
+| 8 | `ExecutionProfile` | Execution profile | `default` |
 | 9 | `number_of_runs` | A/B passes | `1` |
 | 10 | `ProfilePlan` | Plan profile | `off` |
 

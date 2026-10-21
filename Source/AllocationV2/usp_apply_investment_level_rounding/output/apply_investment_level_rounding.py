@@ -35,23 +35,21 @@ except ImportError:
 
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import get_logger
-from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2,
-    drop_checkpoints_V2,
-    initialize_checkpoint_V2,
-    resolve_checkpoint_mode,
+from Common_V2.core.checkpoint import (
+    checkpoint as common_checkpoint,
+    drop_checkpoints,
 )
 from Common_V2.core.execution_profiles import resolve_execution_profile
-
-checkpoint = checkpoint_V2
-
-from .parallel_helpers import (
+from Common_V2.core.parallel_helpers import (
     isolated_cfg,
     normalize_workers,
     parse_enabled_groups,
     run_parallel,
 )
-from .write_helpers import flush_post_summary_writes
+
+KNOWN_GROUPS = frozenset({"independent_builders", "independent_early", "output_writes"})
+
+checkpoint = common_checkpoint
 
 logger = get_logger("apply_investment_level_rounding")
 
@@ -73,15 +71,7 @@ def _as_int(value):
 def _checkpoint_frame(spark, df, name, cfg):
     if df is None:
         return None
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    return common_checkpoint(spark, df, name, cfg)
 
 
 def _load_lookthrough(spark, cfg):
@@ -126,6 +116,7 @@ try:
         write_final_summaries,
         write_allocation_summaries,
         update_is_rounded_flag,
+        flush_post_summary_writes,
     )
 except ImportError:
     from config_service import load_sp_config
@@ -158,6 +149,7 @@ except ImportError:
         write_final_summaries,
         write_allocation_summaries,
         update_is_rounded_flag,
+        flush_post_summary_writes,
     )
 
 
@@ -179,14 +171,14 @@ def apply_investment_level_rounding(
     MaxThreads: int = None,
     parallel_groups: str = "all",
     ParallelGroups: str = None,
-    execution_profile: str = "low",
+    execution_profile: str = None,
     ExecutionProfile: str = None,
     checkpoint_mode: int = None,
     CheckpointMode: int = None,
     SqlShufflePartitions=None,
     **kwargs,
 ):
-    """Apply investment-level rounding with Checkpoint V2 and parallel phases."""
+    """Apply investment-level rounding with profile checkpoints and parallel phases."""
     del kwargs
     entity_id = EntityID
     client_id = ClientID
@@ -200,11 +192,14 @@ def apply_investment_level_rounding(
     execution_id = ExecutionID
     t0 = time.time()
     parallel_activity = []
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
-    profile_name = (
-        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    profile = resolve_execution_profile(
+        _blank(ExecutionProfile) or _blank(execution_profile),
+        checkpoint_mode=(
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        ),
     )
-    profile = resolve_execution_profile(profile_name)
+    profile_name = profile["name"]
     workers = normalize_workers(
         max_threads=(
             MaxThreads
@@ -254,8 +249,6 @@ def apply_investment_level_rounding(
         if execution_id is not None:
             cfg["execution_id"] = execution_id
         cfg.setdefault("_parquet_results", {})
-        cfg.setdefault("_checkpoint_paths", [])
-        cfg.setdefault("_checkpoint_v2_activity", [])
         shuffle_override = _as_int(SqlShufflePartitions)
         if shuffle_override is None:
             spark.conf.set(
@@ -267,18 +260,7 @@ def apply_investment_level_rounding(
                 "spark.sql.shuffle.partitions",
                 str(shuffle_override),
             )
-        explicit_checkpoint = (
-            CheckpointMode if CheckpointMode is not None else checkpoint_mode
-        )
-        mode = resolve_checkpoint_mode(
-            cfg,
-            checkpoint_mode=(
-                explicit_checkpoint
-                if _blank(explicit_checkpoint) is not None
-                else profile["checkpoint_mode"]
-            ),
-            CheckpointMode=CheckpointMode,
-        )
+        mode = profile["checkpoint_mode"]
         cfg.update(
             {
                 "checkpoint_mode": mode,
@@ -286,7 +268,7 @@ def apply_investment_level_rounding(
                 "execution_profile": profile_name,
             }
         )
-        initialize_checkpoint_V2(cfg, mode)
+        cfg.setdefault("_checkpoint_tables", [])
         print(
             f"[uspApplyInvestmentLevelRounding] ExecutionProfile={profile_name} "
             f"CheckpointMode={mode} shuffle="
@@ -502,7 +484,7 @@ def apply_investment_level_rounding(
     finally:
         spark.conf.set("spark.sql.shuffle.partitions", original_shuffle)
         if isinstance(cfg, dict):
-            drop_checkpoints_V2(spark, cfg)
+            drop_checkpoints(spark, cfg)
         status["elapsed_seconds"] = round(time.time() - t0, 1)
         logger.info(
             "[COMPLETE] %s — %s in %ss, sections=%s/23",

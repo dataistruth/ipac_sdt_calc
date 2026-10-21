@@ -50,12 +50,12 @@ write, then `output_writes` (one task per remaining table, max 4 workers).
 | `output_collect` | AllocationInput collect, PFIC flowup collect, **one** FormFlowups collect |
 | `output_writes` | each flow-up table after AllocationInput commits |
 
-Orchestrator applies `ExecutionProfile` at start, default `low`.
+Orchestrator applies `ExecutionProfile` at start, default `DEFAULT_EXECUTION_PROFILE` (**small**).
 
 ## Packaging
 
 Development: `outputV2/` importing `output/` via `parent.py`. Write and
-collect helpers live in `write_helpers.py` only. No `form_flowup_collect.py`.
+collect helpers live in `ai_finalization_service.py` (threading from `Common_V2.core.write_helpers`). No `form_flowup_collect.py`.
 No copies of `ai_*.py` under `outputV2/`.
 
 ## A/B reconcile
@@ -67,4 +67,4 @@ No copies of `ai_*.py` under `outputV2/`.
 ## Locked timings (RunID 16560)
 
 Production ~67.6s reported / ~69.8s wall. Updated **48.4s** reported /
-**49.2s** wall, hashes PASS, ProfilePlan off, profile low.
+**49.2s** wall, hashes PASS, ProfilePlan off, profile small.

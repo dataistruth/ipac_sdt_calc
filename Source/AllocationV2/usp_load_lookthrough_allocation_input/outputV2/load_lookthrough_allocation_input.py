@@ -6,14 +6,17 @@ import logging
 import time
 from contextlib import contextmanager
 
-from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2,
-    drop_checkpoints_V2,
-    initialize_checkpoint_V2,
-    resolve_checkpoint_mode,
+from Common_V2.core.checkpoint import (
+    checkpoint as common_checkpoint,
+    drop_checkpoints,
 )
 from Common_V2.core.config import load_common_config
 from Common_V2.core.execution_profiles import resolve_execution_profile
+from Common_V2.core.parallel_helpers import (
+    normalize_workers,
+    parse_enabled_groups,
+    run_parallel,
+)
 
 from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_config_service import (
     build_fx_rates,
@@ -29,6 +32,8 @@ from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_finalization
     apply_tag_percentages,
     build_box_jkl_input,
     validate_k3_rules,
+    build_pfic_income_attributes,
+    write_final_output_parallel,
 )
 from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_flowup_service import (
     build_lt_flowup_adjustment,
@@ -49,18 +54,16 @@ from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.lt_pfic_service
     build_pfic_elections,
     build_pfic_mapped_lines,
 )
-from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.parallel_helpers import (
-    normalize_workers,
-    parse_enabled_groups,
-    run_parallel,
-)
-from AllocationV2.usp_load_lookthrough_allocation_input.outputV2.write_helpers import (
-    build_pfic_income_attributes,
-    write_final_output_parallel,
+
+KNOWN_GROUPS = frozenset(
+    {
+        "independent_early_loads",
+        "independent_input_builders",
+        "output_writes",
+    }
 )
 
 _LAST_RUN_PROFILE = {}
-
 
 
 def _start_dev_plan_profile(enabled):
@@ -154,17 +157,13 @@ def _as_int(value):
 def _checkpoint(spark, df, name, cfg):
     """Extra plan-break seams plus local qualifier reset."""
     if df is None:
-        print(f"[CHECKPOINT_V2] checkpoint {name}: skipped (df=None)", flush=True)
+        print(f"[CHECKPOINT] checkpoint {name}: skipped (df=None)", flush=True)
         return None
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    print(f"[CHECKPOINT_V2] checkpoint {name}: done", flush=True)
+    from .plan_profiler import track_checkpoint_plan
+
+    track_checkpoint_plan(name, df, cfg)
+    result = common_checkpoint(spark, df, name, cfg)
+    print(f"[CHECKPOINT] checkpoint {name}: done", flush=True)
     return result
 
 
@@ -203,7 +202,7 @@ def run_load_lookthrough_allocation_input(
     MaxThreads: int = None,
     parallel_groups: str = "all",
     ParallelGroups: str = None,
-    execution_profile: str = "low",
+    execution_profile: str = None,
     ExecutionProfile: str = None,
     checkpoint_mode: int = None,
     CheckpointMode: int = None,
@@ -212,17 +211,20 @@ def run_load_lookthrough_allocation_input(
     plan_checkpoint_threshold: int = 30,
     **kwargs,
 ):
-    """Run production semantics with V2 checkpoints and bounded plan pools."""
+    """Run production semantics with profile checkpoints and bounded plan pools."""
     del kwargs
     global _LAST_RUN_PROFILE
     started = time.perf_counter()
     timings = []
     parallel_activity = []
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
-    profile_name = (
-        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    profile = resolve_execution_profile(
+        _blank(ExecutionProfile) or _blank(execution_profile),
+        checkpoint_mode=(
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        ),
     )
-    profile = resolve_execution_profile(profile_name)
+    profile_name = profile["name"]
     workers = normalize_workers(
         max_threads=(
             MaxThreads
@@ -270,20 +272,7 @@ def run_load_lookthrough_allocation_input(
                     "spark.sql.shuffle.partitions",
                     str(shuffle_override),
                 )
-            explicit_checkpoint = (
-                CheckpointMode
-                if CheckpointMode is not None
-                else checkpoint_mode
-            )
-            mode = resolve_checkpoint_mode(
-                cfg,
-                checkpoint_mode=(
-                    explicit_checkpoint
-                    if _blank(explicit_checkpoint) is not None
-                    else profile["checkpoint_mode"]
-                ),
-                CheckpointMode=CheckpointMode,
-            )
+            mode = profile["checkpoint_mode"]
             cfg = {**cfg}
             cfg.setdefault("_checkpoint_tables", [])
             load_config(spark, cfg)
@@ -294,18 +283,15 @@ def run_load_lookthrough_allocation_input(
                 cfg["execution_id"] = ExecutionID
             cfg.update(
                 {
-                    "_checkpoint_paths": [],
-                    "_checkpoint_v2_activity": [],
                     "checkpoint_mode": mode,
                     "max_threads": workers,
                     "execution_profile": profile_name,
                 }
             )
-            initialize_checkpoint_V2(cfg, mode)
             cfg["profile_plan"] = bool(profile_plan)
             _plan_tokens = _start_dev_plan_profile(profile_plan)
             print(
-                f"[CHECKPOINT_V2] ExecutionProfile={profile_name} "
+                f"[CHECKPOINT] ExecutionProfile={profile_name} "
                 f"CheckpointMode={mode} shuffle="
                 f"{shuffle_override or profile['shuffle_partitions']} "
                 f"MaxThreads={workers}"
@@ -496,7 +482,6 @@ def run_load_lookthrough_allocation_input(
                 workers,
                 parallel_activity,
                 enabled_groups,
-                run_parallel,
             )
             status["sections_completed"] = 21
     except Exception as exc:
@@ -514,15 +499,10 @@ def run_load_lookthrough_allocation_input(
         if orig_shuffle is not None:
             spark.conf.set("spark.sql.shuffle.partitions", orig_shuffle)
         if isinstance(cfg, dict) and cfg.get("drop_checkpoints"):
-            drop_checkpoints_V2(spark, cfg)
+            drop_checkpoints(spark, cfg)
         _LAST_RUN_PROFILE = {
             "timings": list(timings),
             "parallel_activity": list(parallel_activity),
-            "checkpoint_activity": (
-                list(cfg.get("_checkpoint_v2_activity", []))
-                if isinstance(cfg, dict)
-                else []
-            ),
             "elapsed_seconds": status["elapsed_seconds"],
             "checkpoint_mode": mode,
             "max_threads": workers,
@@ -532,8 +512,7 @@ def run_load_lookthrough_allocation_input(
 
 
 __all__ = [
-    "checkpoint_V2",
-    "drop_checkpoints_V2",
+    "drop_checkpoints",
     "get_last_run_profile",
     "run_load_lookthrough_allocation_input",
 ]

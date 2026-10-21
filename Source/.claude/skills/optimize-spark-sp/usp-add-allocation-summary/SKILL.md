@@ -12,7 +12,7 @@ unchanged in Development. Flat `outputV2/` (no nested `business/` or
 `tests/`). Production mode: inline in `output/`.
 
 The orchestrator resolves `ExecutionProfile` from
-`Common_V2.core.execution_profiles` at start (default **low**). Cap
+`Common_V2.core.execution_profiles` at start (default `DEFAULT_EXECUTION_PROFILE` (**small**)). Cap
 `MaxThreads` 1..4. Do not set AQE from the profile.
 
 ## Allowed outputV2 tree
@@ -24,7 +24,6 @@ Source/AllocationV2/usp_add_allocation_summary/
     ├── __init__.py                 # lazy __getattr__
     ├── add_allocation_summary.py
     ├── parent.py
-    ├── parallel_helpers.py
     ├── plan_profiler.py
     ├── output_reconcile.py
     ├── OPTIMIZATION_REPORT.md
@@ -33,7 +32,7 @@ Source/AllocationV2/usp_add_allocation_summary/
 
 ## Checkpoints
 
-Checkpoint V2: allocation_output_summary and other multi-consumer `tables` frames. Same-table appends stay sequential.
+profile checkpoint: allocation_output_summary and other multi-consumer `tables` frames. Same-table appends stay sequential.
 
 ## Notebook widgets (frozen)
 

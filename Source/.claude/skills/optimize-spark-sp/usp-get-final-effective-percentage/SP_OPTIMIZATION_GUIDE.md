@@ -406,13 +406,13 @@ The with-LT and no-LT chains execute concurrently after their shared
 dependencies are ready. In the latest run, their combined wave took `5.230s`;
 running them serially would have cost the sum of both branches.
 
-Checkpoint mode experiments established that mode 4—eager local checkpoint
+Checkpoint mode experiments established that local mode (now 2)—eager local checkpoint
 for every named seam—performed better than deferred mode 5. Deferred
 materialization did not remove work; it moved it into later actions where
 larger plans were replayed. Eight shuffle partitions also underutilized the
 cluster. The promoted baseline is:
 
-- checkpoint mode 4;
+- checkpoint mode 2 (local);
 - 32 shuffle partitions;
 - AQE enabled;
 - 128 MB advisory partition size.

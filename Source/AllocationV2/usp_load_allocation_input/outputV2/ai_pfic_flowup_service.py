@@ -16,7 +16,7 @@ import logging
 import time
 
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
-from Common_V2.core.checkpoint import checkpoint
+from Common_V2.core.checkpoint import DELTA_CHECKPOINT_MODE, checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -454,7 +454,9 @@ def build_pfic_flowup_pipeline(
             )
         )
         base_flowup = base_flowup.unionByName(reclass_flowup_non_alloc)
-        base_flowup = checkpoint(spark, base_flowup, "base_flowup", cfg)
+        base_flowup = checkpoint(
+            spark, base_flowup, "base_flowup", cfg, checkpoint_mode=DELTA_CHECKPOINT_MODE
+        )
 
         print(f"[phase 7a-1] base_flowup + checkpoint: {time.time() - t_phase:.1f}s")
 
@@ -737,7 +739,9 @@ def build_pfic_flowup_pipeline(
             F.col("TrackingKey"),
         )
         base_flowup = base_flowup.unionByName(zero_flowup)
-        base_flowup = checkpoint(spark, base_flowup, "base_flowup", cfg)
+        base_flowup = checkpoint(
+            spark, base_flowup, "base_flowup", cfg, checkpoint_mode=DELTA_CHECKPOINT_MODE
+        )
 
         print(f"[phase 7a-2] base_flowup + checkpoint: {time.time() - t_phase:.1f}s")
         

@@ -31,13 +31,12 @@ import logging
 import time
 
 from Common_V2.core.helpers import read_table, table_prefix, ns0
-from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2,
-    drop_checkpoints_V2,
-    initialize_checkpoint_V2,
-    resolve_checkpoint_mode,
+from Common_V2.core.checkpoint import (
+    checkpoint as common_checkpoint,
+    drop_checkpoints,
 )
 from Common_V2.core.execution_profiles import resolve_execution_profile
+from Common_V2.core.parallel_helpers import normalize_workers
 from Common_V2.core.observability import log_section, log_timing
 from Common_V2.core.config import load_common_config
 from Common_V2.core.writers import write_insert
@@ -59,7 +58,6 @@ try:
         process_704c_allocation,
         insert_704c_by_amount_mapped_lines,
     )
-    from parallel_helpers import normalize_workers
 except ImportError:
     from ._data_loading import (
         load_partners, load_line_items, load_lookthrough_input,
@@ -77,7 +75,6 @@ except ImportError:
         process_704c_allocation,
         insert_704c_by_amount_mapped_lines,
     )
-    from .parallel_helpers import normalize_workers
 
 # ---------------------------------------------------------------------------
 # Module logger
@@ -398,21 +395,13 @@ def _checkpoint(spark, df, name, cfg):
     """Extra plan-break seams plus local qualifier reset."""
     if df is None:
         return None
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    return common_checkpoint(spark, df, name, cfg)
 
 
 
 @contextmanager
-def _use_v2_hierarchy_checkpoint():
-    """Route production _hierarchy._checkpoint to Checkpoint V2 + toDF."""
+def _use_profile_hierarchy_checkpoint():
+    """Route production _hierarchy._checkpoint to the profile checkpoint + toDF."""
     original = _hierarchy_mod._checkpoint
     _hierarchy_mod._checkpoint = _checkpoint
     try:
@@ -450,14 +439,14 @@ def run_load_lookthrough_cost_alloc(
     MaxThreads: int = None,
     parallel_groups: str = "all",
     ParallelGroups: str = None,
-    execution_profile: str = "low",
+    execution_profile: str = None,
     ExecutionProfile: str = None,
     checkpoint_mode: int = None,
     CheckpointMode: int = None,
     SqlShufflePartitions=None,
     **run_params,
 ) -> dict:
-    """Main entry point — Checkpoint V2, profile low, sequential Output then Input."""
+    """Main entry point — profile checkpoints (default low), sequential Output then Input."""
     del parallel_groups, ParallelGroups
     entity_id = entity_id or EntityID
     client_id = client_id or ClientID
@@ -491,10 +480,13 @@ def run_load_lookthrough_cost_alloc(
         orig_shuffle = spark.conf.get("spark.sql.shuffle.partitions")
     except Exception:
         orig_shuffle = None
-    profile_name = (
-        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    profile = resolve_execution_profile(
+        _blank(ExecutionProfile) or _blank(execution_profile),
+        checkpoint_mode=(
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        ),
     )
-    profile = resolve_execution_profile(profile_name)
+    profile_name = profile["name"]
     workers = normalize_workers(
         max_threads=(
             MaxThreads
@@ -540,8 +532,6 @@ def run_load_lookthrough_cost_alloc(
         cfg["line_type"] = line_type
         cfg["rank_for_rule"] = rank_for_rule
         cfg.setdefault("_parquet_results", {})
-        cfg.setdefault("_checkpoint_paths", [])
-        cfg.setdefault("_checkpoint_v2_activity", [])
 
         shuffle_override = _as_int(SqlShufflePartitions)
         if shuffle_override is None:
@@ -554,18 +544,7 @@ def run_load_lookthrough_cost_alloc(
                 "spark.sql.shuffle.partitions",
                 str(shuffle_override),
             )
-        explicit_checkpoint = (
-            CheckpointMode if CheckpointMode is not None else checkpoint_mode
-        )
-        mode = resolve_checkpoint_mode(
-            cfg,
-            checkpoint_mode=(
-                explicit_checkpoint
-                if _blank(explicit_checkpoint) is not None
-                else profile["checkpoint_mode"]
-            ),
-            CheckpointMode=CheckpointMode,
-        )
+        mode = profile["checkpoint_mode"]
         cfg.update(
             {
                 "checkpoint_mode": mode,
@@ -573,7 +552,6 @@ def run_load_lookthrough_cost_alloc(
                 "execution_profile": profile_name,
             }
         )
-        initialize_checkpoint_V2(cfg, mode)
         logger.info(
             f"[profile] ExecutionProfile={profile_name} CheckpointMode={mode} "
             f"shuffle={shuffle_override or profile['shuffle_partitions']} "
@@ -620,7 +598,7 @@ def run_load_lookthrough_cost_alloc(
             spark, cost_data["cost_percentages"], "cost_percentages", cfg
         )
 
-        with _use_v2_hierarchy_checkpoint():
+        with _use_profile_hierarchy_checkpoint():
             all_underlyings = build_entity_hierarchy(
                 spark, cfg, cost_percentages
             )
@@ -911,7 +889,7 @@ def run_load_lookthrough_cost_alloc(
         if orig_shuffle is not None:
             spark.conf.set("spark.sql.shuffle.partitions", orig_shuffle)
         if isinstance(cfg, dict) and cfg.get("drop_checkpoints"):
-            drop_checkpoints_V2(spark, cfg)
+            drop_checkpoints(spark, cfg)
 
     logger.info(f"[DONE] {status}")
     return status

@@ -26,7 +26,7 @@ Widgets: **frozen Mode 1 set only** (parent skill). Identity +
 VolumePath / ResultType / ParallelGroups widgets.
 
 Flow: evict `AllocationV2.<sp>.output` and `Common_V2` from `sys.modules`,
-put `source_path` first on `sys.path`, import checkpoint V2, optionally
+put `source_path` first on `sys.path`, import `Common_V2.core.checkpoint`, optionally
 purge this RunID, time one `run_*` call, print wall time, reported time,
 and per-table row counts.
 
@@ -47,7 +47,7 @@ Source/AllocationV2/<sp_name>/outputV2/notebook/benchmark_<sp_name>.py
 
 Widgets: **frozen Mode 2 set only** (parent skill). Exactly 10 widgets:
 `source_path`, `EntityID`, `ClientID`, `TaxPeriodID`, `RunID`,
-`CatalogName`, `SchemaName`, `ExecutionProfile` `low`, `number_of_runs`
+`CatalogName`, `SchemaName`, `ExecutionProfile` `default`, `number_of_runs`
 `1`, `ProfilePlan` `off` (`off` / `on`). Keep `# dbutils.widgets.removeAll()`
 commented in its own cell so values persist; uncomment only to reset.
 A/B order is always original then updated (no `ExecutionOrder` widget).
@@ -96,7 +96,7 @@ def clear_modules(package):
 
 Evict both `AllocationV2.<sp>.output` and `...outputV2` plus `Common_V2`
 and `AllocationV2.plan_profiler`.
-Import `Common_V2.core.checkpoint_V2` after putting `source_path` first.
+Import `Common_V2.core.checkpoint` after putting `source_path` first.
 `load_runner` must also put the variant folder
 (`.../output` or `.../outputV2`) on `sys.path` so old `sdt_d` code that
 does `from services` / `from parallel_helpers` still imports. Remove the

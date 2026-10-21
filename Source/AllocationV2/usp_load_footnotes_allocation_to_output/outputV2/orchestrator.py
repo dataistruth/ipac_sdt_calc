@@ -2,7 +2,7 @@
 orchestrator.py
 
 Converted from: dbo.uspLoadFootnotesAllocationToOutput.sql
-Production-inline Checkpoint V2 + parallel S3/S5 plans.
+Production-inline profile checkpoints + parallel S3/S5 plans.
 S13 writes AllocationOutput then AllocationInput deduction sequentially.
 """
 
@@ -13,14 +13,16 @@ from contextlib import contextmanager
 
 import pyspark.sql.functions as F
 
-from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2,
-    drop_checkpoints_V2,
-    initialize_checkpoint_V2,
-    resolve_checkpoint_mode,
+from Common_V2.core.checkpoint import (
+    checkpoint as common_checkpoint,
+    drop_checkpoints,
 )
 from Common_V2.core.config import load_common_config
 from Common_V2.core.execution_profiles import resolve_execution_profile
+from Common_V2.core.parallel_helpers import (
+    parse_enabled_groups,
+    run_phase,
+)
 
 from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.allocation_704c import (
     apply_704c_deduction,
@@ -47,7 +49,6 @@ from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.join_optimiza
     derive_cost_underlying_types,
     quarter_join_hints,
 )
-from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.parallel_helpers import parse_enabled_groups, run_phase
 from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.quarter_logic import (
     update_form_quarters,
     update_pfic_partv_quarters,
@@ -61,8 +62,9 @@ from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.underlyings i
 )
 from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.writers import apply_deduction, write_allocation_output
 
-logger = logging.getLogger(__name__)
+KNOWN_GROUPS = frozenset({"s13_writes", "s3_s5_plans"})
 
+logger = logging.getLogger(__name__)
 
 
 def _start_dev_plan_profile(enabled):
@@ -179,15 +181,10 @@ def _timed(timings, step):
 
 
 def _checkpoint(spark, df, name, cfg):
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    from .plan_profiler import track_checkpoint_plan
+
+    track_checkpoint_plan(name, df, cfg)
+    return common_checkpoint(spark, df, name, cfg)
 
 
 def run_load_footnotes_allocation_to_output(
@@ -205,7 +202,7 @@ def run_load_footnotes_allocation_to_output(
     MaxThreads: int = None,
     parallel_groups: str = "all",
     ParallelGroups: str = None,
-    execution_profile: str = "low",
+    execution_profile: str = None,
     ExecutionProfile: str = None,
     checkpoint_mode: int = None,
     CheckpointMode: int = None,
@@ -225,11 +222,14 @@ def run_load_footnotes_allocation_to_output(
 
     started = time.time()
     timings = []
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
-    profile_name = (
-        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    profile = resolve_execution_profile(
+        _blank(ExecutionProfile) or _blank(execution_profile),
+        checkpoint_mode=(
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        ),
     )
-    profile = resolve_execution_profile(profile_name)
+    profile_name = profile["name"]
     workers = _normalize_workers(
         max_threads=(
             MaxThreads
@@ -276,25 +276,10 @@ def run_load_footnotes_allocation_to_output(
                     "spark.sql.shuffle.partitions",
                     str(shuffle_override),
                 )
-            explicit_checkpoint = (
-                CheckpointMode
-                if CheckpointMode is not None
-                else checkpoint_mode
-            )
-            mode = resolve_checkpoint_mode(
-                cfg,
-                checkpoint_mode=(
-                    explicit_checkpoint
-                    if explicit_checkpoint is not None
-                    else profile["checkpoint_mode"]
-                ),
-                CheckpointMode=CheckpointMode,
-            )
+            mode = profile["checkpoint_mode"]
             cfg = {
                 **cfg,
                 "_checkpoint_tables": [],
-                "_checkpoint_paths": [],
-                "_checkpoint_v2_activity": [],
                 "checkpoint_mode": mode,
                 "max_threads": workers,
                 "execution_profile": profile_name,
@@ -304,11 +289,10 @@ def run_load_footnotes_allocation_to_output(
             assert cfg.get("rank_for_rule_pickup") is not None, (
                 "rank_for_rule_pickup must be provided"
             )
-            initialize_checkpoint_V2(cfg, mode)
             cfg["profile_plan"] = bool(profile_plan)
             _plan_tokens = _start_dev_plan_profile(profile_plan)
             print(
-                f"[CHECKPOINT_V2] ExecutionProfile={profile_name} "
+                f"[CHECKPOINT] ExecutionProfile={profile_name} "
                 f"CheckpointMode={mode} shuffle="
                 f"{shuffle_override or profile['shuffle_partitions']} "
                 f"MaxThreads={workers}"
@@ -588,7 +572,7 @@ def run_load_footnotes_allocation_to_output(
         status["elapsed_seconds"] = round(time.time() - started, 1)
         status["timings"] = timings
         if isinstance(cfg, dict) and cfg.get("drop_checkpoints"):
-            drop_checkpoints_V2(spark, cfg)
+            drop_checkpoints(spark, cfg)
 
     logger.info(
         f"[DONE] run_load_footnotes_allocation_to_output | "

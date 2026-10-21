@@ -73,7 +73,7 @@ def compute_effective_percentages(
         )
     )
 
-    # Checkpoint V2 = SQL #TempTable equivalent. Materialize before the 3
+    # Checkpoint = SQL #TempTable equivalent. Materialize before the 3
     # downstream consumers (exclude_from_residual, pe_book_unmapped, write).
     effective_amounts = checkpoint(
         spark, effective_amounts, "effective_amounts", cfg

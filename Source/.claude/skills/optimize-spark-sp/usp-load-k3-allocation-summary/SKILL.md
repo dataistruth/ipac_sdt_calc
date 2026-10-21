@@ -12,7 +12,7 @@ is unchanged in Development. Flat `outputV2/` (no nested `business/` or
 `tests/`). Production mode: inline in `output/`.
 
 The orchestrator resolves `ExecutionProfile` from
-`Common_V2.core.execution_profiles` at start (default **low**). Cap
+`Common_V2.core.execution_profiles` at start (default `DEFAULT_EXECUTION_PROFILE` (**small**)). Cap
 `MaxThreads` 1..4. Do not set AQE from the profile.
 
 ## Allowed outputV2 tree
@@ -24,7 +24,6 @@ Source/AllocationV2/usp_load_k3_allocation_summary/
     ├── __init__.py
     ├── usp_load_k3_allocation_summary.py
     ├── parent.py
-    ├── parallel_helpers.py
     ├── plan_profiler.py
     ├── output_reconcile.py
     ├── OPTIMIZATION_REPORT.md
@@ -33,7 +32,7 @@ Source/AllocationV2/usp_load_k3_allocation_summary/
 
 ## Checkpoints
 
-Checkpoint V2 on `k3_summary`; country-level also `k3_detail`, `k1_amounts`, `rounding_diff`.
+profile checkpoint on `k3_summary`; country-level also `k3_detail`, `k1_amounts`, `rounding_diff`.
 
 ## Notebook widgets (frozen)
 

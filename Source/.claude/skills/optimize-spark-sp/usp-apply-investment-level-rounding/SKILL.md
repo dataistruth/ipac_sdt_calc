@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-apply-investment-level-rounding
-description: Development outputV2 for uspApplyInvestmentLevelRounding. Same production services; Checkpoint V2 on production seams plus multi-consumer frames; parallel lookthrough vs partners and distinct post-summary writes.
+description: Development outputV2 for uspApplyInvestmentLevelRounding. Same production services; profile checkpoint on production seams plus multi-consumer frames; parallel lookthrough vs partners and distinct post-summary writes.
 ---
 
 # Optimize uspApplyInvestmentLevelRounding
@@ -14,7 +14,7 @@ only. No `business/`, `tests/`. Production: inline in `output/`.
 
 Public entry: `apply_investment_level_rounding`. Orchestrator resolves
 `ExecutionProfile` from `Common_V2.core.execution_profiles` (default
-**low**). No AQE. Isolated `cfg = {**cfg}`.
+`DEFAULT_EXECUTION_PROFILE` (**small**)). No AQE. Isolated `cfg = {**cfg}`.
 
 ## Phases
 

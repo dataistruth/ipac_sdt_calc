@@ -30,12 +30,12 @@ K3 / AllocationRun mutations stay sequential and run **before**
 ## PFIC EffPercentage (locked)
 
 Production groups `recalc_grouped` twice and inner-joins totals.
-Development `write_helpers.build_pfic_income_attributes` uses
+Development `lt_finalization_service.build_pfic_income_attributes` uses
 `sum(Amount)` over EntityID/LineID/TrackingKey, then Amount/TotalAmount.
 Null join keys dropped. Do not add a separate
 `pfic_income_attributes.py`.
 
-Locked updated A/B (RunID 18266, profile low, ProfilePlan off): wall
+Locked updated A/B (RunID 18266, profile small, ProfilePlan off): wall
 **18.380s**, `output_writes` **5.995s**, PFIC task **5.991s**,
 fingerprints PASS.
 
@@ -48,7 +48,7 @@ Keep:
 | `alloc_input_post_unions` | ~9 downstream consumers |
 | `alloc_input_post_pfic` | ~7 downstream consumers |
 
-Checkpoint V2 only. Do not drop for time.
+profile checkpoint only. Do not drop for time.
 
 ## Parallel groups
 
@@ -58,7 +58,7 @@ Checkpoint V2 only. Do not drop for time.
 | `independent_input_builders` | K1 input, adjustments, LT flow-up K1 |
 | `output_writes` | three distinct appends |
 
-Orchestrator applies `ExecutionProfile` at start, default `low`.
+Orchestrator applies `ExecutionProfile` at start, default `DEFAULT_EXECUTION_PROFILE` (**small**).
 
 ## Reconciliation
 
@@ -68,8 +68,9 @@ Snapshot and hash all five tables listed in the skill. Restore in
 ## Packaging
 
 Development: `outputV2/` importing `output/` via `parent.py`. Write
-logic for the parallel phase lives in `write_helpers.py`, not in
-production `lt_finalization_service.py`.
+logic for the parallel phase lives in `lt_finalization_service.py`
+(`write_final_output_parallel`, `build_pfic_income_attributes`) on top of
+`Common_V2.core.write_helpers`; no SP-folder `write_helpers.py`.
 
 Production mode: same logic inline in `output/` only when the user
 asks; no profiler.

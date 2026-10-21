@@ -23,8 +23,8 @@ dbutils.widgets.text("CatalogName", "QA7", "6. Catalog")
 dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
-    "low",
-    ["low", "medium", "big"],
+    "default",
+    ["default", "small", "large"],
     "8. Execution profile",
 )
 
@@ -43,7 +43,7 @@ tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
 run_id = int(dbutils.widgets.get("RunID"))
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
-execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "low"
+execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "default"
 volume_path = "/Volumes/qa7/datavolume/databrickdata"
 result_type = "deltalake"
 hardcoded = {
@@ -62,7 +62,7 @@ print(f"[run] Python import root={sys.path[0]}", flush=True)
 
 package = "AllocationV2.usp_load_lookthrough_cost_alloc_to_output"
 
-FLAT_SIBLINGS = ("_data_loading", "_hierarchy", "_allocation", "parallel_helpers")
+FLAT_SIBLINGS = ("_data_loading", "_hierarchy", "_allocation")
 
 
 def fresh_import():
@@ -74,8 +74,8 @@ def fresh_import():
         ) or loaded in globals().get("FLAT_SIBLINGS", ()):
             del sys.modules[loaded]
     importlib.invalidate_caches()
-    checkpoint = importlib.import_module("Common_V2.core.checkpoint_V2")
-    print(f"[import] checkpoint_V2={checkpoint.__file__}")
+    checkpoint = importlib.import_module("Common_V2.core.checkpoint")
+    print(f"[import] checkpoint={checkpoint.__file__}")
 
     for sibling in FLAT_SIBLINGS:
         sys.modules[sibling] = importlib.import_module(

@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-load-lookthrough-allocation-input
-description: Regenerates or extends the locked Development outputV2 for uspLoadLookThroughAllocationInput (Checkpoint V2, three parallel groups, extra plan-break seams, window PFIC EffPercentage in write_helpers). Use when implementing, generating, benchmarking, or diagnosing this SP. Do not add pfic_income_attributes.py or revert PFIC % to a double-group self-join.
+description: Regenerates or extends the locked Development outputV2 for uspLoadLookThroughAllocationInput (profile checkpoint, three parallel groups, extra plan-break seams, window PFIC EffPercentage in write_helpers). Use when implementing, generating, benchmarking, or diagnosing this SP. Do not add pfic_income_attributes.py or revert PFIC % to a double-group self-join.
 ---
 
 # Optimize uspLoadLookThroughAllocationInput
@@ -20,8 +20,8 @@ The **SP orchestrator**
 (`outputV2/load_lookthrough_allocation_input.py`) resolves
 `ExecutionProfile` from `Common_V2.core.execution_profiles` at run
 start. Do not resolve profiles from `Common_V2.core.__init__`. Default
-**low**. Do not set AQE. Locked defaults (`CheckpointMode=4`, shuffle
-`32`, `MaxThreads=4`) match profile `low`.
+`DEFAULT_EXECUTION_PROFILE` (**small**). Do not set AQE. Locked defaults (`CheckpointMode=2`, shuffle
+`32`, `MaxThreads=4`) match profile `small`.
 
 Public entry: `run_load_lookthrough_allocation_input`.
 
@@ -35,7 +35,7 @@ yearly rewrites or footnotes `cost_snapshot` / `entity_levels` /
 
 Exact-parity A/B, 2026-09-29, RunID `18266`, EntityID `4755`,
 ClientID `15348`, TaxPeriodID `1`, catalog `qa7`, schema
-`iPC_2025_QA7_15348`, ProfilePlan **off**, ExecutionProfile **low**,
+`iPC_2025_QA7_15348`, ProfilePlan **off**, ExecutionProfile **small**,
 original then updated:
 
 | Metric | Before window PFIC % | Locked updated |
@@ -67,8 +67,6 @@ Source/AllocationV2/usp_load_lookthrough_allocation_input/
     ├── __init__.py                         # lazy export only
     ├── load_lookthrough_allocation_input.py
     ├── parent.py
-    ├── parallel_helpers.py
-    ├── write_helpers.py                    # output_writes + window PFIC %
     ├── plan_profiler.py
     ├── output_reconcile.py
     ├── OPTIMIZATION_REPORT.md
@@ -79,8 +77,10 @@ Source/AllocationV2/usp_load_lookthrough_allocation_input/
 **Do not create:** `pfic_income_attributes.py`, nested `business/`,
 `tests/`, `updated/`, `output/*_updated.py`. Copy `lt_*.py` into
 `outputV2/` so the package does not import `...output.*`.
-Window `EffPercentage` lives in `write_helpers.py` so Databricks Source
-trees that already have that file pick it up. `__init__.py` must **not**
+Window `EffPercentage` (`build_pfic_income_attributes`) and
+`write_final_output_parallel` live in `lt_finalization_service.py`; the
+parallel write fan-out uses `Common_V2.core.write_helpers.write_tables_parallel`.
+No SP-folder `write_helpers.py` / `parallel_helpers.py`. `__init__.py` must **not**
 eager-import the orchestrator (that pulled a missing submodule and
 broke `output_reconcile` import). Lazy exports only. No `_OutputV2Finder`.
 
@@ -125,8 +125,8 @@ def output_module(name: str):
 
 ## Target configuration (locked)
 
-- `ExecutionProfile=low` (orchestrator-resolved at run start)
-- `CheckpointMode=4`
+- `ExecutionProfile=small` (orchestrator-resolved at run start)
+- `CheckpointMode=2`
 - `SqlShufflePartitions=32`
 - `MaxThreads=4`
 - ParallelGroups `all`:
@@ -135,11 +135,11 @@ def output_module(name: str):
   - `output_writes`
 - production checkpoints: **keep** (`alloc_input_post_unions`,
   `alloc_input_post_pfic`)
-- extra Checkpoint V2 seams (reused frames; after local backend
+- extra profile checkpoint seams (reused frames; after local mode
   `toDF(*columns)`): `lower_tier_funds`, `reclass_k1`, `fx_rates`,
   `lower_tier_amount`, `pfic_mapped`, `alloc_input_box_jkl`,
   `alloc_input_pre_write`
-- PFIC `%` in `write_helpers.build_pfic_income_attributes`: window
+- PFIC `%` in `lt_finalization_service.build_pfic_income_attributes`: window
   `sum(Amount)` over EntityID/LineID/TrackingKey; drop null join keys
   to match production inner join. Do **not** group `recalc_grouped`
   twice and join.
@@ -159,7 +159,7 @@ Exactly the parent-skill 10 widgets. Identity override from the QA job:
 | 5 | `RunID` | `18266` |
 | 6 | `CatalogName` | `qa7` |
 | 7 | `SchemaName` | `iPC_2025_QA7_15348` |
-| 8 | `ExecutionProfile` | `low` |
+| 8 | `ExecutionProfile` | `default` |
 | 9 | `number_of_runs` | `1` |
 | 10 | `ProfilePlan` | `off` |
 
@@ -195,9 +195,9 @@ Production mode. Required modules are the allowed tree above.
   distinct tables. Writer constructed in-task. LookThrough `.count()`
   log stays **inside** that task. Wave time is `max(task)`.
 
-### 4. Apply Checkpoint V2
+### 4. Apply profile checkpoint
 
-Use only `Common_V2.core.checkpoint_V2`. Initialize once before pools.
+Use only `Common_V2.core.checkpoint`. Initialize once before pools.
 Keep production seams plus extra reused-frame seams listed above.
 
 ### 5. Validate

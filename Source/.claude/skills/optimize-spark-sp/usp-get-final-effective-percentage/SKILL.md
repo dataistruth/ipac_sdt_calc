@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-final-effective-percentage
-description: Optimizes uspGetFinalEffectivePercentage in two packagings — Development flat outputV2 A/B, Production inline in output/ — keeping concurrency, Checkpoint V2, CPBT, mode-preparation, effective-calculation, and three-table write optimizations with exact parity. Use when implementing, benchmarking, or diagnosing this SP.
+description: Optimizes uspGetFinalEffectivePercentage in two packagings — Development flat outputV2 A/B, Production inline in output/ — keeping concurrency, profile checkpoint, CPBT, mode-preparation, effective-calculation, and three-table write optimizations with exact parity. Use when implementing, benchmarking, or diagnosing this SP.
 ---
 
 # Optimize uspGetFinalEffectivePercentage
@@ -14,7 +14,7 @@ Portable two-mode rules live in the parent
 [optimize-spark-sp](../SKILL.md) skill. The **SP orchestrator** resolves
 `ExecutionProfile` from `Common_V2.core.execution_profiles`;
 `Common_V2.core.__init__` does not. Promoted defaults
-(`CheckpointMode=4`, shuffle 32, `MaxThreads=4`) match profile `low`.
+(`CheckpointMode=2`, shuffle 32, `MaxThreads=4`) match profile `small`.
 
 **Packaging (keep every optimization in this skill):**
 
@@ -45,7 +45,7 @@ Presentation:
 - Development candidate (flat):
   `Source/AllocationV2/usp_get_final_effective_percentage/outputV2/`
 - Shared checkpoint implementation:
-  `Source/Common_V2/core/checkpoint_V2.py`
+  `Source/Common_V2/core/checkpoint.py`
 - Benchmark:
   `Source/AllocationV2/usp_get_final_effective_percentage/outputV2/notebook/benchmark_final_effective_percentage.py`
 
@@ -73,7 +73,7 @@ Use these promoted defaults unless a new exact-parity benchmark disproves
 them. Keep them in `_PROMOTED_EXPERIMENT_DEFAULTS` and the benchmark
 `PROMOTED_OUTPUT_V3_KWARGS` block.
 
-- `CheckpointMode=4`
+- `CheckpointMode=2`
 - `SqlShufflePartitions=32`
 - `MaxThreads=4`
 - `ParallelGroups=all`
@@ -98,7 +98,7 @@ them. Keep them in `_PROMOTED_EXPERIMENT_DEFAULTS` and the benchmark
 ## Production concurrency must-haves (do not regress)
 
 Production `output/orchestrator.py` must keep the locked ~54s parallel
-waves. A 71s run with CheckpointMode 4 but **serialized** Pass A / pre-CPBT
+waves. A 71s run with CheckpointMode 2 (local) but **serialized** Pass A / pre-CPBT
 / post-miss / min-quarter / Pass C means these were lost during inline
 porting. Next generate must preserve every wave below.
 
@@ -115,7 +115,7 @@ porting. Next generate must preserve every wave below.
 | `output_build` | `mode_1`, `mode_2`, `mode_3` | concurrent `build_final_output` |
 | `output_writes` | three result tables | concurrent Delta writes |
 
-`parallel_helpers.KNOWN_GROUPS` must include:
+orchestrator `KNOWN_GROUPS` must include:
 `common_dimensions`, `independent_builders`, `mode_prep`,
 `mode_prep_boundaries`, `independent_effective`, `effective_inputs`,
 `effective_boundaries`, `output_build`, `output_writes`.
@@ -129,8 +129,8 @@ Mode 2 `track_plan` must **not** wrap
 `compute_effective_percentage_dated`, `compute_effective_percentage_non_dated`,
 `apply_plugging`, `apply_type_id_update`,
 `compute_form199a_effective_percentage`, or `compute_missing_entities`.
-Those use alias-qualified columns (`D.UnderlyingEntityID`). Mode 4
-`localCheckpoint` strips alias context; explaining those frames fails
+Those use alias-qualified columns (`D.UnderlyingEntityID`). Local checkpoint
+mode (2) `localCheckpoint` strips alias context; explaining those frames fails
 the A/B cell with `UNRESOLVED_COLUMN`. Measure builder **outputs**
 only. CHECKPOINT seams remain the keep/remove source of truth.
 
@@ -282,7 +282,7 @@ self-contained `outputV2`, ProfilePlan **on**):
 
 - original wall `127.355s` (unoptimized `output/`)
 - updated wall `62.898s` (`outputV2`, profiler overhead included)
-- `run_modes([1,2,3])` reported `62.4s`; ExecutionProfile `low`
+- `run_modes([1,2,3])` reported `62.4s`; ExecutionProfile `low` (= today's `small`)
 - fingerprints PASS: Final `1` / FN `17` / SM `21` rows
 - locked phases present: `independent_builders`, `mode_prep`,
   `mode_prep_boundaries`, fused CPBT, `effective_inputs`,
@@ -291,7 +291,7 @@ self-contained `outputV2`, ProfilePlan **on**):
 - ProfilePlan-off is the ~54s timing; do not treat 63s as the
   locked production number
 
-A Production-inline run that only ports CheckpointMode 4 / fusion but
+A Production-inline run that only ports CheckpointMode 2 / fusion but
 keeps sequential mode prep lands near **71s**. That is a concurrency
 regression against the locked ~54s path, not a new baseline.
 

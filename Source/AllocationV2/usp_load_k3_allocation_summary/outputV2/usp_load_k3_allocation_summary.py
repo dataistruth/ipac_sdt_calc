@@ -40,22 +40,20 @@ from pyspark.sql import SparkSession
 
 from Common_V2.core.helpers import read_table, get_logger, log_timing
 from Common_V2.core.config import load_common_config
-from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2,
-    drop_checkpoints_V2,
-    initialize_checkpoint_V2,
-    resolve_checkpoint_mode,
+from Common_V2.core.checkpoint import (
+    checkpoint as common_checkpoint,
+    drop_checkpoints,
 )
 from Common_V2.core.execution_profiles import resolve_execution_profile
-
-checkpoint = checkpoint_V2
-from Common_V2.core.generic_result_storer import GenericResultStorer
-
-from AllocationV2.usp_load_k3_allocation_summary.outputV2.parallel_helpers import (
+from Common_V2.core.parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
     run_parallel,
 )
+
+checkpoint = common_checkpoint
+from Common_V2.core.generic_result_storer import GenericResultStorer
+
 from AllocationV2.usp_load_k3_allocation_summary.outputV2._prep import (
     build_country_sic_lines,
     build_income_attr_rounding_import,
@@ -70,10 +68,11 @@ from AllocationV2.usp_load_k3_allocation_summary.outputV2._country_rounding impo
 from AllocationV2.usp_load_k3_allocation_summary.outputV2._rounding import apply_standard_rounding
 from AllocationV2.usp_load_k3_allocation_summary.outputV2._finalize import finalize_summary
 
+KNOWN_GROUPS = frozenset({"independent_early_loads", "independent_inputs"})
+
 logger = get_logger(__name__)
 
 _OUTPUT_TABLE = "K3AllocationSummary"
-
 
 
 def _start_dev_plan_profile(enabled):
@@ -169,15 +168,10 @@ def _checkpoint_frame(spark, df, name, cfg):
         return None
     if not hasattr(df, "columns"):
         return df
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    from .plan_profiler import track_checkpoint_plan
+
+    track_checkpoint_plan(name, df, cfg)
+    return common_checkpoint(spark, df, name, cfg)
 
 
 def _apply_execution_profile(
@@ -202,18 +196,7 @@ def _apply_execution_profile(
             "spark.sql.shuffle.partitions",
             str(shuffle_override),
         )
-    explicit_checkpoint = (
-        CheckpointMode if CheckpointMode is not None else checkpoint_mode
-    )
-    mode = resolve_checkpoint_mode(
-        cfg,
-        checkpoint_mode=(
-            explicit_checkpoint
-            if _blank(explicit_checkpoint) is not None
-            else profile["checkpoint_mode"]
-        ),
-        CheckpointMode=CheckpointMode,
-    )
+    mode = profile["checkpoint_mode"]
     cfg.update(
         {
             "checkpoint_mode": mode,
@@ -221,7 +204,7 @@ def _apply_execution_profile(
             "execution_profile": profile_name,
         }
     )
-    initialize_checkpoint_V2(cfg, mode)
+    cfg.setdefault("_checkpoint_tables", [])
     cfg["profile_plan"] = bool(profile_plan)
     _plan_tokens = _start_dev_plan_profile(profile_plan)
     print(
@@ -363,7 +346,7 @@ def run_usp_load_k3_allocation_summary(
     MaxThreads: int = None,
     parallel_groups: str = "all",
     ParallelGroups: str = None,
-    execution_profile: str = "low",
+    execution_profile: str = None,
     ExecutionProfile: str = None,
     checkpoint_mode: int = None,
     CheckpointMode: int = None,
@@ -389,11 +372,14 @@ def run_usp_load_k3_allocation_summary(
     execution_id = ExecutionID
     t0 = time.time()
     parallel_activity = []
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
-    profile_name = (
-        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    profile = resolve_execution_profile(
+        _blank(ExecutionProfile) or _blank(execution_profile),
+        checkpoint_mode=(
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        ),
     )
-    profile = resolve_execution_profile(profile_name)
+    profile_name = profile["name"]
     workers = normalize_workers(
         max_threads=(
             MaxThreads
@@ -444,8 +430,6 @@ def run_usp_load_k3_allocation_summary(
             cfg["volume_path"] = volume_path
         if execution_id is not None:
             cfg["execution_id"] = execution_id
-        cfg.setdefault("_checkpoint_paths", [])
-        cfg.setdefault("_checkpoint_v2_activity", [])
         mode = _apply_execution_profile(
             spark,
             cfg,
@@ -590,7 +574,7 @@ def run_usp_load_k3_allocation_summary(
         spark.conf.set("spark.sql.shuffle.partitions", original_shuffle)
         status["elapsed_seconds"] = round(time.time() - t0, 1)
         if isinstance(cfg, dict):
-            drop_checkpoints_V2(spark, cfg)
+            drop_checkpoints(spark, cfg)
 
     logger.info(
         "[DONE] uspLoadK3AllocationSummary | %ss | RunID=%s EntityID=%s",

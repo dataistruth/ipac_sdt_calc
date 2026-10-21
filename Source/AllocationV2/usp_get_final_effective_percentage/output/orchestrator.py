@@ -70,14 +70,12 @@ import time
 
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import read_table, ns, ns0
-from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2,
-    drop_checkpoints_V2,
-    initialize_checkpoint_V2,
-    resolve_checkpoint_mode,
+from Common_V2.core.checkpoint import (
+    checkpoint as common_checkpoint,
+    drop_checkpoints,
 )
 from Common_V2.core.execution_profiles import resolve_execution_profile
-from AllocationV2.usp_get_final_effective_percentage.output.parallel_helpers import (
+from Common_V2.core.parallel_helpers import (
     isolated_cfg,
     normalize_workers,
     parse_enabled_groups,
@@ -163,6 +161,20 @@ from AllocationV2.usp_get_final_effective_percentage.output.result_saver import 
     build_all_results,
 )
 from Common_V2.core.generic_result_storer import GenericResultStorer
+
+KNOWN_GROUPS = frozenset(
+    {
+        "common_dimensions",
+        "effective_boundaries",
+        "effective_inputs",
+        "independent_builders",
+        "independent_effective",
+        "mode_prep",
+        "mode_prep_boundaries",
+        "output_build",
+        "output_writes",
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -254,20 +266,12 @@ def _apply_promoted_flags(cfg):
 
 
 def _checkpoint(spark, df, name, cfg):
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    return common_checkpoint(spark, df, name, cfg)
 
 
 def _drop_checkpoints(spark, cfg):
     if cfg.get("drop_checkpoints"):
-        drop_checkpoints_V2(spark, cfg)
+        drop_checkpoints(spark, cfg)
 
 
 def _save_results(spark, cfg, statuses):
@@ -305,10 +309,10 @@ def _save_results(spark, cfg, statuses):
 
     result_type = cfg.get("result_type", "deltalake")
     workers = int(cfg.get("max_threads") or 4)
-    enabled_groups = cfg.get("_enabled_groups") or parse_enabled_groups("all")
+    enabled_groups = cfg.get("_enabled_groups") or parse_enabled_groups("all", known_groups=KNOWN_GROUPS)
 
     def _write_one(tbl_name, tbl_df):
-        local = isolated_cfg(cfg)
+        local = isolated_cfg(cfg, fresh_results=False)
         storer = GenericResultStorer(spark)
         return storer.save_results(
             result={tbl_name: tbl_df},
@@ -364,7 +368,7 @@ def run_modes(
     MaxThreads: int = None,
     parallel_groups: str = "all",
     ParallelGroups: str = None,
-    execution_profile: str = "low",
+    execution_profile: str = None,
     ExecutionProfile: str = None,
     checkpoint_mode: int = None,
     CheckpointMode: int = None,
@@ -417,14 +421,15 @@ def run_modes(
             schema=schema,
         )
     cfg.setdefault("_checkpoint_tables", [])
-    cfg.setdefault("_checkpoint_paths", [])
-    cfg.setdefault("_checkpoint_v2_activity", [])
 
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
-    profile_name = (
-        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    profile = resolve_execution_profile(
+        _blank(ExecutionProfile) or _blank(execution_profile),
+        checkpoint_mode=(
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        ),
     )
-    profile = resolve_execution_profile(profile_name)
+    profile_name = profile["name"]
     workers = normalize_workers(
         max_threads=(
             MaxThreads
@@ -444,26 +449,14 @@ def run_modes(
         )
     else:
         spark.conf.set("spark.sql.shuffle.partitions", str(shuffle_override))
-    explicit_checkpoint = (
-        CheckpointMode if CheckpointMode is not None else checkpoint_mode
-    )
-    mode_v2 = resolve_checkpoint_mode(
-        cfg,
-        checkpoint_mode=(
-            explicit_checkpoint
-            if explicit_checkpoint is not None
-            else profile["checkpoint_mode"]
-        ),
-        CheckpointMode=CheckpointMode,
-    )
+    mode_v2 = profile["checkpoint_mode"]
     cfg["checkpoint_mode"] = mode_v2
     cfg["max_threads"] = workers
     cfg["execution_profile"] = profile_name
     cfg["_enabled_groups"] = enabled_groups
-    initialize_checkpoint_V2(cfg, mode_v2)
     _apply_promoted_flags(cfg)
     print(
-        f"[CHECKPOINT_V2] ExecutionProfile={profile_name} "
+        f"[CHECKPOINT] ExecutionProfile={profile_name} "
         f"CheckpointMode={mode_v2} shuffle="
         f"{shuffle_override or profile['shuffle_partitions']} "
         f"MaxThreads={workers}"
@@ -973,7 +966,7 @@ def run_modes(
                 """Build mode-specific prep frames; leave pre-CPBT barriers for
                 the next parallel wave so nde/de/txfr can overlap."""
                 mt0 = time.time()
-                local_cfg = isolated_cfg(cfg)
+                local_cfg = isolated_cfg(cfg, fresh_results=False)
                 local_cfg["mode"] = mode
                 local_cfg["_current_mode"] = mode
 
@@ -1657,7 +1650,7 @@ def run_modes(
 
             # Pass C: build per-mode outputs concurrently.
             def _build_one_mode_output(mode):
-                local_cfg = isolated_cfg(cfg)
+                local_cfg = isolated_cfg(cfg, fresh_results=False)
                 local_cfg["mode"] = mode
                 local_cfg["_current_mode"] = mode
                 mt0 = mode_t0[mode]
@@ -1864,7 +1857,7 @@ def run_final_effective_percentages(
         MaxThreads=kwargs.get("MaxThreads"),
         parallel_groups=kwargs.get("parallel_groups", "all"),
         ParallelGroups=kwargs.get("ParallelGroups"),
-        execution_profile=kwargs.get("execution_profile", "low"),
+        execution_profile=kwargs.get("execution_profile"),
         ExecutionProfile=kwargs.get("ExecutionProfile"),
         checkpoint_mode=kwargs.get("checkpoint_mode"),
         CheckpointMode=kwargs.get("CheckpointMode"),

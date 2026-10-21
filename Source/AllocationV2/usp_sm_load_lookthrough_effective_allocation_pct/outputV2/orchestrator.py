@@ -31,20 +31,18 @@ import pyspark.sql.functions as F
 
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import read_table
-from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2,
-    drop_checkpoints_V2 as drop_checkpoints,
-    initialize_checkpoint_V2,
-    resolve_checkpoint_mode,
+from Common_V2.core.checkpoint import (
+    checkpoint as common_checkpoint,
+    drop_checkpoints,
 )
 from Common_V2.core.execution_profiles import resolve_execution_profile
-from Common_V2.core.observability import get_logger
-
-from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.parallel_helpers import (
+from Common_V2.core.parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
     run_parallel,
 )
+from Common_V2.core.observability import get_logger
+
 from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.services import (
     amount_service,
     effective_pct_service,
@@ -80,8 +78,9 @@ from AllocationV2.usp_sm_load_lookthrough_effective_allocation_pct.outputV2.serv
     update_allocation_input,
 )
 
-logger = get_logger(__name__)
+KNOWN_GROUPS = frozenset({"amount_builders", "independent_loads"})
 
+logger = get_logger(__name__)
 
 
 def _start_dev_plan_profile(enabled):
@@ -175,15 +174,10 @@ def _as_int(value):
 def _checkpoint(spark, df, name, cfg):
     if df is None:
         return None
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    from .plan_profiler import track_checkpoint_plan
+
+    track_checkpoint_plan(name, df, cfg)
+    return common_checkpoint(spark, df, name, cfg)
 
 
 # Builders call module-level checkpoint(). Point it at the wrapper after
@@ -196,8 +190,8 @@ flowup_service.checkpoint = _checkpoint
 
 
 @contextmanager
-def use_v2_production_checkpoint():
-    """No-op: checkpoint already routes to _checkpoint → checkpoint_V2."""
+def use_profile_checkpoint():
+    """No-op: checkpoint already routes to _checkpoint → common_checkpoint."""
     yield
 
 
@@ -252,9 +246,14 @@ def run_sm_load_lt_effective_alloc_pct(
     except Exception:
         orig_shuffle = None
     parallel_activity = []
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
-    profile_name = _blank(ExecutionProfile) or _blank(execution_profile) or "low"
-    profile = resolve_execution_profile(profile_name)
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    profile = resolve_execution_profile(
+        _blank(ExecutionProfile) or _blank(execution_profile),
+        checkpoint_mode=(
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        ),
+    )
+    profile_name = profile["name"]
     workers = normalize_workers(
         max_threads=(
             MaxThreads
@@ -302,8 +301,6 @@ def run_sm_load_lt_effective_alloc_pct(
         if execution_id is not None:
             cfg["execution_id"] = execution_id
         cfg.setdefault("_parquet_results", {})
-        cfg.setdefault("_checkpoint_paths", [])
-        cfg.setdefault("_checkpoint_v2_activity", [])
 
         shuffle_override = _as_int(SqlShufflePartitions)
         if shuffle_override is None:
@@ -316,18 +313,7 @@ def run_sm_load_lt_effective_alloc_pct(
                 "spark.sql.shuffle.partitions",
                 str(shuffle_override),
             )
-        explicit_checkpoint = (
-            CheckpointMode if CheckpointMode is not None else checkpoint_mode
-        )
-        mode = resolve_checkpoint_mode(
-            cfg,
-            checkpoint_mode=(
-                explicit_checkpoint
-                if _blank(explicit_checkpoint) is not None
-                else profile["checkpoint_mode"]
-            ),
-            CheckpointMode=CheckpointMode,
-        )
+        mode = profile["checkpoint_mode"]
         cfg.update(
             {
                 "checkpoint_mode": mode,
@@ -335,7 +321,7 @@ def run_sm_load_lt_effective_alloc_pct(
                 "execution_profile": profile_name,
             }
         )
-        initialize_checkpoint_V2(cfg, mode)
+        cfg.setdefault("_checkpoint_tables", [])
         cfg["profile_plan"] = bool(profile_plan)
         _plan_tokens = _start_dev_plan_profile(profile_plan)
         logger.info(
@@ -352,7 +338,7 @@ def run_sm_load_lt_effective_alloc_pct(
             status["error"] = "Allocation logic not selected for the entity."
             return status
 
-        with use_v2_production_checkpoint():
+        with use_profile_checkpoint():
             mappings, fp_data = run_parallel(
                 [
                     ("mappings", lambda: build_mapping_data(spark, cfg)),

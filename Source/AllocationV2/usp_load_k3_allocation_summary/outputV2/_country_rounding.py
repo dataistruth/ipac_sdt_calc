@@ -21,22 +21,17 @@ import pyspark.sql.functions as F
 from pyspark.sql import DataFrame, SparkSession, Window
 
 from Common_V2.core.helpers import get_logger, log_timing, sql_round as _sql_round
-from Common_V2.core.checkpoint_V2 import checkpoint_V2
+from Common_V2.core.checkpoint import checkpoint as common_checkpoint
 
 from AllocationV2.usp_load_k3_allocation_summary.outputV2._prep import _apply_6a6b
 
 def _checkpoint_frame(spark, df, name, cfg):
     if df is None:
         return None
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    from .plan_profiler import track_checkpoint_plan
+
+    track_checkpoint_plan(name, df, cfg)
+    return common_checkpoint(spark, df, name, cfg)
 
 
 logger = get_logger(__name__)

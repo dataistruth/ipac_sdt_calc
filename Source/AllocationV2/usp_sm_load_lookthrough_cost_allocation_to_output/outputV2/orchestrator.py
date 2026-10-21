@@ -28,14 +28,12 @@ import logging
 import time
 
 from Common_V2.core.helpers import read_table, table_prefix, ns, ns0, sql_round, safe_divide
-from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2,
-    drop_checkpoints_V2 as drop_checkpoints,
-    initialize_checkpoint_V2,
-    resolve_checkpoint_mode,
+from Common_V2.core.checkpoint import (
+    checkpoint as common_checkpoint,
+    drop_checkpoints,
 )
 from Common_V2.core.execution_profiles import resolve_execution_profile
-from AllocationV2.usp_sm_load_lookthrough_cost_allocation_to_output.outputV2.parallel_helpers import (
+from Common_V2.core.parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
     run_parallel,
@@ -46,8 +44,9 @@ from Common_V2.core.generic_result_storer import GenericResultStorer
 from Common_V2.domain.udf_cost_percentage_details import get_cost_percentage_details
 from Common_V2.domain.udf_partners_list_for_allocations import get_partners_list_for_allocations
 
-logger = get_logger(__name__)
+KNOWN_GROUPS = frozenset({"independent_loads"})
 
+logger = get_logger(__name__)
 
 
 def _start_dev_plan_profile(enabled):
@@ -141,15 +140,10 @@ def _as_int(value):
 def _checkpoint(spark, df, name, cfg):
     if df is None:
         return None
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    from .plan_profiler import track_checkpoint_plan
+
+    track_checkpoint_plan(name, df, cfg)
+    return common_checkpoint(spark, df, name, cfg)
 
 
 # Builders call module-level checkpoint(). Point it at the wrapper after
@@ -158,8 +152,8 @@ checkpoint = _checkpoint
 
 
 @contextmanager
-def use_v2_production_checkpoint():
-    """No-op: checkpoint already routes to _checkpoint → checkpoint_V2."""
+def use_profile_checkpoint():
+    """No-op: checkpoint already routes to _checkpoint → common_checkpoint."""
     yield
 
 
@@ -2121,7 +2115,7 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
     MaxThreads: int = None,
     parallel_groups: str = "all",
     ParallelGroups: str = None,
-    execution_profile: str = "low",
+    execution_profile: str = None,
     ExecutionProfile: str = None,
     checkpoint_mode: int = None,
     CheckpointMode: int = None,
@@ -2130,7 +2124,7 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
     plan_checkpoint_threshold: int = 30,
     **kwargs,
 ):
-    """Main entry point — Checkpoint V2 seams, sequential SM Output then Input."""
+    """Main entry point — profile checkpoint seams, sequential SM Output then Input."""
     del kwargs
     entity_id = EntityID
     client_id = ClientID
@@ -2151,9 +2145,14 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
     except Exception:
         orig_shuffle = None
     parallel_activity = []
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
-    profile_name = _blank(ExecutionProfile) or _blank(execution_profile) or "low"
-    profile = resolve_execution_profile(profile_name)
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    profile = resolve_execution_profile(
+        _blank(ExecutionProfile) or _blank(execution_profile),
+        checkpoint_mode=(
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        ),
+    )
+    profile_name = profile["name"]
     workers = normalize_workers(
         max_threads=(
             MaxThreads
@@ -2201,8 +2200,6 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
         if execution_id is not None:
             cfg["execution_id"] = execution_id
         cfg.setdefault("_parquet_results", {})
-        cfg.setdefault("_checkpoint_paths", [])
-        cfg.setdefault("_checkpoint_v2_activity", [])
 
         shuffle_override = _as_int(SqlShufflePartitions)
         if shuffle_override is None:
@@ -2215,18 +2212,7 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
                 "spark.sql.shuffle.partitions",
                 str(shuffle_override),
             )
-        explicit_checkpoint = (
-            CheckpointMode if CheckpointMode is not None else checkpoint_mode
-        )
-        mode = resolve_checkpoint_mode(
-            cfg,
-            checkpoint_mode=(
-                explicit_checkpoint
-                if _blank(explicit_checkpoint) is not None
-                else profile["checkpoint_mode"]
-            ),
-            CheckpointMode=CheckpointMode,
-        )
+        mode = profile["checkpoint_mode"]
         cfg.update(
             {
                 "checkpoint_mode": mode,
@@ -2234,7 +2220,7 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
                 "execution_profile": profile_name,
             }
         )
-        initialize_checkpoint_V2(cfg, mode)
+        cfg.setdefault("_checkpoint_tables", [])
         cfg["profile_plan"] = bool(profile_plan)
         _plan_tokens = _start_dev_plan_profile(profile_plan)
         logger.info(
@@ -2281,7 +2267,7 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
             status["skip_reason"] = "run_status_or_entity_mismatch"
             return status
 
-        with use_v2_production_checkpoint():
+        with use_profile_checkpoint():
             book_effective, input_data_load, cost_pct_snapshot, entity_ac_rel = (
                 run_parallel(
                     [
@@ -2432,7 +2418,6 @@ def run_sm_load_lookthrough_cost_allocation_to_output(
         logger.info(f"[PARQUET] Return JSON: {return_value}")
         status["parquet_path"] = return_value
     return status
-
 
 
 # ════════════════════════════════════════════════════════════════

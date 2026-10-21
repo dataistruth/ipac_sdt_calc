@@ -23,8 +23,8 @@ dbutils.widgets.text("CatalogName", "qa7", "6. Catalog")
 dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
-    "low",
-    ["low", "medium", "big"],
+    "default",
+    ["default", "small", "large"],
     "8. Execution profile",
 )
 
@@ -43,7 +43,7 @@ tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
 run_id = int(dbutils.widgets.get("RunID"))
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
-execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "low"
+execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "default"
 volume_path = "/Volumes/qa7/datavolume/databrickdata"
 result_type = "deltalake"
 rank_for_rule_pickup = 0
@@ -65,8 +65,8 @@ def fresh_import():
         ):
             del sys.modules[loaded]
     importlib.invalidate_caches()
-    checkpoint = importlib.import_module("Common_V2.core.checkpoint_V2")
-    print(f"[import] checkpoint_V2={checkpoint.__file__}")
+    checkpoint = importlib.import_module("Common_V2.core.checkpoint")
+    print(f"[import] checkpoint={checkpoint.__file__}")
     module = importlib.import_module(f"{package}.output.orchestrator")
     print(f"[import] runner={module.__file__}")
     return module

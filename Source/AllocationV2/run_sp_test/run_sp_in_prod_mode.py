@@ -42,8 +42,8 @@ dbutils.widgets.text(
 )
 dbutils.widgets.dropdown(
     "ExecutionProfile",
-    "low",
-    ["low", "medium", "big"],
+    "default",
+    ["default", "small", "large"],
     "2. Execution profile",
 )
 dbutils.widgets.text("run_in_parallel", "1", "3. SPs at a time")
@@ -56,7 +56,7 @@ import time
 import traceback
 
 source_path = dbutils.widgets.get("source_path").strip()
-execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "low"
+execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "default"
 run_in_parallel = max(1, int(dbutils.widgets.get("run_in_parallel") or 1))
 
 sys.path[:] = [entry for entry in sys.path if entry != source_path]

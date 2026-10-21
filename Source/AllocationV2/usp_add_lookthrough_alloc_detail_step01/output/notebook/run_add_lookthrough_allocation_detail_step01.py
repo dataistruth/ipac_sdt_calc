@@ -23,8 +23,8 @@ dbutils.widgets.text("CatalogName", "qa7", "6. Catalog")
 dbutils.widgets.text("SchemaName", "iPC_2025_QA7_15348", "7. Schema")
 dbutils.widgets.dropdown(
     "ExecutionProfile",
-    "low",
-    ["low", "medium", "big"],
+    "default",
+    ["default", "small", "large"],
     "8. Execution profile",
 )
 
@@ -42,7 +42,7 @@ tax_period_id = int(dbutils.widgets.get("TaxPeriodID"))
 run_id = int(dbutils.widgets.get("RunID"))
 catalog = dbutils.widgets.get("CatalogName").strip()
 schema = dbutils.widgets.get("SchemaName").strip()
-execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "low"
+execution_profile = dbutils.widgets.get("ExecutionProfile").strip() or "default"
 RESULT_TYPE = "deltalake"
 VOLUME_PATH = "/Volumes/qa7/datavolume/databrickdata"
 PACKAGE = "AllocationV2.usp_add_lookthrough_alloc_detail_step01"
@@ -64,7 +64,7 @@ def _evict():
 
 
 _evict()
-importlib.import_module("Common_V2.core.checkpoint_V2")
+importlib.import_module("Common_V2.core.checkpoint")
 runner = importlib.import_module(MODULE)
 print(f"[run] module={runner.__file__}", flush=True)
 

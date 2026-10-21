@@ -6,14 +6,17 @@ import logging
 import time
 from contextlib import contextmanager
 
-from Common_V2.core.checkpoint_V2 import (
-    checkpoint_V2,
-    drop_checkpoints_V2,
-    initialize_checkpoint_V2,
-    resolve_checkpoint_mode,
+from Common_V2.core.checkpoint import (
+    checkpoint as common_checkpoint,
+    drop_checkpoints,
 )
 from Common_V2.core.config import load_common_config
 from Common_V2.core.execution_profiles import resolve_execution_profile
+from Common_V2.core.parallel_helpers import (
+    normalize_workers,
+    parse_enabled_groups,
+    run_parallel,
+)
 from Common_V2.core.helpers import log_section, log_timing
 
 from AllocationV2.usp_load_allocation_input.outputV2.ai_config_service import load_config
@@ -23,6 +26,8 @@ from AllocationV2.usp_load_allocation_input.outputV2.ai_finalization_service imp
     apply_master_feed_override,
     apply_tag_percentages,
     purge_output_tables,
+    collect_output_frames_parallel,
+    flush_collected_results,
 )
 from AllocationV2.usp_load_allocation_input.outputV2.ai_form_service import build_all_form_inputs
 from AllocationV2.usp_load_allocation_input.outputV2.ai_hierarchy_service import (
@@ -44,20 +49,18 @@ from AllocationV2.usp_load_allocation_input.outputV2.ai_pfic_service import (
 )
 from AllocationV2.usp_load_allocation_input.outputV2.ai_shared_views import register_shared_views
 from AllocationV2.usp_load_allocation_input.outputV2.ai_validation_service import run_validations
-from AllocationV2.usp_load_allocation_input.outputV2.parallel_helpers import (
-    normalize_workers,
-    parse_enabled_groups,
-    run_parallel,
-)
-from AllocationV2.usp_load_allocation_input.outputV2.write_helpers import (
-    collect_output_frames_parallel,
-    flush_collected_results,
+
+KNOWN_GROUPS = frozenset(
+    {
+        "independent_input_builders",
+        "output_collect",
+        "output_writes",
+    }
 )
 
 logger = logging.getLogger(__name__)
 
 _LAST_RUN_PROFILE = {}
-
 
 
 def _start_dev_plan_profile(enabled):
@@ -163,15 +166,10 @@ def _timed(timings, step):
 
 
 def _checkpoint(spark, df, name, cfg):
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    from .plan_profiler import track_checkpoint_plan
+
+    track_checkpoint_plan(name, df, cfg)
+    return common_checkpoint(spark, df, name, cfg)
 
 
 def get_last_run_profile():
@@ -205,7 +203,7 @@ def run_load_allocation_input(
     MaxThreads: int = None,
     parallel_groups: str = "all",
     ParallelGroups: str = None,
-    execution_profile: str = "low",
+    execution_profile: str = None,
     ExecutionProfile: str = None,
     checkpoint_mode: int = None,
     CheckpointMode: int = None,
@@ -230,11 +228,14 @@ def run_load_allocation_input(
     t0 = time.time()
     timings = []
     parallel_activity = []
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups)
-    profile_name = (
-        _blank(ExecutionProfile) or _blank(execution_profile) or "low"
+    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    profile = resolve_execution_profile(
+        _blank(ExecutionProfile) or _blank(execution_profile),
+        checkpoint_mode=(
+            CheckpointMode if CheckpointMode is not None else checkpoint_mode
+        ),
     )
-    profile = resolve_execution_profile(profile_name)
+    profile_name = profile["name"]
     workers = normalize_workers(
         max_threads=(
             MaxThreads
@@ -284,34 +285,18 @@ def run_load_allocation_input(
                     "spark.sql.shuffle.partitions",
                     str(shuffle_override),
                 )
-            explicit_checkpoint = (
-                CheckpointMode
-                if CheckpointMode is not None
-                else checkpoint_mode
-            )
-            mode = resolve_checkpoint_mode(
-                cfg,
-                checkpoint_mode=(
-                    explicit_checkpoint
-                    if _blank(explicit_checkpoint) is not None
-                    else profile["checkpoint_mode"]
-                ),
-                CheckpointMode=CheckpointMode,
-            )
+            mode = profile["checkpoint_mode"]
             cfg.update(
                 {
-                    "_checkpoint_paths": [],
-                    "_checkpoint_v2_activity": [],
                     "checkpoint_mode": mode,
                     "max_threads": workers,
                     "execution_profile": profile_name,
                 }
             )
-            initialize_checkpoint_V2(cfg, mode)
             cfg["profile_plan"] = bool(profile_plan)
             _plan_tokens = _start_dev_plan_profile(profile_plan)
             print(
-                f"[CHECKPOINT_V2] ExecutionProfile={profile_name} "
+                f"[CHECKPOINT] ExecutionProfile={profile_name} "
                 f"CheckpointMode={mode} shuffle="
                 f"{shuffle_override or profile['shuffle_partitions']} "
                 f"MaxThreads={workers}"
@@ -462,11 +447,6 @@ def run_load_allocation_input(
         _LAST_RUN_PROFILE = {
             "timings": list(timings),
             "parallel_activity": list(parallel_activity),
-            "checkpoint_activity": (
-                list(cfg.get("_checkpoint_v2_activity", []))
-                if isinstance(cfg, dict)
-                else []
-            ),
             "elapsed_seconds": round(elapsed, 1),
             "checkpoint_mode": mode,
             "max_threads": workers,
@@ -474,7 +454,7 @@ def run_load_allocation_input(
         }
 
     if isinstance(cfg, dict):
-        drop_checkpoints_V2(spark, cfg)
+        drop_checkpoints(spark, cfg)
     log_timing("run_load_allocation_input", t0)
     print(f"Overall time in Seconds: {elapsed:.1f}s")
 
@@ -492,8 +472,7 @@ def run_load_allocation_input(
 
 
 __all__ = [
-    "checkpoint_V2",
-    "drop_checkpoints_V2",
+    "drop_checkpoints",
     "get_last_run_profile",
     "run_load_allocation_input",
 ]

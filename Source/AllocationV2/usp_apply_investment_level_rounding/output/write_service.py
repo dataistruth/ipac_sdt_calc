@@ -12,6 +12,7 @@ import time
 
 from Common_V2.core.helpers import tbl, tbl_name, ns, sql_round, get_logger
 from Common_V2.core.observability import log_section, log_timing
+from Common_V2.core.write_helpers import run_isolated_tasks
 
 logger = get_logger("apply_investment_level_rounding")
 
@@ -391,3 +392,35 @@ def write_allocation_summaries(spark, cfg, k1_write_df, ubti_write_df, adj_write
 
     log_timing("write_allocation_summaries", t0)
     return return_value
+
+
+def flush_post_summary_writes(
+    spark,
+    cfg,
+    k1_write_df,
+    ubti_write_df,
+    adj_write_df,
+    workers,
+    activity,
+    enabled_groups,
+):
+    """IsRounded flag update and summary writes touch distinct tables, so run them together."""
+    results = run_isolated_tasks(
+        spark,
+        cfg,
+        [
+            ("update_is_rounded_flag", update_is_rounded_flag),
+            (
+                "write_allocation_summaries",
+                lambda s, c: write_allocation_summaries(
+                    s, c, k1_write_df, ubti_write_df, adj_write_df
+                ),
+            ),
+        ],
+        workers,
+        activity,
+        "output_writes",
+        enabled_groups,
+        union=False,
+    )
+    return results[1]

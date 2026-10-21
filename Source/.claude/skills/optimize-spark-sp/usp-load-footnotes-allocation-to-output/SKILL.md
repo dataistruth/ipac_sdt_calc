@@ -15,8 +15,8 @@ skill keeps the locked candidate in `outputV2`. Portable two-mode generation
 parent [optimize-spark-sp](../SKILL.md) skill. On that path the **SP
 orchestrator** resolves `ExecutionProfile` from
 `Common_V2.core.execution_profiles`; `Common_V2.core.__init__` does not.
-Locked defaults (`CheckpointMode=4`, shuffle `32`, `MaxThreads=4`) match
-profile `low`.
+Locked defaults (`CheckpointMode=2`, shuffle `32`, `MaxThreads=4`) match
+profile `small`.
 
 Never improve benchmark results by weakening business logic, validation,
 output persistence, or exact result comparison.
@@ -35,7 +35,7 @@ this SP. Development: **flat** `outputV2/` (no `business/`, `tests/`,
 - Optimized implementation:
   `Source/AllocationV2/usp_load_footnotes_allocation_to_output/outputV2/`
 - Shared checkpoint implementation:
-  `Source/Common_V2/core/checkpoint_V2.py`
+  `Source/Common_V2/core/checkpoint.py`
 - Benchmark:
   `Source/AllocationV2/usp_load_footnotes_allocation_to_output/outputV2/notebook/benchmark_load_footnotes_allocation_to_output.py`
 
@@ -63,8 +63,8 @@ this SP. Development: **flat** `outputV2/` (no `business/`, `tests/`,
 Use these promoted defaults unless a new exact-parity benchmark disproves
 them.
 
-- `ExecutionProfile=low` (orchestrator-resolved)
-- `CheckpointMode=4`
+- `ExecutionProfile=small` (orchestrator-resolved)
+- `CheckpointMode=2`
 - `SqlShufflePartitions=32`
 - `MaxThreads=4`
 - ParallelGroups: S3 initial plans + S5 cost + S13 writes when workers > 1
@@ -100,11 +100,11 @@ mode. In Development mode, create `outputV2/` that:
 - never imports `AllocationV2.<sp>.output.*`;
 - keeps public API `run_load_footnotes_allocation_to_output`;
 - resolves `ExecutionProfile` in the orchestrator at run start (default
-  `low`).
+  `DEFAULT_EXECUTION_PROFILE` (**small**)).
 
 Required modules:
 
-- `orchestrator.py`: public API, Checkpoint V2, parallel S3/S5/S13, timings
+- `orchestrator.py`: public API, profile checkpoint, parallel S3/S5/S13, timings
 - `plan_break_optimizations.py`: `build_entity_hierarchy` (`entity_levels`)
   and `build_allocation_input` (`alloc_pass1`–`alloc_pass4`)
 - `join_optimizations.py`: bounded broadcasts and
@@ -131,7 +131,7 @@ lineage.
   immediately after that pass’s left-anti removal, before the next pass
   and the final union.
 
-Use only `Common_V2.core.checkpoint_V2`. No local `checkpoint.py`. No
+Use only `Common_V2.core.checkpoint`. No local `checkpoint.py`. No
 coalesce/repartition solely to shrink a checkpoint. No hot-path drop.
 
 ### 4. Apply proven parallel phases
@@ -200,7 +200,7 @@ Recorded exact-parity A/B (pre-shared-V2 candidate): original
 **149.6s / 161.5s** vs updated **51.2s / 51.5s**. Later shared-V2 runs
 were original **144.5s** vs updated **~45–51s** with both-table match.
 
-A recollection of ~32–35s is consistent with CheckpointMode 4 (all
+A recollection of ~32–35s is consistent with CheckpointMode 2 (all
 localCheckpoint) on a warm cluster; it is **not** the locked log. Do not
 treat 32s as the official bar until a new isolated A/B prints that wall
 with both-table PASS.

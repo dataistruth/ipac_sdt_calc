@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-load-lookthrough-footnote-effective-allocation-pct
-description: Optimizes Development outputV2 for uspLoadLookThroughFootnoteEffectiveAllocationPercentage. Same production builders and write order; Checkpoint V2 on lt_output plus extra plan-break seams like footnotes. Sequential Output then Input writes. Use when generating or diagnosing this SP.
+description: Optimizes Development outputV2 for uspLoadLookThroughFootnoteEffectiveAllocationPercentage. Same production builders and write order; profile checkpoint on lt_output plus extra plan-break seams like footnotes. Sequential Output then Input writes. Use when generating or diagnosing this SP.
 ---
 
 # Optimize uspLoadLookThroughFootnoteEffectiveAllocationPercentage
@@ -34,7 +34,7 @@ Call production functions in this order:
 Do not parallelize those steps. Parallel Output+Input writes produced a
 row-count mismatch. Do not copy builder bodies into `outputV2/`.
 
-## Checkpoint V2 seams (footnotes-style extras)
+## profile checkpoint seams (footnotes-style extras)
 
 Keep production seam **`lt_output`**. Add extra local plan breaks the
 same way footnotes adds `cost_snapshot` / `temp_alloc_input` /
@@ -55,7 +55,7 @@ same way footnotes adds `cost_snapshot` / `temp_alloc_input` /
 | `alloc_output` | build output | Output write |
 | `grouped_output` | build output | Input overwrite |
 
-After a **local** Checkpoint V2 backend, `toDF(*columns)` like footnotes.
+After local mode, `checkpoint()` itself resets qualifiers with `toDF(*columns)`.
 Do not drop `lt_output`. Checkpoint `distinct_mappings` **after** the
 temp-input empty gate, not before. Gate `isEmpty` on the uncheckpointed
 temp-input frame.
@@ -83,7 +83,7 @@ allocation input (QA job):
 | 5 | `RunID` | `18266` |
 | 6 | `CatalogName` | `qa7` |
 | 7 | `SchemaName` | `iPC_2025_QA7_15348` |
-| 8 | `ExecutionProfile` | `low` |
+| 8 | `ExecutionProfile` | `default` |
 | 9 | `number_of_runs` | `1` |
 | 10 | `ProfilePlan` | `off` |
 

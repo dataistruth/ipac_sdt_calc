@@ -9,7 +9,7 @@ import pyspark.sql.functions as F
 import logging
 import time
 
-from Common_V2.core.checkpoint_V2 import checkpoint_V2
+from Common_V2.core.checkpoint import checkpoint as common_checkpoint
 from Common_V2.core.helpers import read_table, ns, ns0
 from Common_V2.core.observability import log_section, log_timing
 
@@ -17,15 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 def _seam(spark, df, name, cfg):
-    activity_start = len(cfg.get("_checkpoint_v2_activity", ()))
-    result = checkpoint_V2(spark, df, name, cfg)
-    activity = cfg.get("_checkpoint_v2_activity", ())
-    if (
-        len(activity) > activity_start
-        and activity[-1].get("backend") == "local"
-    ):
-        result = result.toDF(*result.columns)
-    return result
+    from .plan_profiler import track_checkpoint_plan
+
+    track_checkpoint_plan(name, df, cfg)
+    return common_checkpoint(spark, df, name, cfg)
 
 
 def derive_cost_underlying_types(df_cost_snapshot):

@@ -1,6 +1,6 @@
 ---
 name: optimize-usp-load-allocation-input
-description: Regenerates or extends uspLoadAllocationInput with Checkpoint V2 (including alloc_form_k1), three parallel groups, and AllocationInput-first flow-up writes. Use when implementing, generating, benchmarking, or diagnosing this SP. Do not invent extra modules.
+description: Regenerates or extends uspLoadAllocationInput with profile checkpoint (including alloc_form_k1), three parallel groups, and AllocationInput-first flow-up writes. Use when implementing, generating, benchmarking, or diagnosing this SP. Do not invent extra modules.
 ---
 
 # Optimize uspLoadAllocationInput
@@ -16,7 +16,7 @@ Portable two-mode rules live in the parent
 
 The **SP orchestrator** (`outputV2/load_allocation_input.py`) resolves
 `ExecutionProfile` from `Common_V2.core.execution_profiles` at run start.
-Do not resolve profiles from `Common_V2.core.__init__`. Default **low**.
+Do not resolve profiles from `Common_V2.core.__init__`. Default `DEFAULT_EXECUTION_PROFILE` (**small**).
 Do not set AQE.
 
 Public entry: `run_load_allocation_input`. Adapter:
@@ -30,7 +30,7 @@ Do not copy FEP / footnotes / look-through SP-only opts. Development:
 
 Exact-parity A/B, 2026-09-28, RunID `16560`, EntityID `115`,
 ClientID `15348`, TaxPeriodID `1`, catalog `QA7`, schema
-`IPC_2025_QA7_15348`, ProfilePlan **off**, ExecutionProfile **low**:
+`IPC_2025_QA7_15348`, ProfilePlan **off**, ExecutionProfile **small**:
 
 | Variant | Notebook wall | Reported |
 |---|---|---|
@@ -53,8 +53,6 @@ Source/AllocationV2/usp_load_allocation_input/
     ├── usp_load_allocation_input.py # run_usp_load_allocation_input adapter
     ├── load_allocation_input.py     # orchestrator (public API)
     ├── parent.py                    # unused / self package; copy ai_*.py into outputV2/
-    ├── parallel_helpers.py
-    ├── write_helpers.py             # output_collect + output_writes
     ├── plan_profiler.py             # slim shim; no-op unless ProfilePlan on
     ├── output_reconcile.py
     ├── OPTIMIZATION_REPORT.md
@@ -79,24 +77,20 @@ def output_module(name: str):
 Example: `output_module("ai_finalization_service")` is
 `AllocationV2.usp_load_allocation_input.output.ai_finalization_service`.
 
-## parallel_helpers.py (required)
+## Parallel helpers (shared `Common_V2.core.parallel_helpers`)
 
-`KNOWN_GROUPS` exactly:
+No SP-folder `parallel_helpers.py`. The orchestrator imports
+`normalize_workers`, `parse_enabled_groups`, `run_parallel` from
+`Common_V2.core.parallel_helpers` and declares `KNOWN_GROUPS` exactly:
 
 ```python
-{"independent_input_builders", "output_collect", "output_writes"}
+KNOWN_GROUPS = frozenset({"independent_input_builders", "output_collect", "output_writes"})
+enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
 ```
 
-- `normalize_workers`: clamp 1..4.
-- `parse_enabled_groups`: `all` → all KNOWN_GROUPS; `none` → empty; else CSV.
-- `isolated_cfg(cfg)`: shallow copy; new `_parquet_results={}`; copy
-  `_schema_cache`.
-- `run_parallel(tasks, workers, activity, label, enabled_groups)`:
-  sequential if group disabled or workers<=1 or len(tasks)<=1.
-  Else `ThreadPoolExecutor` prefix `ai-alloc-input`, cap
-  `min(workers, task_count, 4)`. Observe every future. Raise after all
-  complete if any failed. Log START/DONE and
-  `critical=max-task`. Return results in **declared task order**.
+`run_parallel` is sequential if the group is disabled, workers<=1, or
+len(tasks)<=1; otherwise a pool capped at `min(workers, task_count, 4)`
+that observes every future and returns results in **declared task order**.
 
 ## Orchestrator (`load_allocation_input.py`)
 
@@ -106,22 +100,24 @@ Import production via `output_module` only:
 `ai_hierarchy_service`, `ai_k1_service`, `ai_form_service`,
 `ai_pfic_service`, `ai_pfic_flowup_service`, `ai_finalization_service`.
 
-Checkpoint V2: `checkpoint_V2 as checkpoint`, `initialize_checkpoint_V2`,
-`resolve_checkpoint_mode`, `drop_checkpoints_V2` in `finally` on success
-path (same as current file: drop after try when returning SUCCESS).
+Checkpoint: `Common_V2.core.checkpoint` — `checkpoint as common_checkpoint`,
+`drop_checkpoints` after the try on the SUCCESS path. Profile `small` → local
+(mode 2), `large` → Delta.
+`ai_pfic_flowup_service` `base_flowup` and `ai_shared_views` `reclass_data`
+stay Delta (`checkpoint_mode=DELTA_CHECKPOINT_MODE`).
 
 Wrap `_checkpoint` with `track_checkpoint_plan`. Wrap listed builders with
 `track_plan`. Do **not** wrap `load_config` with `track_plan`.
 
 Signature must accept production params plus Development-only
 `profile_plan` / `ProfilePlan`, `plan_checkpoint_threshold`,
-`execution_profile` / `ExecutionProfile` default **low**, `MaxThreads`,
+`execution_profile` / `ExecutionProfile` default `DEFAULT_EXECUTION_PROFILE` (**small**), `MaxThreads`,
 `ParallelGroups`, `CheckpointMode`, `SqlShufflePartitions`.
 
 ### Stage order (do not reorder)
 
 1. **S1** `load_common_config` if needed → apply profile shuffle /
-   checkpoint mode / MaxThreads → `initialize_checkpoint_V2` → abort
+   checkpoint mode / MaxThreads → `cfg["checkpoint_mode"]` → abort
    `run_status=FAIL` → `load_config` → `register_shared_views`.
 2. **S2 sequential:** `build_entity_hierarchy` (temp view
    `_entity_hierarchy_{run_id}`), `build_lower_tier_funds`,
@@ -168,10 +164,15 @@ Print `[outputV2] ExecutionProfile=... CheckpointMode=... shuffle=... MaxThreads
 
 Expose `get_last_run_profile()`.
 
-## write_helpers.py (required)
+## Output collect + flush (`ai_finalization_service.py`)
 
-Import production `write_allocation_input`, `write_pfic_flowup`,
-`write_form_flowups` via `output_module("ai_finalization_service")`.
+No SP-folder `write_helpers.py`. `collect_output_frames_parallel`,
+`flush_collected_results`, and `SMALL_TABLES` live in
+`ai_finalization_service.py` next to `write_allocation_input`,
+`write_pfic_flowup`, `write_form_flowups`, and delegate the threading /
+isolated-cfg merge / storer flush to `Common_V2.core.write_helpers`
+(`run_isolated_tasks`, `flush_collected_results(...,
+replace_where_run_tables=("AllocationInput",), small_tables=SMALL_TABLES)`).
 Do **not** split `write_form_flowups` into a generated per-form module.
 
 ### `output_collect` — exactly 3 tasks
@@ -239,7 +240,7 @@ the parent-skill locked `runtime_schema` / `parity_schema`. Hash sum is
 
 ## Target configuration
 
-- `ExecutionProfile=low` → shuffle 32, CheckpointMode 4, MaxThreads 4
+- `ExecutionProfile=small` → shuffle 32, CheckpointMode 2, MaxThreads 4
 - Explicit CheckpointMode / shuffle / MaxThreads override the profile
 - Required orchestrator checkpoints include `pfic_snapshot`,
   **`alloc_form_k1`**, `alloc_input`, `pfic_raw`, `pfic_flowup`,
@@ -249,7 +250,7 @@ the parent-skill locked `runtime_schema` / `parity_schema`. Hash sum is
 
 ### `alloc_form_k1` measured evidence
 
-RunID `16560`, profile `low`, CheckpointMode 4:
+RunID `16560`, profile `small`, CheckpointMode 2:
 
 - Before the extra seam, `alloc_input` materialization was **18.015s**.
 - With `alloc_form_k1`, that work split into **5.182s**
@@ -279,7 +280,7 @@ RunID `16560`, profile `low`, CheckpointMode 4:
 - FEP / footnotes-only plan breaks
 - Snapshotting PFICUpdateAlert / PFICAlertDetails with `WHERE RunID`
 - Inlining snapshot SQL in the notebook instead of `output_reconcile.py`
-- Forcing SqlShufflePartitions=16 (overrides profile low)
+- Forcing SqlShufflePartitions=16 (overrides profile small)
 - `F.sum("_h")` hash_sum (ANSI BIGINT overflow)
 - Schema-less `display(spark.createDataFrame(runtime_rows|parity_rows))`
 

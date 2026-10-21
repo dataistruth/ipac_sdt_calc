@@ -35,9 +35,9 @@ Keep the four production seams. Add:
 3. `alloc_pass1` … `alloc_pass4` — after each pass’s left-anti in
    `build_allocation_input`.
 
-All seams go through `checkpoint_V2`. Inherit
-`DEFAULT_CHECKPOINT_MODE` unless the orchestrator applies profile
-`low` (`checkpoint_mode=4`) or the notebook sets `CheckpointMode`.
+All seams go through `common_checkpoint`. The mode is
+`cfg["checkpoint_mode"]` from the resolved profile (`small` → 2 local,
+`large` → 1 Delta) unless `CheckpointMode` overrides it.
 
 ## Proven concurrency
 
@@ -78,5 +78,5 @@ Production mode: same logic **inline** in `output/` with
 ## Historical walls
 
 - Original ~144.5s–161.5s vs updated ~45s–51.5s with both-table PASS.
-- ~32–35s is an unlogged recollection (likely mode 4 / warm cluster).
+- ~32–35s is an unlogged recollection (likely local checkpoint mode / warm cluster).
   Relock only with a printed A/B.
