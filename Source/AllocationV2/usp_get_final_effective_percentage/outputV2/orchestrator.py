@@ -812,8 +812,7 @@ def run_modes(
             """Build the lt-input-dependent chain of functions.
 
             Returns dict with keys: all_underlyings, input_lines,
-            final_amounts, non_dated_entities, dated_entities,
-            entity_underlyings.
+            final_amounts, non_dated_entities, dated_entities.
             """
             logger.info(f"[COMMON-2 chain={label}] start")
             all_und, _ = build_all_underlyings_ordered(
@@ -835,11 +834,6 @@ def run_modes(
             non_dated = build_non_dated_entities(in_lines, line_items, cfg)
             dated = build_dated_entities(spark, cfg, in_lines, line_items)
 
-            ent_und = build_entity_underlyings(
-                spark, cfg, in_lines, underlyings_ordered, asset_class_rel,
-            )
-            ent_und = _checkpoint(spark, ent_und, f"entity_und_common_{label}", cfg)
-
             logger.info(f"[COMMON-2 chain={label}] complete")
             return {
                 "all_underlyings":   all_und,
@@ -847,7 +841,6 @@ def run_modes(
                 "final_amounts":     fin_amts,
                 "non_dated_entities": non_dated,
                 "dated_entities":    dated,
-                "entity_underlyings": ent_und,
             }
 
         if modes_123:
@@ -1180,7 +1173,9 @@ def run_modes(
                     mode_final_amounts = chain["final_amounts"]
                     mode_non_dated = chain["non_dated_entities"]
                     mode_dated = chain["dated_entities"]
-                    mode_entity_underlyings = chain["entity_underlyings"]
+                    form199a_input_lines = mode_input_lines
+                    footnote_input_lines = None
+                    state_input_lines = None
 
                     is_pe_model_flag = local_cfg.get("is_pe_model", False)
                     if mode == 2 or (mode == 1 and is_pe_model_flag):
@@ -1229,13 +1224,20 @@ def run_modes(
                                 mode_dated,
                             )
                         )
+                        # SQL parity: mode 2 appends footnote/allocation rows into
+                        # #TempInputLines from #TempAllocationInput. Feed Form199A with
+                        # the combined input-lines view (base + footnote-derived rows).
+                        form199a_input_lines = mode_input_lines.unionByName(
+                            footnote_input_lines,
+                            allowMissingColumns=True,
+                        ).distinct()
 
                     mode_non_dated, _ = compute_form199a_effective_percentage(
                         spark,
                         local_cfg,
                         mode_non_dated,
                         book_effective,
-                        mode_input_lines,
+                        form199a_input_lines,
                         mode_temp_cost_pct,
                     )
 
@@ -1284,14 +1286,29 @@ def run_modes(
                                 else sm_eff_amounts
                             )
 
+                    # Build #TempEntityUnderlying inputs once per mode after
+                    # mode-specific augmentation (SQL #TempInputLines parity).
+                    mode_entity_input_lines = mode_input_lines.select(
+                        "UnderlyingEntityID", "TrackingKey"
+                    )
+                    if footnote_input_lines is not None:
+                        mode_entity_input_lines = mode_entity_input_lines.unionByName(
+                            footnote_input_lines.select(
+                                "UnderlyingEntityID", "TrackingKey"
+                            ),
+                            allowMissingColumns=True,
+                        )
+                    if state_input_lines is not None:
+                        mode_entity_input_lines = mode_entity_input_lines.unionByName(
+                            state_input_lines.select(
+                                "UnderlyingEntityID", "TrackingKey"
+                            ),
+                            allowMissingColumns=True,
+                        )
+                    mode_entity_input_lines = mode_entity_input_lines.distinct()
+
                     is_footnote_path = mode == 2
                     is_state_path = _sm_has_data
-                    transfers_adj = load_transfers_adj_cost(
-                        spark,
-                        local_cfg,
-                        mode_all_underlyings,
-                        mode_entity_underlyings,
-                    )
                     return {
                         "mode": mode,
                         "mt0": mt0,
@@ -1300,10 +1317,10 @@ def run_modes(
                         "data": {
                             "temp_cost_pct": mode_temp_cost_pct,
                             "all_underlyings": mode_all_underlyings,
-                            "entity_underlyings": mode_entity_underlyings,
+                            "entity_input_lines": mode_entity_input_lines,
                             "non_dated_entities": mode_non_dated,
                             "dated_entities": mode_dated,
-                            "transfers_adj": transfers_adj,
+                            "transfers_adj": None,
                             "input_lines": mode_input_lines,
                             "final_amounts": mode_final_amounts,
                             "needs_pre_cpbt": (
@@ -1332,7 +1349,7 @@ def run_modes(
                 )
             )
 
-            # Pre-CPBT barriers: dated / non-dated / transfers overlap per mode.
+            # Pre-CPBT barriers: dated / non-dated overlap per mode.
             for mode in modes_123:
                 prep = prep_by_mode[f"mode_{mode}"]
                 mode_t0[mode] = prep["mt0"]
@@ -1344,7 +1361,6 @@ def run_modes(
                 local_cfg = d["local_cfg"]
                 mode_non_dated = d["non_dated_entities"]
                 mode_dated = d["dated_entities"]
-                transfers_adj = d["transfers_adj"]
 
                 boundary_tasks = []
                 if d["needs_pre_cpbt"]:
@@ -1375,49 +1391,31 @@ def run_modes(
                         )
                     )
 
-                def _ckpt_transfers(
-                    _transfers=transfers_adj,
-                    _mode=mode,
-                    _local_cfg=local_cfg,
-                ):
-                    if _transfers is None:
-                        return None
-                    return _checkpoint(
-                        spark,
-                        _transfers,
-                        f"txfr_pre_cpbt_m{_mode}",
-                        _local_cfg,
-                    )
-
-                boundary_tasks.append(
-                    (f"transfers_m{mode}", _ckpt_transfers, (), {})
-                )
-
-                _ckpt_t0 = time.time()
-                boundary = dict(
-                    run_phase(
-                        "mode_prep_boundaries",
-                        boundary_tasks,
-                        workers,
-                        enabled_groups,
-                    )
-                )
                 if d["needs_pre_cpbt"]:
+                    _ckpt_t0 = time.time()
+                    boundary = dict(
+                        run_phase(
+                            "mode_prep_boundaries",
+                            boundary_tasks,
+                            workers,
+                            enabled_groups,
+                        )
+                    )
                     mode_non_dated = boundary[f"non_dated_m{mode}"]
                     mode_dated = boundary[f"dated_m{mode}"]
                     logger.info(
                         f"[TIMING] pre_cpbt_checkpoints_m{mode}: "
                         f"{time.time() - _ckpt_t0:.1f}s"
                     )
-                transfers_adj = boundary[f"transfers_m{mode}"]
 
                 per_mode_data[mode] = {
                     "temp_cost_pct": d["temp_cost_pct"],
                     "all_underlyings": d["all_underlyings"],
-                    "entity_underlyings": d["entity_underlyings"],
+                    "entity_input_lines": d["entity_input_lines"],
+                    "entity_underlyings": None,
                     "non_dated_entities": mode_non_dated,
                     "dated_entities": mode_dated,
-                    "transfers_adj": transfers_adj,
+                    "transfers_adj": None,
                     "input_lines": d["input_lines"],
                     "final_amounts": d["final_amounts"],
                 }
@@ -1429,6 +1427,47 @@ def run_modes(
 
             if valid_modes_123:
                 logger.info(
+                    f"[FUSED] build_entity_underlyings for modes {valid_modes_123} "
+                    "(single call after Pass A, split by _mode)"
+                )
+
+                tagged_entity_input_lines = _fold_union(
+                    [_tag_mode(per_mode_data[m]["entity_input_lines"], m) for m in valid_modes_123]
+                )
+
+                cfg["_current_mode"] = 0
+                fused_entity_underlyings = build_entity_underlyings(
+                    spark, cfg, tagged_entity_input_lines, underlyings_ordered, asset_class_rel,
+                )
+                fused_entity_underlyings = _checkpoint(
+                    spark, fused_entity_underlyings, "entity_und_fused", cfg,
+                )
+
+                # Fused load_transfers_adj_cost — single call replaces the
+                # former per-mode loop. load_transfers_adj_cost is now
+                # _mode-aware: match3's EU↔E join has EU._mode == E._mode,
+                # preventing cross-mode contamination. Eliminates 3 per-mode
+                # entity_und checkpoints and 3 per-mode txfr checkpoints.
+                tagged_all_und_for_txfr = _fold_union(
+                    [_tag_mode(per_mode_data[m]["all_underlyings"], m) for m in valid_modes_123]
+                )
+                fused_transfers_adj_prep = load_transfers_adj_cost(
+                    spark, cfg, tagged_all_und_for_txfr, fused_entity_underlyings,
+                )
+                if fused_transfers_adj_prep is not None:
+                    fused_transfers_adj_prep = _checkpoint(
+                        spark, fused_transfers_adj_prep, "txfr_pre_cpbt_fused", cfg,
+                    )
+
+                # Store per-mode entity_underlyings for Pass C (build_final_output).
+                # Lazy filter from the already-checkpointed fused frame — no
+                # per-mode checkpoint needed.
+                for m in valid_modes_123:
+                    per_mode_data[m]["entity_underlyings"] = (
+                        fused_entity_underlyings.filter(F.col("_mode") == m).drop("_mode")
+                    )
+
+                logger.info(
                     f"[FUSED] build_cost_percentage_by_type for modes {valid_modes_123} "
                     "(Phase 2b: single call on unioned inputs)"
                 )
@@ -1439,18 +1478,15 @@ def run_modes(
                 tagged_all_underlyings = _fold_union(
                     [_tag_mode(per_mode_data[m]["all_underlyings"], m) for m in valid_modes_123]
                 )
-                tagged_entity_underlyings = _fold_union(
-                    [_tag_mode(per_mode_data[m]["entity_underlyings"], m) for m in valid_modes_123]
-                )
                 tagged_non_dated = _fold_union(
                     [_tag_mode(per_mode_data[m]["non_dated_entities"], m) for m in valid_modes_123]
                 )
                 tagged_dated = _fold_union(
                     [_tag_mode(per_mode_data[m]["dated_entities"], m) for m in valid_modes_123]
                 )
-                tagged_transfers_adj = _fold_union(
-                    [_tag_mode(per_mode_data[m]["transfers_adj"], m) for m in valid_modes_123]
-                )
+                # fused_transfers_adj_prep is already tagged with _mode from the
+                # fused load_transfers_adj_cost call above — use it directly.
+                tagged_transfers_adj = fused_transfers_adj_prep
 
                 # Sentinel _current_mode for checkpoint naming inside the function
                 # (avoids collision with per-mode checkpoint paths).
@@ -1468,7 +1504,7 @@ def run_modes(
 
                 fused_temp_cost_pct, fused_transfers_adj = build_cost_percentage_by_type(
                     spark, cfg, cost_pct_snapshot_123,
-                    tagged_temp_cost_pct, tagged_all_underlyings, tagged_entity_underlyings,
+                    tagged_temp_cost_pct, tagged_all_underlyings, fused_entity_underlyings,
                     tagged_non_dated, tagged_dated, tagged_transfers_adj,
                     checkpoint_fn=_checkpoint,
                     checkpoint_group_fn=_checkpoint_group,

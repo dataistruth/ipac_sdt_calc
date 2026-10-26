@@ -479,8 +479,17 @@ def build_pfic_flowup_pipeline(
         .select("PFICFootnoteID", "FlowupEntityID", "TrackingKey").distinct()
 
     # Zero amount PFICs from prior flowup table (not already in current flowup)
-    pfic_flowup_tracking = read_table(spark, "PFICFootnoteFlowupWithTrackingKey", cfg)
     lower_tier_funds = spark.table(f"_lower_tier_funds_{run_id}")
+
+    _lt_run_ids = [
+        r["RunID"] for r in lower_tier_funds.select("RunID").distinct().collect()
+        if r["RunID"] is not None
+    ]
+    pfic_flowup_tracking = read_table(spark, "PFICFootnoteFlowupWithTrackingKey", cfg).filter(
+        F.col("RunID").isin(_lt_run_ids) if _lt_run_ids else F.lit(False)
+    )
+    pfic_flowup_tracking = checkpoint(spark, pfic_flowup_tracking, "pfic_flowup_tracking", cfg)
+    
     enu_tax_class = F.broadcast(read_table(spark, "ENU_TaxClass", cfg))
 
     zero_amount_pfics = pfic_flowup_tracking.alias("PFIC") \

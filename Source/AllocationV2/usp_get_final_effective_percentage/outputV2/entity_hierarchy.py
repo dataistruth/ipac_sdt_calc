@@ -529,7 +529,7 @@ def build_underlyings_combined(
         )
     )
 
-    result = p1.unionByName(p2).unionByName(p3).unionByName(p4).unionByName(p5)
+    result = p1.unionByName(p2).unionByName(p3).unionByName(p4).unionByName(p5).distinct()
 
     _log_timing("build_underlyings_combined", t0)
     return result

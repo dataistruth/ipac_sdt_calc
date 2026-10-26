@@ -75,6 +75,8 @@ def build_entity_underlyings(
     ignore_ac = cfg.get("ignore_asset_class_for_partnership_level", "")
 
     entity = F.broadcast(_tbl(spark, "Entity", cfg))
+    has_mode_col = "_mode" in input_lines.columns
+    mode_cols = [F.col("L._mode").alias("_mode")] if has_mode_col else []
 
     if override_flag != "C":
         result = (
@@ -106,6 +108,7 @@ def build_entity_underlyings(
                     F.col("E.AssetClassID"),
                 ).otherwise(F.col("EAR.AssetClassID")).alias("AssetClassId"),
                 F.col("L.TrackingKey"),
+                *mode_cols,
             )
             .distinct()
         )
@@ -145,6 +148,7 @@ def build_entity_underlyings(
                     F.col("E.AssetClassID"),
                 ).otherwise(F.col("EAR.AssetClassID")).alias("AssetClassId"),
                 F.col("L.TrackingKey"),
+                *mode_cols,
             )
             .distinct()
         )
@@ -194,6 +198,10 @@ def load_transfers_adj_cost(
     client_id = cfg["client_id"]
     cost_alloc_type_id = cfg["cost_allocation_type_id"]
     asset_class_ut = cfg.get("asset_class_underlying_type_id")
+    # When called with fused (mode-tagged) inputs, _mode is present on
+    # all_underlyings and entity_underlyings. Propagate it through all
+    # three match paths so the caller can filter results by mode.
+    has_mode = "_mode" in all_underlyings.columns
 
     raw = (
         _tbl(spark, "TransfersAdjCostDefaultPercentage", cfg).alias("T")
@@ -236,6 +244,7 @@ def load_transfers_adj_cost(
             F.coalesce(F.col("T.Tag"), F.lit("")).alias("Tag"),
             F.lit(None).cast("string").alias("TrackingKeyMatch"),
             F.col("E.Underlyingtype"),
+            *([F.col("E._mode")] if has_mode else []),
         )
         .distinct()
     )
@@ -284,11 +293,23 @@ def load_transfers_adj_cost(
                 F.col("E.TrackingMatch"),
             ).otherwise(F.lit(None).cast("string")).alias("TrackingKeyMatch"),
             F.col("E.Underlyingtype"),
+            *([F.col("E._mode")] if has_mode else []),
         )
         .distinct()
     )
 
     # Match 3: Asset class underlyings
+    # When inputs are fused (_mode-tagged), EU._mode == E._mode prevents
+    # cross-mode contamination in the EU ↔ E join (mode-1 entity_underlyings
+    # rows must not match mode-2 all_underlyings rows and vice versa).
+    _match3_eu_e_cond = (
+        (F.col("EU.UnderlyingEntityId") == F.col("E.UnderlyingEntityId"))
+        & (F.col("EU.TrackingKey") == F.col("E.TrackingKey"))
+        & (F.col("T.Underlyingtype") == F.col("E.Underlyingtype"))
+    )
+    if has_mode:
+        _match3_eu_e_cond = _match3_eu_e_cond & (F.col("EU._mode") == F.col("E._mode"))
+
     match3 = (
         raw.alias("T")
         .join(
@@ -297,9 +318,7 @@ def load_transfers_adj_cost(
         )
         .join(
             all_underlyings.alias("E"),
-            (F.col("EU.UnderlyingEntityId") == F.col("E.UnderlyingEntityId"))
-            & (F.col("EU.TrackingKey") == F.col("E.TrackingKey"))
-            & (F.col("T.Underlyingtype") == F.col("E.Underlyingtype")),
+            _match3_eu_e_cond,
         )
         .filter(F.col("T.Underlyingtype") == asset_class_ut)
         .select(
@@ -318,6 +337,7 @@ def load_transfers_adj_cost(
                 F.col("E.TrackingMatch"),
             ).otherwise(F.lit(None).cast("string")).alias("TrackingKeyMatch"),
             F.col("E.Underlyingtype"),
+            *([F.col("E._mode")] if has_mode else []),
         )
         .distinct()
     )

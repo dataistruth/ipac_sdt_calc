@@ -540,8 +540,8 @@ def build_mode1_704c_pe_book_allocations(
         _tbl(spark, "K1LineItem", cfg).alias("KL")
         .filter(
             (F.col("LineDataType") == "Number")
-            & (F.col("IsActive") == 1)
-            & (F.col("IsVisible") == 1)
+            & (F.col("IsActive") == True)
+            & (F.col("IsVisible") == True)
         )
         .select("LineID", "ClientID", "TaxPeriodID")
     )

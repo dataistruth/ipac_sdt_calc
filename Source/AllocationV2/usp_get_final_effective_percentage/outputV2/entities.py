@@ -64,6 +64,7 @@ def build_non_dated_entities(
             F.col("L.TrackingKey"),
             F.col("L.Tag"),
             F.coalesce(F.col("L.IsExcludefromTransfer"), F.lit(False)).alias("IsExcludefromTransfer"),
+            F.lit(None).cast("int").alias("StateID"),
         )
         .distinct()
     )

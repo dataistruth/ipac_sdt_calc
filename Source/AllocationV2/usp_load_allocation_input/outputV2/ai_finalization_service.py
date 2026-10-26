@@ -17,6 +17,7 @@ import logging
 import time
 
 from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
+from Common_V2.core.checkpoint import checkpoint
 from Common_V2.core.write_helpers import (
     flush_collected_results as _flush_collected_results,
     run_isolated_tasks,
@@ -847,7 +848,8 @@ def write_form_flowups(spark: SparkSession, cfg: dict, k1_workflow_df: DataFrame
                     "ParentEntityID", "LTEntityID", "TrackingKey", "OriginalParentEntityID")
             .distinct()
         )
-        unblocked_footnotes_df.createOrReplaceTempView(f"_unblocked_footnotes_{run_id}")
+        unblocked_footnotes_df = checkpoint(spark, unblocked_footnotes_df, "unblocked_footnotes_df", cfg)
+        #unblocked_footnotes_df.createOrReplaceTempView(f"_unblocked_footnotes_{run_id}")
 
     # Helper DataFrames used across form flowups
     aiw_df = spark.table("_aiw")
@@ -855,6 +857,10 @@ def write_form_flowups(spark: SparkSession, cfg: dict, k1_workflow_df: DataFrame
     entity_df = spark.table("_entity")
     fx_avg_rate_df = spark.table("_fx_avg_rate")
     lower_tier_df = spark.table(f"_lower_tier_funds_{run_id}")
+
+    _lt_run_ids = [r["RunID"] for r in lower_tier_df.select("RunID").distinct().collect()
+                   if r["RunID"] is not None]
+    _lt_run_filter = F.col("RunID").isin(_lt_run_ids) if _lt_run_ids else F.lit(False)
 
     # ─── Form 926 Flowup ──────────────────────────────────────────────────
     if form926_lt:
@@ -1049,7 +1055,10 @@ def write_form_flowups(spark: SparkSession, cfg: dict, k1_workflow_df: DataFrame
         )
         f926_flowup = read_table(spark, "Form926Flowup", cfg).filter(
             (F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id)
+            & _lt_run_filter
         )
+        f926_flowup = checkpoint(spark, f926_flowup, "f926_flowup", cfg)
+
         ub_df = unblocked_footnotes_df.filter(F.col("LineTypeID") == form926_lt) if lt_type_ids_list else None
         if ub_df is not None:
             # Build suffix for LIKE match
@@ -1146,7 +1155,10 @@ def write_form_flowups(spark: SparkSession, cfg: dict, k1_workflow_df: DataFrame
         )
         f199a_flowup = read_table(spark, "Form199AFlowup", cfg).filter(
             (F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id)
+            & _lt_run_filter
         )
+        f199a_flowup = checkpoint(spark, f199a_flowup, "f199a_flowup", cfg)
+
         ub_199a = unblocked_footnotes_df.filter(F.col("LineTypeID") == form199a_lt) if lt_type_ids_list else None
         if ub_199a is not None:
             df = (
@@ -1290,7 +1302,10 @@ def write_form_flowups(spark: SparkSession, cfg: dict, k1_workflow_df: DataFrame
         )
         f8865_flowup = read_table(spark, "Form8865Flowup", cfg).filter(
             (F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id)
+            & _lt_run_filter
         )
+        f8865_flowup = checkpoint(spark, f8865_flowup, "f8865_flowup", cfg)
+
         df = (
             f8865_flowup.alias("fl")
             .join(
@@ -1377,7 +1392,10 @@ def write_form_flowups(spark: SparkSession, cfg: dict, k1_workflow_df: DataFrame
         )
         f8886_flowup = read_table(spark, "Form8886Flowup", cfg).filter(
             (F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id)
+            & _lt_run_filter
         )
+        f8886_flowup = checkpoint(spark, f8886_flowup, "f8886_flowup", cfg)
+
         ub_8886 = unblocked_footnotes_df.filter(F.col("LineTypeID") == form8886_lt) if lt_type_ids_list else None
         if ub_8886 is not None:
             df = (
@@ -1514,7 +1532,8 @@ def write_form_flowups(spark: SparkSession, cfg: dict, k1_workflow_df: DataFrame
     _collect_result(cfg, df, "CustomFootnoteFlowup")
 
     # Pass-through from existing CustomFootnoteFlowup for lower-tier entities
-    cff_existing = read_table(spark, "CustomFootnoteFlowup", cfg)
+    cff_existing = read_table(spark, "CustomFootnoteFlowup", cfg).filter(_lt_run_filter)
+    cff_existing = checkpoint(spark, cff_existing, "cff_existing", cfg)
     df = (
         cff_existing.alias("CFF")
         .join(

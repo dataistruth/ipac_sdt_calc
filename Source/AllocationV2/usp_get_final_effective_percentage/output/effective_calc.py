@@ -1292,6 +1292,7 @@ def compute_effective_percentage_non_dated(
         .groupBy(
             F.col("L.UnderlyingEntityID"), F.coalesce(F.col("L.LineTypeID"), F.lit(-1)).alias("LineTypeID"),
             F.col("D.PartnerNumber"), F.col("L.TypeID"), F.col("L.TrackingKey"), F.col("L.Tag"),
+            F.coalesce(F.col("L.StateID"), F.lit(0)).alias("StateID"),
             F.col("L.IsExcludefromTransfer"),
             F.col("L._mode"),
         )
@@ -1313,7 +1314,7 @@ def compute_effective_percentage_non_dated(
             F.lit(None).cast("int").alias("PickUpOrder"),
             F.lit(None).cast("int").alias("704cAllocationTypeId"),
             F.lit(None).cast("string").alias("704cPercentageType"),
-            F.lit(None).cast("int").alias("StateID"),
+            F.coalesce(F.col("StateID"), F.lit(0)).alias("StateID"),
             F.col("_mode"),
         )
     )

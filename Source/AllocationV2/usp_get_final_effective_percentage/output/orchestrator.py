@@ -556,8 +556,7 @@ def run_modes(
             """Build the lt-input-dependent chain of functions.
 
             Returns dict with keys: all_underlyings, input_lines,
-            final_amounts, non_dated_entities, dated_entities,
-            entity_underlyings.
+            final_amounts, non_dated_entities, dated_entities.
             """
             logger.info(f"[COMMON-2 chain={label}] start")
             all_und, _ = build_all_underlyings_ordered(
@@ -579,11 +578,6 @@ def run_modes(
             non_dated = build_non_dated_entities(in_lines, line_items, cfg)
             dated = build_dated_entities(spark, cfg, in_lines, line_items)
 
-            ent_und = build_entity_underlyings(
-                spark, cfg, in_lines, underlyings_ordered, asset_class_rel,
-            )
-            ent_und = _checkpoint(spark, ent_und, f"entity_und_common_{label}", cfg)
-
             logger.info(f"[COMMON-2 chain={label}] complete")
             return {
                 "all_underlyings":   all_und,
@@ -591,7 +585,6 @@ def run_modes(
                 "final_amounts":     fin_amts,
                 "non_dated_entities": non_dated,
                 "dated_entities":    dated,
-                "entity_underlyings": ent_und,
             }
 
         if modes_123:
@@ -629,8 +622,10 @@ def run_modes(
             # Chain WITHOUT lt_input - used by modes 2 and 3. SP gate at
             # `IF @Mode IN (1, 4)` means #TempLookThroughAllocationInput is
             # empty for modes 2 and 3, so downstream queries on it return 0
-            # rows. We replicate by passing an empty DataFrame with the same
-            # schema - `lt_input_m14.limit(0)` is a metadata-only op in Spark.
+            # rows. We still pass an empty DataFrame (instead of None) so we
+            # can run the exact same function graph with a stable schema and
+            # avoid mode-specific branching logic in every downstream function.
+            # `lt_input_m14.limit(0)` is a metadata-only op in Spark.
             if 2 in modes_123 or 3 in modes_123:
                 lt_input_empty = lt_input_m14.limit(0)
                 chain_without_lt = _build_lt_dependent_chain(lt_input_empty, "nolt")
@@ -893,12 +888,12 @@ def run_modes(
                     mode_final_amounts  = chain["final_amounts"]
                     mode_non_dated      = chain["non_dated_entities"]
                     mode_dated          = chain["dated_entities"]
-                    mode_entity_underlyings = chain["entity_underlyings"]
-                    # `mode_entity_underlyings` is now per-chain, not fully shared
-                    # (mode 1's input_lines includes lt-derived rows; modes 2/3's
-                    # don't). per_mode_data["entity_underlyings"] picks it up below.
+                    mode_entity_underlyings = None
+                    form199a_input_lines = mode_input_lines
+                    footnote_input_lines = None
 
                     is_pe_model_flag = cfg.get("is_pe_model", False)
+                    state_input_lines = None
 
                     # -- Mode-specific input-table augmentation (per SP) ---
                     # Footnote augmentation per SP gate at line 1729:
@@ -933,11 +928,18 @@ def run_modes(
                         mode_non_dated, mode_dated = build_footnote_dated_entities(
                             spark, cfg, footnote_input_lines, mode_non_dated, mode_dated,
                         )
+                        # SQL parity: mode 2 appends footnote/allocation rows into
+                        # #TempInputLines from #TempAllocationInput. Feed Form199A with
+                        # the combined input-lines view (base + footnote-derived rows).
+                        form199a_input_lines = mode_input_lines.unionByName(
+                            footnote_input_lines,
+                            allowMissingColumns=True,
+                        ).distinct()
 
                     # Form199A -- function has the SP-correct gate internally
                     # (mode in {2,4} AND !IsPEModel AND enabled). Skips otherwise.
                     mode_non_dated, _ = compute_form199a_effective_percentage(
-                        spark, cfg, mode_non_dated, book_effective, mode_input_lines,
+                        spark, cfg, mode_non_dated, book_effective, form199a_input_lines,
                         mode_temp_cost_pct,
                     )
 
@@ -957,6 +959,26 @@ def run_modes(
                                 if mode_final_amounts is not None else sm_eff_amounts
                             )
 
+                    # Build #TempEntityUnderlying once per mode after mode-specific
+                    # input augmentation. SQL builds this from #TempInputLines in the
+                    # common section after mode branches complete.
+                    mode_entity_input_lines = mode_input_lines.select("UnderlyingEntityID", "TrackingKey")
+                    if footnote_input_lines is not None:
+                        # SQL parity: mode 2 / PE mode 1 insert footnote/allocation
+                        # rows into #TempInputLines before #TempEntityUnderlying.
+                        mode_entity_input_lines = mode_entity_input_lines.unionByName(
+                            footnote_input_lines.select("UnderlyingEntityID", "TrackingKey"),
+                            allowMissingColumns=True,
+                        )
+                    if state_input_lines is not None:
+                        # Mode 3 parity: SQL inserts state-derived rows into
+                        # #TempInputLines before the common #TempEntityUnderlying block.
+                        mode_entity_input_lines = mode_entity_input_lines.unionByName(
+                            state_input_lines.select("UnderlyingEntityID", "TrackingKey"),
+                            allowMissingColumns=True,
+                        )
+                    mode_entity_input_lines = mode_entity_input_lines.distinct()
+
                     # Pre-cost_pct_by_type checkpoints for non_dated/dated.
                     # These break the DAG lineage so that build_cost_percentage_by_type's
                     # 7 internal checkpoints don't re-evaluate the upstream pipeline.
@@ -974,24 +996,14 @@ def run_modes(
                         #                  the same materialization. No outer cp needed.
                         logger.info(f"[TIMING] pre_cpbt_checkpoints_m{mode}: {time.time() - _ckpt_t0:.1f}s")
 
-                    # transfers_adj per-mode: SP read is COMMON but the join
-                    # with all_underlyings is per-mode (mode 2/3 augment differ
-                    # AND chain differs between mode 1 and modes 2/3).
-                    # Insert is gated `IF @Mode != 4` -- for modes_123 this fires
-                    # for all 3 modes.
-                    transfers_adj = load_transfers_adj_cost(
-                        spark, cfg, mode_all_underlyings, mode_entity_underlyings,
-                    )
-                    if transfers_adj is not None:
-                        transfers_adj = _checkpoint(spark, transfers_adj, f"txfr_pre_cpbt_m{mode}", cfg)
-
                     per_mode_data[mode] = {
                         "temp_cost_pct":     mode_temp_cost_pct,
                         "all_underlyings":   mode_all_underlyings,
-                        "entity_underlyings": mode_entity_underlyings,   # per-chain
+                        "entity_input_lines": mode_entity_input_lines,
+                        "entity_underlyings": None,
                         "non_dated_entities": mode_non_dated,
                         "dated_entities":    mode_dated,
-                        "transfers_adj":     transfers_adj,
+                        "transfers_adj":     None,
                         "input_lines":       mode_input_lines,           # per-chain
                         "final_amounts":     mode_final_amounts,
                     }
@@ -1008,6 +1020,47 @@ def run_modes(
 
             if valid_modes_123:
                 logger.info(
+                    f"[FUSED] build_entity_underlyings for modes {valid_modes_123} "
+                    "(single call after Pass A, split by _mode)"
+                )
+
+                tagged_entity_input_lines = _fold_union(
+                    [_tag_mode(per_mode_data[m]["entity_input_lines"], m) for m in valid_modes_123]
+                )
+
+                cfg["_current_mode"] = 0
+                fused_entity_underlyings = build_entity_underlyings(
+                    spark, cfg, tagged_entity_input_lines, underlyings_ordered, asset_class_rel,
+                )
+                fused_entity_underlyings = _checkpoint(
+                    spark, fused_entity_underlyings, "entity_und_fused", cfg,
+                )
+
+                # Fused load_transfers_adj_cost — single call replaces the
+                # former per-mode loop. load_transfers_adj_cost is now
+                # _mode-aware: match3's EU↔E join has EU._mode == E._mode,
+                # preventing cross-mode contamination. Eliminates 3 per-mode
+                # entity_und checkpoints and 3 per-mode txfr checkpoints.
+                tagged_all_und_for_txfr = _fold_union(
+                    [_tag_mode(per_mode_data[m]["all_underlyings"], m) for m in valid_modes_123]
+                )
+                fused_transfers_adj_prep = load_transfers_adj_cost(
+                    spark, cfg, tagged_all_und_for_txfr, fused_entity_underlyings,
+                )
+                if fused_transfers_adj_prep is not None:
+                    fused_transfers_adj_prep = _checkpoint(
+                        spark, fused_transfers_adj_prep, "txfr_pre_cpbt_fused", cfg,
+                    )
+
+                # Store per-mode entity_underlyings for Pass C (build_final_output).
+                # Lazy filter from the already-checkpointed fused frame — no
+                # per-mode checkpoint needed.
+                for m in valid_modes_123:
+                    per_mode_data[m]["entity_underlyings"] = (
+                        fused_entity_underlyings.filter(F.col("_mode") == m).drop("_mode")
+                    )
+
+                logger.info(
                     f"[FUSED] build_cost_percentage_by_type for modes {valid_modes_123} "
                     "(Phase 2b: single call on unioned inputs)"
                 )
@@ -1018,18 +1071,15 @@ def run_modes(
                 tagged_all_underlyings = _fold_union(
                     [_tag_mode(per_mode_data[m]["all_underlyings"], m) for m in valid_modes_123]
                 )
-                tagged_entity_underlyings = _fold_union(
-                    [_tag_mode(per_mode_data[m]["entity_underlyings"], m) for m in valid_modes_123]
-                )
                 tagged_non_dated = _fold_union(
                     [_tag_mode(per_mode_data[m]["non_dated_entities"], m) for m in valid_modes_123]
                 )
                 tagged_dated = _fold_union(
                     [_tag_mode(per_mode_data[m]["dated_entities"], m) for m in valid_modes_123]
                 )
-                tagged_transfers_adj = _fold_union(
-                    [_tag_mode(per_mode_data[m]["transfers_adj"], m) for m in valid_modes_123]
-                )
+                # fused_transfers_adj_prep is already tagged with _mode from the
+                # fused load_transfers_adj_cost call above — use it directly.
+                tagged_transfers_adj = fused_transfers_adj_prep
 
                 # Sentinel _current_mode for checkpoint naming inside the function
                 # (avoids collision with per-mode checkpoint paths).
@@ -1037,7 +1087,7 @@ def run_modes(
 
                 fused_temp_cost_pct, fused_transfers_adj = build_cost_percentage_by_type(
                     spark, cfg, cost_pct_snapshot_123,
-                    tagged_temp_cost_pct, tagged_all_underlyings, tagged_entity_underlyings,
+                    tagged_temp_cost_pct, tagged_all_underlyings, fused_entity_underlyings,
                     tagged_non_dated, tagged_dated, tagged_transfers_adj,
                     checkpoint_fn=_checkpoint,
                 )
