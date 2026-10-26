@@ -14,8 +14,14 @@ import pyspark.sql.functions as F
 from Common_V2.core.helpers import read_table, table_prefix, ns, ns0
 from Common_V2.core.observability import log_section, log_timing
 from Common_V2.core.assertions import warn_possibly_empty
+from Common_V2.core.writers import write_delta_and_sql
 
 logger = logging.getLogger(__name__)
+
+# Column subset of dbo.AllocationRunErrors written by this SP's validation gates.
+_ALLOCATION_RUN_ERRORS_SCHEMA = (
+    "RunID bigint, EntityID int, ErrorMessage string, LogID int, ErrororWarning string"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +310,6 @@ def validate_by_amount_allocations(spark: SparkSession, cfg: dict,
     """
     log_section("validate_by_amount_allocations")
     t0 = time.time()
-    prefix = table_prefix(cfg)
     run_id = cfg["run_id"]
 
     # Filter FEP for by-amount entries (EffPercentage=0, EffAmount != 0)
@@ -369,16 +374,13 @@ def validate_by_amount_allocations(spark: SparkSession, cfg: dict,
         error_msg = (f"Allocated amounts are greater than input amounts "
                      f"for following rules: {rules_str}")
 
-        # Write error to AllocationRunErrors
-        fqn = f"{prefix}.AllocationRunErrors"
-        run_id_val = cfg["run_id"]
-        entity_id_val = cfg["entity_id"]
-        spark.sql(f"""
-            INSERT INTO {fqn}
-                (RunID, EntityID, ErrorMessage, ErrorType)
-            VALUES ({run_id_val}, {entity_id_val},
-                    '{error_msg}', 'Warning')
-        """)
+        # Write error to AllocationRunErrors. DataFrame, not an INSERT literal:
+        # an apostrophe in an allocation type name would break the statement.
+        error_df = spark.createDataFrame(
+            [(cfg["run_id"], cfg["entity_id"], error_msg, 0, "Warning")],
+            _ALLOCATION_RUN_ERRORS_SCHEMA,
+        )
+        write_delta_and_sql(spark, cfg, error_df, "AllocationRunErrors")
         logger.warning(f"[VALIDATION] {error_msg}")
 
     log_timing("validate_by_amount_allocations", t0)

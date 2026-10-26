@@ -16,8 +16,7 @@ import pyspark.sql.functions as F
 import logging
 import time
 
-from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing
-from Common_V2.core.checkpoint import DELTA_CHECKPOINT_MODE, checkpoint
+from Common_V2.core.helpers import table_prefix, read_table, log_section, log_timing, checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +67,7 @@ def register_shared_views(spark: SparkSession, cfg: dict) -> None:
             (F.col("RunID") == run_id)
         )
     )
-    _reclass_df = checkpoint(
-        spark, _reclass_df, "reclass_data", cfg, checkpoint_mode=DELTA_CHECKPOINT_MODE
-    )
+    _reclass_df = checkpoint(spark, _reclass_df, "reclass_data", cfg)
     _reclass_df.createOrReplaceTempView("_reclass_data")
 
     # K1LineItem — small lookup, used in almost every K1/form query

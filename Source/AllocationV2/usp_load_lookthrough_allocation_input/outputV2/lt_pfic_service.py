@@ -143,7 +143,9 @@ def build_pfic_elections(spark: SparkSession, cfg: dict) -> dict:
         .join(entity_tbl, entity_tbl["EntityID"] == pfic_flowup_all["SourceEntityID"])
         .join(
             country_list,
-            country_list["CountryCode"] == F.coalesce(pfic_entity["CountryCode"], entity_tbl["CountryCode"]),
+            country_list["CountryCode"] == F.coalesce(
+                pfic_entity["CountryofIncorporation"], pfic_entity["CountryCode"], entity_tbl["CountryCode"]
+            ),
         )
         .select(
             pfic_flowup_all["PFICFootnoteID"],
@@ -618,3 +620,4 @@ def _build_pfic_mapped_k1_lines(spark: SparkSession, cfg: dict) -> "DataFrame":
             )
 
     return pfic_mapped
+

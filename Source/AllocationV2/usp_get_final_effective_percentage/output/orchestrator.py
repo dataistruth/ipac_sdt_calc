@@ -70,17 +70,7 @@ import time
 
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import read_table, ns, ns0
-from Common_V2.core.checkpoint import (
-    checkpoint as common_checkpoint,
-    drop_checkpoints,
-)
-from Common_V2.core.execution_profiles import resolve_execution_profile
-from Common_V2.core.parallel_helpers import (
-    isolated_cfg,
-    normalize_workers,
-    parse_enabled_groups,
-    run_phase,
-)
+from Common_V2.core.checkpoint import checkpoint, drop_checkpoints
 
 from AllocationV2.usp_get_final_effective_percentage.output.config_loader import (
     load_config,
@@ -162,20 +152,6 @@ from AllocationV2.usp_get_final_effective_percentage.output.result_saver import 
 )
 from Common_V2.core.generic_result_storer import GenericResultStorer
 
-KNOWN_GROUPS = frozenset(
-    {
-        "common_dimensions",
-        "effective_boundaries",
-        "effective_inputs",
-        "independent_builders",
-        "independent_effective",
-        "mode_prep",
-        "mode_prep_boundaries",
-        "output_build",
-        "output_writes",
-    }
-)
-
 logger = logging.getLogger(__name__)
 
 if not logger.handlers:
@@ -192,86 +168,39 @@ def _tbl(spark: SparkSession, name: str, cfg: dict) -> DataFrame:
     return spark.table(f"{cfg['catalog']}.{cfg['schema']}.{name}")
 
 
-_PROMOTED_EXPERIMENT_DEFAULTS = {
-    "sql_shuffle_partitions": 32,
-    "warning_probe_removal": "off",
-    "missing_entity_identity": True,
-    "cpbt_input_break": "both",
-    "cpbt_post_tag_entity_break": False,
-    "parallel_cpbt_post_tag": True,
-    "compact_all_entities": True,
-    "cpbt_narrow_anti_keys": True,
-    "cpbt_transfer_prefilter": True,
-    "cpbt_drop_tracking_match": True,
-    "batch_footnote_line_ids": True,
-    "footnote_shared_lineage": False,
-    "footnote_checkpoint_partitions": 4,
-    "broadcast_cpbt_remaining": True,
-    "hierarchy_materialize": True,
-    "parallel_cpbt_validate": True,
-    "skip_yearly_empty_probe": False,
-    "collapse_state_passes": True,
-    "batch_state_workflow_lookup": True,
-    "single_pickup_antijoin": True,
-    "materialize_effective_inputs": True,
-    "parallel_effective": True,
-    "business_optimization": "broadcast_entity_partners",
-}
-
-
-def _blank(value):
-    if value is None:
-        return None
-    if isinstance(value, str) and not value.strip():
-        return None
-    return value
-
-
-def _as_int(value):
-    if _blank(value) is None:
-        return None
-    return int(value)
-
-
-def _apply_promoted_flags(cfg):
-    defaults = _PROMOTED_EXPERIMENT_DEFAULTS
-    cfg["_output_v3_missing_entity_identity"] = defaults["missing_entity_identity"]
-    cfg["_output_v3_cpbt_input_break"] = defaults["cpbt_input_break"]
-    cfg["_output_v3_cpbt_post_tag_entity_break"] = defaults["cpbt_post_tag_entity_break"]
-    cfg["_output_v3_parallel_cpbt_post_tag"] = defaults["parallel_cpbt_post_tag"]
-    cfg["_output_v3_compact_all_entities"] = defaults["compact_all_entities"]
-    cfg["_output_v3_cpbt_narrow_anti_keys"] = defaults["cpbt_narrow_anti_keys"]
-    cfg["_output_v3_cpbt_transfer_prefilter"] = defaults["cpbt_transfer_prefilter"]
-    cfg["_output_v3_cpbt_drop_tracking_match"] = defaults["cpbt_drop_tracking_match"]
-    cfg["_output_v3_batch_footnote_line_ids"] = defaults["batch_footnote_line_ids"]
-    cfg["_output_v3_footnote_shared_lineage"] = defaults["footnote_shared_lineage"]
-    cfg["_output_v3_footnote_checkpoint_partitions"] = defaults[
-        "footnote_checkpoint_partitions"
-    ]
-    cfg["_output_v3_broadcast_cpbt_remaining"] = defaults["broadcast_cpbt_remaining"]
-    cfg["_output_v3_hierarchy_materialize"] = defaults["hierarchy_materialize"]
-    cfg["_output_v3_parallel_cpbt_validate"] = defaults["parallel_cpbt_validate"]
-    cfg["_output_v3_skip_yearly_empty_probe"] = defaults["skip_yearly_empty_probe"]
-    cfg["_output_v3_collapse_state_passes"] = defaults["collapse_state_passes"]
-    cfg["_output_v3_batch_state_workflow_lookup"] = defaults[
-        "batch_state_workflow_lookup"
-    ]
-    cfg["_output_v3_single_pickup_antijoin"] = defaults["single_pickup_antijoin"]
-    cfg["_output_v3_materialize_effective_inputs"] = defaults[
-        "materialize_effective_inputs"
-    ]
-    cfg["_output_v3_parallel_effective"] = defaults["parallel_effective"]
-    cfg["_output_v3_business_optimization"] = defaults["business_optimization"]
-    return cfg
+# -- Checkpoint strategy toggle ------------------------------------------
+# Set _USE_LOCAL_CHECKPOINT = True  to use localCheckpoint (in-memory, no Delta I/O)
+# Set _USE_LOCAL_CHECKPOINT = False to use Delta checkpoint   (durable, slower)
+_USE_LOCAL_CHECKPOINT = False   # localCheckpoint -- flip to False to revert to Delta
+# ------------------------------------------------------------------------
 
 
 def _checkpoint(spark, df, name, cfg):
-    return common_checkpoint(spark, df, name, cfg)
+    if _USE_LOCAL_CHECKPOINT:
+        logger.info(f"[CHECKPOINT] {name} (localCheckpoint)")
+        cp = df.localCheckpoint(eager=True)
+        # toDF strips table-qualifier metadata from columns, mimicking
+        # the fresh schema that spark.table() provides after a Delta write.
+        return cp.toDF(*cp.columns)
+    # --- Delta path: delegate to the shared helper ---
+    # This was a local copy that named the table `_tmp_fep_{name}_{run_id}`, keyed on run_id alone.
+    # Tasks in the same process order run concurrently for different entities under one RunID (e.g.
+    # E2048 and E2049 both running run_final_effective_percentages for RunID 863), so that name was
+    # shared between them: both raced to CREATE the same table - one won, the other died with
+    # TABLE_OR_VIEW_ALREADY_EXISTS - and whichever finished first dropped the other's live checkpoint
+    # on cleanup. Common_V2.core.checkpoint already solves exactly this with a per-call uuid suffix,
+    # and additionally retries the transient Unity Catalog form of the same error. Keeping the "fep_"
+    # prefix leaves the tables named `_tmp_fep_<name>_<run_id>_<uuid>`, so they stay recognisable;
+    # the uuid is the only thing that changes.
+    return checkpoint(spark, df, f"fep_{name}", cfg)
 
 
 def _drop_checkpoints(spark, cfg):
-    if cfg.get("drop_checkpoints"):
-        drop_checkpoints(spark, cfg)
+    if _USE_LOCAL_CHECKPOINT:
+        return  # nothing to clean up
+    if cfg.get("_skip_cleanup"):
+        return
+    drop_checkpoints(spark, cfg)
 
 
 def _save_results(spark, cfg, statuses):
@@ -308,42 +237,25 @@ def _save_results(spark, cfg, statuses):
         output_tables[tbl_name] = tbl_df
 
     result_type = cfg.get("result_type", "deltalake")
-    workers = int(cfg.get("max_threads") or 4)
-    enabled_groups = cfg.get("_enabled_groups") or parse_enabled_groups("all", known_groups=KNOWN_GROUPS)
-
-    def _write_one(tbl_name, tbl_df):
-        local = isolated_cfg(cfg, fresh_results=False)
-        storer = GenericResultStorer(spark)
-        return storer.save_results(
-            result={tbl_name: tbl_df},
-            result_type=result_type,
-            catalog_name=local["catalog"],
-            database_name=local["schema"],
-            run_id=local["run_id"],
-            client_id=local["client_id"],
-            entity_id=local["entity_id"],
-            execution_id=local.get("execution_id", ""),
-            volume_path=local.get("volume_path", ""),
-            sql_url_path=local.get("sql_url_path", ""),
-            sql_username=local.get("sql_username", ""),
-            sql_password=local.get("sql_password", ""),
-        )
-
-    written = dict(
-        run_phase(
-            "output_writes",
-            [
-                (tbl_name, _write_one, (tbl_name, tbl_df), {})
-                for tbl_name, tbl_df in output_tables.items()
-            ],
-            workers,
-            enabled_groups,
-        )
+    storer = GenericResultStorer(spark)
+    return_value = storer.save_results(
+        result=output_tables,
+        result_type=result_type,
+        catalog_name=cfg["catalog"],
+        database_name=cfg["schema"],
+        run_id=cfg["run_id"],
+        client_id=cfg["client_id"],
+        entity_id=cfg["entity_id"],
+        execution_id=cfg.get("execution_id", ""),
+        volume_path=cfg.get("volume_path", ""),
+        sql_url_path=cfg.get("sql_url_path", ""),
+        sql_username=cfg.get("sql_username", ""),
+        sql_password=cfg.get("sql_password", ""),
     )
     logger.info(
         f"[SAVE] Results saved ({result_type}): {list(output_tables.keys())}"
     )
-    return next((v for v in written.values() if v), None)
+    return return_value
 
 
 # ===============================================================
@@ -364,15 +276,7 @@ def run_modes(
     ResultType: str = "deltalake",
     VolumePath: str = None,
     ExecutionID: str = None,
-    max_threads: int = None,
-    MaxThreads: int = None,
-    parallel_groups: str = "all",
-    ParallelGroups: str = None,
-    execution_profile: str = None,
-    ExecutionProfile: str = None,
-    checkpoint_mode: int = None,
-    CheckpointMode: int = None,
-    SqlShufflePartitions=None,
+    common_params: dict = None,
 ) -> dict:
     """Run Final Effective Percentage for one or more modes.
 
@@ -422,45 +326,21 @@ def run_modes(
         )
     cfg.setdefault("_checkpoint_tables", [])
 
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
-    profile = resolve_execution_profile(
-        _blank(ExecutionProfile) or _blank(execution_profile),
-        checkpoint_mode=(
-            CheckpointMode if CheckpointMode is not None else checkpoint_mode
-        ),
-    )
-    profile_name = profile["name"]
-    workers = normalize_workers(
-        max_threads=(
-            MaxThreads
-            if MaxThreads is not None
-            else max_threads
-            if max_threads is not None
-            else profile["max_threads"]
-        ),
-        MaxThreads=MaxThreads,
-    )
-    shuffle_override = _as_int(SqlShufflePartitions)
-    original_shuffle = spark.conf.get("spark.sql.shuffle.partitions")
-    if shuffle_override is None:
-        spark.conf.set(
-            "spark.sql.shuffle.partitions",
-            str(profile["shuffle_partitions"]),
-        )
-    else:
-        spark.conf.set("spark.sql.shuffle.partitions", str(shuffle_override))
-    mode_v2 = profile["checkpoint_mode"]
-    cfg["checkpoint_mode"] = mode_v2
-    cfg["max_threads"] = workers
-    cfg["execution_profile"] = profile_name
-    cfg["_enabled_groups"] = enabled_groups
-    _apply_promoted_flags(cfg)
-    print(
-        f"[CHECKPOINT] ExecutionProfile={profile_name} "
-        f"CheckpointMode={mode_v2} shuffle="
-        f"{shuffle_override or profile['shuffle_partitions']} "
-        f"MaxThreads={workers}"
-    )
+    # -- AQE tuning --
+    # Default 200 shuffle partitions is excessive; reducing to 32 eliminates
+    # scheduling overhead from many tiny partitions and improves checkpoint
+    # write speed. advisoryPartitionSizeInBytes is not available on serverless
+    # compute -- set each independently so one failure doesn't block the other.
+    _aqe_configs = {
+        "spark.sql.shuffle.partitions": "32",
+        "spark.sql.adaptive.advisoryPartitionSizeInBytes": "128m",
+    }
+    for _k, _v in _aqe_configs.items():
+        try:
+            spark.conf.set(_k, _v)
+        except Exception:
+            logger.info(f"[AQE] {_k} not available (serverless) -- skipped")
+
 
     # Pass through output options (same pattern as apply_investment_level_rounding)
     cfg.setdefault("result_type", ResultType)
@@ -468,6 +348,9 @@ def run_modes(
         cfg["volume_path"] = VolumePath
     if ExecutionID is not None:
         cfg["execution_id"] = ExecutionID
+    # Needed by the validation gates to resolve the SQL Server JDBC target.
+    if common_params:
+        cfg["_common_params"] = common_params
 
     statuses = {}
     save_return_value = None
@@ -536,8 +419,6 @@ def run_modes(
 
         # --- Common Phase: Entity hierarchy (mode-independent) ---
         entity_partners = build_entity_partners(spark, cfg)
-        if cfg.get("_output_v3_business_optimization") == "broadcast_entity_partners":
-            entity_partners = F.broadcast(entity_partners)
 
         # Entity hierarchy uses cost_pct_snapshot. For modes [1,2,3] use 123;
         # for [4] use 4. If both present, use 123 (superset).
@@ -551,6 +432,9 @@ def run_modes(
         # --- Common Phase: Underlyings combined ---
         underlyings_combined = build_underlyings_combined(
             spark, cfg, cost_underlying_types, entity_hierarchy, _hierarchy_snapshot,
+        )
+        underlyings_combined = _checkpoint(
+            spark, underlyings_combined, "underlyings_common", cfg,
         )
 
         # --- Common Phase: Allocation rules, book effective, line items ---
@@ -739,36 +623,17 @@ def run_modes(
             # --- lt-DEPENDENT chains ---
             # Chain WITH populated lt_input -- used by mode 1 (SP populates
             # #TempLookThroughAllocationInput when @Mode = 1).
-            chain_tasks = []
             if 1 in modes_123:
-                chain_tasks.append(
-                    (
-                        "lt",
-                        _build_lt_dependent_chain,
-                        (lt_input_m14, "lt"),
-                        {},
-                    )
-                )
+                chain_with_lt = _build_lt_dependent_chain(lt_input_m14, "lt")
+
+            # Chain WITHOUT lt_input - used by modes 2 and 3. SP gate at
+            # `IF @Mode IN (1, 4)` means #TempLookThroughAllocationInput is
+            # empty for modes 2 and 3, so downstream queries on it return 0
+            # rows. We replicate by passing an empty DataFrame with the same
+            # schema - `lt_input_m14.limit(0)` is a metadata-only op in Spark.
             if 2 in modes_123 or 3 in modes_123:
                 lt_input_empty = lt_input_m14.limit(0)
-                chain_tasks.append(
-                    (
-                        "nolt",
-                        _build_lt_dependent_chain,
-                        (lt_input_empty, "nolt"),
-                        {},
-                    )
-                )
-            built_chains = dict(
-                run_phase(
-                    "independent_builders",
-                    chain_tasks,
-                    workers,
-                    enabled_groups,
-                )
-            )
-            chain_with_lt = built_chains.get("lt")
-            chain_without_lt = built_chains.get("nolt")
+                chain_without_lt = _build_lt_dependent_chain(lt_input_empty, "nolt")
 
             logger.info("[COMMON-2] Shared base data complete (modes 1+2+3)")
 
@@ -961,14 +826,13 @@ def run_modes(
             per_mode_data = {}    # mode -> input-prep dict (only for modes that survived fast-exit)
             mode_t0 = {}          # mode -> wall-clock start
 
-            # -- Pass A: concurrent per-mode input prep (locked 54s path) --
-            def _prep_one_mode(mode):
-                """Build mode-specific prep frames; leave pre-CPBT barriers for
-                the next parallel wave so nde/de/txfr can overlap."""
+            # -- Pass A: per-mode input prep ----------------------
+            for mode in modes_123:
                 mt0 = time.time()
-                local_cfg = isolated_cfg(cfg, fresh_results=False)
-                local_cfg["mode"] = mode
-                local_cfg["_current_mode"] = mode
+                mode_t0[mode] = mt0
+                cfg["mode"] = mode
+                cfg["_current_mode"] = mode
+                cost_pct_snapshot = cost_pct_snapshot_123
 
                 mode_status = {
                     "sp_name": "uspGetFinalEffectivePercentage",
@@ -977,310 +841,165 @@ def run_modes(
                     "error": None,
                     "elapsed_seconds": 0,
                 }
-                logger.info(
-                    f"[START] mode {mode} prep (Pass A) within run_modes({modes})"
-                )
+                statuses[mode] = mode_status   # placeholder, finalized in Pass C
+
+                logger.info(f"[START] mode {mode} prep (Pass A) within run_modes({modes})")
+
                 try:
-                    alloc_input = (
-                        build_allocation_input(spark, local_cfg, modes=[mode])
-                        if mode == 2
-                        else None
-                    )
-                    sm_input = (
-                        build_sm_lookthrough_allocation_input(spark, local_cfg)
-                        if mode == 3
-                        else None
-                    )
-                    lt_input = (
-                        build_lookthrough_allocation_input(spark, local_cfg)
-                        if mode == 1
-                        else None
-                    )
+                    alloc_input = build_allocation_input(spark, cfg, modes=[mode]) if mode == 2 else None
+                    sm_input = build_sm_lookthrough_allocation_input(spark, cfg) if mode == 3 else None
+                    lt_input = build_lookthrough_allocation_input(spark, cfg) if mode == 1 else None
 
                     _alloc_empty = alloc_input is None or alloc_input.isEmpty()
                     _lt_empty = lt_input is None or lt_input.isEmpty()
                     _sm_empty = sm_input is None or sm_input.isEmpty()
-                    local_cfg["_alloc_empty"] = _alloc_empty
-                    local_cfg["_lt_empty"] = _lt_empty
-                    local_cfg["_sm_empty"] = _sm_empty
+                    cfg["_alloc_empty"] = _alloc_empty
+                    cfg["_lt_empty"] = _lt_empty
+                    cfg["_sm_empty"] = _sm_empty
 
                     if mode == 1:
-                        local_cfg["_inputs_empty"] = _lt_empty
+                        cfg["_inputs_empty"] = _lt_empty
                     elif mode == 2:
-                        local_cfg["_inputs_empty"] = _alloc_empty
-                    else:
-                        local_cfg["_inputs_empty"] = _sm_empty
+                        cfg["_inputs_empty"] = _alloc_empty
+                    elif mode == 3:
+                        cfg["_inputs_empty"] = _sm_empty
 
-                    if local_cfg["_inputs_empty"]:
-                        _input_name = {
-                            1: "lt_input",
-                            2: "alloc_input",
-                            3: "sm_input",
-                        }[mode]
+                    if cfg["_inputs_empty"]:
+                        _input_name = {1: "lt_input", 2: "alloc_input", 3: "sm_input"}[mode]
                         logger.info(
                             f"[FAST-EXIT] mode {mode}: {_input_name} empty -- "
                             "skipping compute and returning result=None."
                         )
                         mode_status["result"] = None
-                        mode_status["elapsed_seconds"] = round(
-                            time.time() - mt0, 1
-                        )
-                        return {
-                            "mode": mode,
-                            "mt0": mt0,
-                            "status": mode_status,
-                            "fast_exit": True,
-                            "data": None,
-                        }
+                        mode_status["elapsed_seconds"] = round(time.time() - mt0, 1)
+                        # Excluded from per_mode_data -> not part of the fused Pass B.
+                        continue
 
-                    mode_temp_cost_pct = common_temp_cost_pct_base
-                    chain = chain_with_lt if mode == 1 else chain_without_lt
+                    # -- Pick the right chain from Common Phase 2 ----------
+                    # Mode 1: SP populates #TempLookThroughAllocationInput
+                    #         -> use chain built WITH lt_input.
+                    # Modes 2, 3: SP leaves #TempLookThroughAllocationInput
+                    #         empty -> use chain built WITHOUT lt_input.
+                    # Per-mode augmentation creates new immutable DataFrames;
+                    # the base remains shared with other modes that picked
+                    # the same chain.
+                    mode_temp_cost_pct = common_temp_cost_pct_base   # lt-independent
+                    if mode == 1:
+                        chain = chain_with_lt
+                    else:   # mode 2 or 3
+                        chain = chain_without_lt
                     mode_all_underlyings = chain["all_underlyings"]
-                    mode_input_lines = chain["input_lines"]
-                    mode_final_amounts = chain["final_amounts"]
-                    mode_non_dated = chain["non_dated_entities"]
-                    mode_dated = chain["dated_entities"]
+                    mode_input_lines    = chain["input_lines"]
+                    mode_final_amounts  = chain["final_amounts"]
+                    mode_non_dated      = chain["non_dated_entities"]
+                    mode_dated          = chain["dated_entities"]
                     mode_entity_underlyings = chain["entity_underlyings"]
+                    # `mode_entity_underlyings` is now per-chain, not fully shared
+                    # (mode 1's input_lines includes lt-derived rows; modes 2/3's
+                    # don't). per_mode_data["entity_underlyings"] picks it up below.
 
-                    is_pe_model_flag = local_cfg.get("is_pe_model", False)
+                    is_pe_model_flag = cfg.get("is_pe_model", False)
+
+                    # -- Mode-specific input-table augmentation (per SP) ---
+                    # Footnote augmentation per SP gate at line 1729:
+                    #   IF (@Mode = 2 OR (@IsPE=1 AND @Mode=1) OR @Mode = 4)
+                    # In modes_123 (mode != 4) this collapses to:
+                    #   mode == 2  OR  (mode == 1 AND IsPEModel)
                     if mode == 2 or (mode == 1 and is_pe_model_flag):
-                        custom_fn_line_types = _get_custom_footnote_line_types(
-                            spark, local_cfg
-                        )
+                        custom_fn_line_types = _get_custom_footnote_line_types(spark, cfg)
                         mode_all_underlyings = build_footnote_underlyings_ordered(
-                            spark,
-                            local_cfg,
-                            common_underlying_mod,
-                            underlyings_ordered,
-                            alloc_input,
-                            book_effective,
-                            mode_all_underlyings,
-                            dar_setup,
-                            map_dar,
+                            spark, cfg, common_underlying_mod, underlyings_ordered, alloc_input,
+                            book_effective, mode_all_underlyings, dar_setup, map_dar,
                             custom_fn_line_types,
                         )
+                        # Checkpoint footnote-augmented underlyings immediately.
+                        # Without this, the lazy footnote DAG is re-materialized
+                        # 3x at the pre-cpbt checkpoints below (~83s -> ~15s).
                         mode_all_underlyings = _checkpoint(
-                            spark,
-                            mode_all_underlyings,
-                            f"all_und_final_m{mode}",
-                            local_cfg,
+                            spark, mode_all_underlyings, f"all_und_final_m{mode}", cfg,
                         )
                         footnote_input_lines = build_footnote_input_lines(
-                            spark,
-                            local_cfg,
-                            alloc_input,
-                            book_effective,
-                            mode_all_underlyings,
-                            map_dar,
-                            checkpoint_fn=_checkpoint,
+                            spark, cfg, alloc_input, book_effective, mode_all_underlyings, map_dar,
                         )
+                        # Checkpoint footnote_input_lines -- it's read 8+ times
+                        # inside build_footnote_dated_entities (once per footnote
+                        # type: PFIC, Form926, Form8865, etc.). Without this,
+                        # materializing non_dated/dated later re-evaluates the
+                        # entire input pipeline 8x each (18s+14s = 32s).
+                        # With this, the 8 branches read from memory (~2s each).
                         footnote_input_lines = _checkpoint(
-                            spark,
-                            footnote_input_lines,
-                            f"fn_input_lines_m{mode}",
-                            local_cfg,
+                            spark, footnote_input_lines, f"fn_input_lines_m{mode}", cfg,
                         )
-                        mode_non_dated, mode_dated = (
-                            build_footnote_dated_entities(
-                                spark,
-                                local_cfg,
-                                footnote_input_lines,
-                                mode_non_dated,
-                                mode_dated,
-                            )
+                        mode_non_dated, mode_dated = build_footnote_dated_entities(
+                            spark, cfg, footnote_input_lines, mode_non_dated, mode_dated,
                         )
 
+                    # Form199A -- function has the SP-correct gate internally
+                    # (mode in {2,4} AND !IsPEModel AND enabled). Skips otherwise.
                     mode_non_dated, _ = compute_form199a_effective_percentage(
-                        spark,
-                        local_cfg,
-                        mode_non_dated,
-                        book_effective,
-                        mode_input_lines,
+                        spark, cfg, mode_non_dated, book_effective, mode_input_lines,
                         mode_temp_cost_pct,
                     )
 
-                    _sm_has_data = (
-                        mode == 3
-                        and sm_input is not None
-                        and not sm_input.isEmpty()
-                    )
+                    # State allocation per SP gate at line 2866: IF @Mode = 3
+                    _sm_has_data = mode == 3 and sm_input is not None and not sm_input.isEmpty()
                     if _sm_has_data:
-                        (
-                            mode_all_underlyings,
-                            state_input_lines,
-                            sm_eff_amounts,
-                        ) = build_state_allocation_input(
-                            spark,
-                            local_cfg,
-                            common_underlying_mod,
-                            sm_input,
-                            cost_pct_snapshot_123,
-                            mode_all_underlyings,
-                            map_dar,
-                            dar_setup,
-                            entity_partners,
-                            collapse_state_passes=local_cfg.get(
-                                "_output_v3_collapse_state_passes", False
-                            ),
-                            batch_state_workflow_lookup=local_cfg.get(
-                                "_output_v3_batch_state_workflow_lookup",
-                                False,
-                            ),
+                        mode_all_underlyings, state_input_lines, sm_eff_amounts = build_state_allocation_input(
+                            spark, cfg, common_underlying_mod, sm_input, cost_pct_snapshot_123,
+                            mode_all_underlyings, map_dar, dar_setup, entity_partners,
                         )
                         mode_non_dated, mode_dated = build_state_entities(
-                            spark,
-                            local_cfg,
-                            state_input_lines,
-                            mode_non_dated,
-                            mode_dated,
+                            spark, cfg, state_input_lines, mode_non_dated, mode_dated,
                         )
                         if sm_eff_amounts is not None:
                             mode_final_amounts = (
-                                mode_final_amounts.unionByName(
-                                    sm_eff_amounts,
-                                    allowMissingColumns=True,
-                                )
-                                if mode_final_amounts is not None
-                                else sm_eff_amounts
+                                mode_final_amounts.unionByName(sm_eff_amounts, allowMissingColumns=True)
+                                if mode_final_amounts is not None else sm_eff_amounts
                             )
 
-                    is_footnote_path = mode == 2
+                    # Pre-cost_pct_by_type checkpoints for non_dated/dated.
+                    # These break the DAG lineage so that build_cost_percentage_by_type's
+                    # 7 internal checkpoints don't re-evaluate the upstream pipeline.
+                    is_footnote_path = (mode == 2)
                     is_state_path = _sm_has_data
+                    if is_footnote_path or is_state_path:
+                        _ckpt_t0 = time.time()
+                        mode_non_dated = _checkpoint(spark, mode_non_dated, f"nde_pre_cpbt_m{mode}", cfg)
+                        mode_dated = _checkpoint(spark, mode_dated, f"de_pre_cpbt_m{mode}", cfg)
+                        # all_underlyings:
+                        #   Footnote path: checkpointed above as all_und_final_m{mode}.
+                        #   State path:    checkpointed INSIDE build_state_allocation_input
+                        #                  (state_updated_all_und) so passes 1-4 of
+                        #                  state_input_lines + sm_entity_amounts share
+                        #                  the same materialization. No outer cp needed.
+                        logger.info(f"[TIMING] pre_cpbt_checkpoints_m{mode}: {time.time() - _ckpt_t0:.1f}s")
+
+                    # transfers_adj per-mode: SP read is COMMON but the join
+                    # with all_underlyings is per-mode (mode 2/3 augment differ
+                    # AND chain differs between mode 1 and modes 2/3).
+                    # Insert is gated `IF @Mode != 4` -- for modes_123 this fires
+                    # for all 3 modes.
                     transfers_adj = load_transfers_adj_cost(
-                        spark,
-                        local_cfg,
-                        mode_all_underlyings,
-                        mode_entity_underlyings,
+                        spark, cfg, mode_all_underlyings, mode_entity_underlyings,
                     )
-                    return {
-                        "mode": mode,
-                        "mt0": mt0,
-                        "status": mode_status,
-                        "fast_exit": False,
-                        "data": {
-                            "temp_cost_pct": mode_temp_cost_pct,
-                            "all_underlyings": mode_all_underlyings,
-                            "entity_underlyings": mode_entity_underlyings,
-                            "non_dated_entities": mode_non_dated,
-                            "dated_entities": mode_dated,
-                            "transfers_adj": transfers_adj,
-                            "input_lines": mode_input_lines,
-                            "final_amounts": mode_final_amounts,
-                            "needs_pre_cpbt": (
-                                is_footnote_path or is_state_path
-                            ),
-                            "local_cfg": local_cfg,
-                        },
+                    if transfers_adj is not None:
+                        transfers_adj = _checkpoint(spark, transfers_adj, f"txfr_pre_cpbt_m{mode}", cfg)
+
+                    per_mode_data[mode] = {
+                        "temp_cost_pct":     mode_temp_cost_pct,
+                        "all_underlyings":   mode_all_underlyings,
+                        "entity_underlyings": mode_entity_underlyings,   # per-chain
+                        "non_dated_entities": mode_non_dated,
+                        "dated_entities":    mode_dated,
+                        "transfers_adj":     transfers_adj,
+                        "input_lines":       mode_input_lines,           # per-chain
+                        "final_amounts":     mode_final_amounts,
                     }
                 except Exception as e:
                     mode_status["status"] = "FAIL"
                     mode_status["error"] = str(e)
-                    logger.error(
-                        f"[FAIL] mode {mode} prep: {e}", exc_info=True
-                    )
+                    logger.error(f"[FAIL] mode {mode} prep: {e}", exc_info=True)
                     raise
-
-            prep_by_mode = dict(
-                run_phase(
-                    "mode_prep",
-                    [
-                        (f"mode_{mode}", _prep_one_mode, (mode,), {})
-                        for mode in modes_123
-                    ],
-                    workers,
-                    enabled_groups,
-                )
-            )
-
-            # Pre-CPBT barriers: dated / non-dated / transfers overlap per mode.
-            for mode in modes_123:
-                prep = prep_by_mode[f"mode_{mode}"]
-                mode_t0[mode] = prep["mt0"]
-                statuses[mode] = prep["status"]
-                if prep["fast_exit"]:
-                    continue
-
-                d = prep["data"]
-                local_cfg = d["local_cfg"]
-                mode_non_dated = d["non_dated_entities"]
-                mode_dated = d["dated_entities"]
-                transfers_adj = d["transfers_adj"]
-
-                boundary_tasks = []
-                if d["needs_pre_cpbt"]:
-                    boundary_tasks.append(
-                        (
-                            f"non_dated_m{mode}",
-                            _checkpoint,
-                            (
-                                spark,
-                                mode_non_dated,
-                                f"nde_pre_cpbt_m{mode}",
-                                local_cfg,
-                            ),
-                            {},
-                        )
-                    )
-                    boundary_tasks.append(
-                        (
-                            f"dated_m{mode}",
-                            _checkpoint,
-                            (
-                                spark,
-                                mode_dated,
-                                f"de_pre_cpbt_m{mode}",
-                                local_cfg,
-                            ),
-                            {},
-                        )
-                    )
-
-                def _ckpt_transfers(
-                    _transfers=transfers_adj,
-                    _mode=mode,
-                    _local_cfg=local_cfg,
-                ):
-                    if _transfers is None:
-                        return None
-                    return _checkpoint(
-                        spark,
-                        _transfers,
-                        f"txfr_pre_cpbt_m{_mode}",
-                        _local_cfg,
-                    )
-
-                boundary_tasks.append(
-                    (f"transfers_m{mode}", _ckpt_transfers, (), {})
-                )
-
-                _ckpt_t0 = time.time()
-                boundary = dict(
-                    run_phase(
-                        "mode_prep_boundaries",
-                        boundary_tasks,
-                        workers,
-                        enabled_groups,
-                    )
-                )
-                if d["needs_pre_cpbt"]:
-                    mode_non_dated = boundary[f"non_dated_m{mode}"]
-                    mode_dated = boundary[f"dated_m{mode}"]
-                    logger.info(
-                        f"[TIMING] pre_cpbt_checkpoints_m{mode}: "
-                        f"{time.time() - _ckpt_t0:.1f}s"
-                    )
-                transfers_adj = boundary[f"transfers_m{mode}"]
-
-                per_mode_data[mode] = {
-                    "temp_cost_pct": d["temp_cost_pct"],
-                    "all_underlyings": d["all_underlyings"],
-                    "entity_underlyings": d["entity_underlyings"],
-                    "non_dated_entities": mode_non_dated,
-                    "dated_entities": mode_dated,
-                    "transfers_adj": transfers_adj,
-                    "input_lines": d["input_lines"],
-                    "final_amounts": d["final_amounts"],
-                }
 
             # --- Pass B: ONE fused build_cost_percentage_by_type call ---
             valid_modes_123 = sorted(per_mode_data.keys())
@@ -1316,61 +1035,23 @@ def run_modes(
                 # (avoids collision with per-mode checkpoint paths).
                 cfg["_current_mode"] = 0
 
-                def _checkpoint_group(tasks):
-                    return dict(
-                        run_phase(
-                            "independent_builders",
-                            tasks,
-                            workers,
-                            enabled_groups,
-                        )
-                    )
-
                 fused_temp_cost_pct, fused_transfers_adj = build_cost_percentage_by_type(
                     spark, cfg, cost_pct_snapshot_123,
                     tagged_temp_cost_pct, tagged_all_underlyings, tagged_entity_underlyings,
                     tagged_non_dated, tagged_dated, tagged_transfers_adj,
                     checkpoint_fn=_checkpoint,
-                    checkpoint_group_fn=_checkpoint_group,
                 )
 
-                # Checkpoint fused outputs concurrently -- tcp_by_type has 3+
-                # downstream consumers; txfr_adj_fused is REQUIRED because
-                # localCheckpoint strips alias metadata used later by
-                # compute_effective_percentage_dated (.alias("T")).
-                fused_out = dict(
-                    run_phase(
-                        "independent_builders",
-                        [
-                            (
-                                "temp_output",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_temp_cost_pct,
-                                    "tcp_by_type_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                            (
-                                "transfer_output",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_transfers_adj,
-                                    "txfr_adj_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                        ],
-                        workers,
-                        enabled_groups,
-                    )
-                )
-                fused_temp_cost_pct = fused_out["temp_output"]
-                fused_transfers_adj = fused_out["transfer_output"]
+                # Checkpoint fused outputs -- tcp_by_type has 3+ downstream
+                # consumers (compute_missing_entities, build_final_cost_percentage,
+                # compute_minimum_quarter). Without this, each consumer
+                # re-evaluates the entire 7-step priority matching from scratch.
+                fused_temp_cost_pct = _checkpoint(spark, fused_temp_cost_pct, "tcp_by_type_fused", cfg)
+                # txfr_adj_fused: REQUIRED - localCheckpoint strips alias
+                # metadata. Without this, compute_effective_percentage_dated
+                # hits UNRESOLVED_COLUMN because trans_adj_default uses
+                # .alias("T") internally, and the function re-aliases as "T".
+                fused_transfers_adj = _checkpoint(spark, fused_transfers_adj, "txfr_adj_fused", cfg)
 
             # --- Pass B+: ONE call each to compute_missing_entities,
             #            build_final_cost_percentage, compute_minimum_quarter
@@ -1394,60 +1075,17 @@ def run_modes(
                     [_tag_mode(per_mode_data[m]["dated_entities"], m) for m in valid_modes_123]
                 )
 
-                # compute_missing_entities + final cost -- lazy builders first,
-                # then materialize the three fan-out barriers concurrently.
+                # compute_missing_entities -- runs once on fused inputs.
                 cfg["_current_mode"] = 0   # sentinel for checkpoint naming
                 fused_non_dated_post, fused_dated_post = compute_missing_entities(
                     cfg, tagged_non_dated_entities, tagged_dated_entities, fused_temp_cost_pct,
                 )
-                fused_final_cost_pct = build_final_cost_percentage(
-                    fused_temp_cost_pct, entity_partners
-                )
-                post_miss = dict(
-                    run_phase(
-                        "independent_builders",
-                        [
-                            (
-                                "post_missing_non_dated",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_non_dated_post,
-                                    "nde_post_miss_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                            (
-                                "post_missing_dated",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_dated_post,
-                                    "de_post_miss_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                            (
-                                "final_cost",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_final_cost_pct,
-                                    "final_cost_pct_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                        ],
-                        workers,
-                        enabled_groups,
-                    )
-                )
-                fused_non_dated_post = post_miss["post_missing_non_dated"]
-                fused_dated_post = post_miss["post_missing_dated"]
-                fused_final_cost_pct = post_miss["final_cost"]
+                fused_non_dated_post = _checkpoint(spark, fused_non_dated_post, "nde_post_miss_fused", cfg)
+                fused_dated_post = _checkpoint(spark, fused_dated_post, "de_post_miss_fused", cfg)
+
+                # build_final_cost_percentage -- runs once on fused temp_cost_pct.
+                fused_final_cost_pct = build_final_cost_percentage(fused_temp_cost_pct, entity_partners)
+                fused_final_cost_pct = _checkpoint(spark, fused_final_cost_pct, "final_cost_pct_fused", cfg)
 
                 # validate_cost_percentage_sum -- runs only if mode 1 is present.
                 # The validator is _mode-naive but mode-1-only; we filter the
@@ -1463,46 +1101,13 @@ def run_modes(
                             "mode 1: Cost percentage does not sum to 100%"
                         )
 
-                # compute_minimum_quarter -- runs once on fused inputs, then
-                # materialize dated-after-min-quarter and min-quarter data
-                # concurrently before effective calculation.
+                # compute_minimum_quarter -- runs once on fused inputs.
+                # Note: returned dated_entities is the post-min-quarter version
+                # (with _mode column preserved by the now-_mode-aware function).
                 cfg["_current_mode"] = 0
                 _, fused_cost_pct_min_quarter, fused_dated_post = compute_minimum_quarter(
                     spark, cfg, fused_final_cost_pct, fused_dated_post,
                 )
-                minq = dict(
-                    run_phase(
-                        "effective_inputs",
-                        [
-                            (
-                                "dated_after_min_quarter",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_dated_post,
-                                    "de_post_minq_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                            (
-                                "minimum_quarter",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_cost_pct_min_quarter,
-                                    "cost_pct_min_q_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                        ],
-                        workers,
-                        enabled_groups,
-                    )
-                )
-                fused_dated_post = minq["dated_after_min_quarter"]
-                fused_cost_pct_min_quarter = minq["minimum_quarter"]
 
             # --- Pass C: ONE fused call to effective_calc + plugging chain,
             #            then per-mode loop for build_final_output only.
@@ -1525,207 +1130,88 @@ def run_modes(
                 # NOTE: effective_calc uses dot-qualified column refs (D.InvestmentID)
                 # in joins with table aliases. localCheckpoint strips alias context,
                 # causing UNRESOLVED_COLUMN errors. Must use Delta checkpoint here.
-                def _dated_effective():
-                    return compute_effective_percentage_dated(
-                        spark, cfg, fused_dated_post, fused_final_cost_pct,
-                        fused_cost_pct_min_quarter, fused_transfers_adj,
-                        entity_partners, line_items,
-                        checkpoint_fn=_checkpoint,
-                    )
-
-                def _nondated_effective():
-                    return compute_effective_percentage_non_dated(
-                        spark, cfg, fused_non_dated_post, fused_final_cost_pct,
-                        fused_cost_pct_min_quarter, fused_transfers_adj,
-                    )
-
-                if cfg.get("_output_v3_parallel_effective", True):
-                    eff_pair = dict(
-                        run_phase(
-                            "independent_effective",
-                            [
-                                ("dated", _dated_effective, (), {}),
-                                ("nondated", _nondated_effective, (), {}),
-                            ],
-                            workers,
-                            enabled_groups,
-                        )
-                    )
-                    (
-                        fused_eff_pct_dated,
-                        fused_pickup_order_dated,
-                        fused_dated_post,
-                    ) = eff_pair["dated"]
-                    fused_eff_pct_non_dated = eff_pair["nondated"]
-                else:
-                    (
-                        fused_eff_pct_dated,
-                        fused_pickup_order_dated,
-                        fused_dated_post,
-                    ) = _dated_effective()
-                    fused_eff_pct_non_dated = _nondated_effective()
+                fused_eff_pct_dated, fused_pickup_order_dated, fused_dated_post = compute_effective_percentage_dated(
+                    spark, cfg, fused_dated_post, fused_final_cost_pct, fused_cost_pct_min_quarter,
+                    fused_transfers_adj, entity_partners, line_items,
+                    checkpoint_fn=_checkpoint,
+                )
                 if fused_eff_pct_dated is None:
                     raise RuntimeError(
                         f"compute_effective_percentage_dated returned None: "
                         "Yearly prorata percentages missing"
                     )
-                # Checkpoint dated/non-dated outputs concurrently -- the
-                # "missing partners" step after the last internal checkpoint
-                # re-introduces T.* alias refs on the dated branch.
-                eff_out = dict(
-                    run_phase(
-                        "effective_boundaries",
-                        [
-                            (
-                                "eff_dated",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_eff_pct_dated,
-                                    "eff_dt_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                            (
-                                "eff_nondated",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_eff_pct_non_dated,
-                                    "eff_nd_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                        ],
-                        workers,
-                        enabled_groups,
-                    )
+                # Checkpoint dated output -- the "missing partners" step after
+                # the last internal checkpoint re-introduces T.* alias refs.
+                fused_eff_pct_dated = _checkpoint(spark, fused_eff_pct_dated, "eff_dt_fused", cfg)
+
+                fused_eff_pct_non_dated = compute_effective_percentage_non_dated(
+                    spark, cfg, fused_non_dated_post, fused_final_cost_pct,
+                    fused_cost_pct_min_quarter, fused_transfers_adj,
                 )
-                fused_eff_pct_dated = eff_out["eff_dated"]
-                fused_eff_pct_non_dated = eff_out["eff_nondated"]
+                fused_eff_pct_non_dated = _checkpoint(spark, fused_eff_pct_non_dated, "eff_nd_fused", cfg)
 
                 fused_eff_pct_dated_rounded, fused_eff_pct_nd_rounded = apply_plugging(
                     spark, cfg, fused_eff_pct_dated, fused_eff_pct_non_dated, dar_setup,
                 )
-                plug_out = dict(
-                    run_phase(
-                        "effective_boundaries",
-                        [
-                            (
-                                "plugged_dated",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_eff_pct_dated_rounded,
-                                    "eff_dt_plug_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                            (
-                                "plugged_non_dated",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_eff_pct_nd_rounded,
-                                    "eff_nd_plug_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
-                        ],
-                        workers,
-                        enabled_groups,
-                    )
-                )
-                fused_eff_pct_dated_rounded = plug_out["plugged_dated"]
-                fused_eff_pct_nd_rounded = plug_out["plugged_non_dated"]
+                fused_eff_pct_dated_rounded = _checkpoint(spark, fused_eff_pct_dated_rounded, "eff_dt_plug_fused", cfg)
+                fused_eff_pct_nd_rounded = _checkpoint(spark, fused_eff_pct_nd_rounded, "eff_nd_plug_fused", cfg)
 
                 fused_eff_pct_dated_rounded, fused_eff_pct_nd_rounded = apply_type_id_update(
                     cfg, fused_eff_pct_dated_rounded, fused_eff_pct_nd_rounded,
                     cfg.get("_non_dated_entities_cost"), cfg.get("_dated_entities_cost"),
                 )
 
-            # Pass C: build per-mode outputs concurrently.
-            def _build_one_mode_output(mode):
-                local_cfg = isolated_cfg(cfg, fresh_results=False)
-                local_cfg["mode"] = mode
-                local_cfg["_current_mode"] = mode
+            # Per-mode loop for build_final_output (mode-specific output schema).
+            for mode in valid_modes_123:
+                cfg["mode"] = mode
+                cfg["_current_mode"] = mode
                 mt0 = mode_t0[mode]
                 mode_status = statuses[mode]
                 d = per_mode_data[mode]
-                logger.info(
-                    f"[START] mode {mode} build_final_output (Pass C) "
-                    f"within run_modes({modes})"
-                )
+
+                logger.info(f"[START] mode {mode} build_final_output (Pass C) within run_modes({modes})")
+
                 try:
+                    # Filter fused effective_calc/plugging outputs to this mode.
                     eff_pct_dated_rounded = (
-                        fused_eff_pct_dated_rounded.filter(
-                            F.col("_mode") == mode
-                        ).drop("_mode")
+                        fused_eff_pct_dated_rounded.filter(F.col("_mode") == mode).drop("_mode")
                     )
                     eff_pct_nd_rounded = (
-                        fused_eff_pct_nd_rounded.filter(
-                            F.col("_mode") == mode
-                        ).drop("_mode")
+                        fused_eff_pct_nd_rounded.filter(F.col("_mode") == mode).drop("_mode")
                     )
                     pickup_order_dated = (
-                        fused_pickup_order_dated.filter(
-                            F.col("_mode") == mode
-                        ).drop("_mode")
+                        fused_pickup_order_dated.filter(F.col("_mode") == mode).drop("_mode")
                     )
+                    entity_underlyings = d["entity_underlyings"]
+                    final_amounts      = d["final_amounts"]
+                    input_lines        = d["input_lines"]
+
+                    # Mode-specific output assembly (Phase 4: only build_final_output
+                    # remains per-mode because output schema differs per mode).
                     result = build_final_output(
-                        spark,
-                        local_cfg,
-                        eff_pct_dated_rounded,
-                        eff_pct_nd_rounded,
-                        pickup_order_dated,
-                        d["entity_underlyings"],
-                        d["final_amounts"],
+                        spark, cfg, eff_pct_dated_rounded, eff_pct_nd_rounded,
+                        pickup_order_dated, entity_underlyings,
+                        final_amounts,
                     )
                     result = result.withColumn("_mode", F.lit(mode))
                     mode_status["result"] = result
 
-                    log_id = local_cfg.get("log_id")
+                    log_id = cfg.get("log_id")
                     if log_id is not None:
                         spark.sql(f"""
-                            UPDATE {local_cfg['catalog']}.{local_cfg['schema']}.AllocationLog
+                            UPDATE {cfg['catalog']}.{cfg['schema']}.AllocationLog
                             SET EndDate = current_timestamp()
                             WHERE LogID = {log_id}
                         """)
+
                     logger.info(f"[DONE] mode {mode} computation complete")
                 except Exception as e:
                     mode_status["status"] = "FAIL"
                     mode_status["error"] = str(e)
-                    logger.error(
-                        f"[FAIL] mode {mode} downstream: {e}",
-                        exc_info=True,
-                    )
+                    logger.error(f"[FAIL] mode {mode} downstream: {e}", exc_info=True)
                     raise
-                mode_status["elapsed_seconds"] = round(time.time() - mt0, 1)
-                return mode_status
 
-            if valid_modes_123:
-                built = dict(
-                    run_phase(
-                        "output_build",
-                        [
-                            (
-                                f"mode_{mode}",
-                                _build_one_mode_output,
-                                (mode,),
-                                {},
-                            )
-                            for mode in valid_modes_123
-                        ],
-                        workers,
-                        enabled_groups,
-                    )
-                )
-                for mode in valid_modes_123:
-                    statuses[mode] = built[f"mode_{mode}"]
+                mode_status["elapsed_seconds"] = round(time.time() - mt0, 1)
 
         # --- Save results to target tables ---
         # Save BEFORE dropping checkpoints -- the result DFs depend on them.
@@ -1739,13 +1225,14 @@ def run_modes(
         # If error during common phase or re-raised from mode loop, clean up
         raise
     finally:
-        spark.conf.set("spark.sql.shuffle.partitions", original_shuffle)
         status_out = {
             "statuses": statuses,
             "elapsed_seconds": round(time.time() - t0, 1),
             "_checkpoint_tables": list(cfg.get("_checkpoint_tables", [])),
             "_save_return_value": save_return_value,
         }
+        # GAP-46: _drop_checkpoints called here. In test notebooks,
+        # monkey-patch to no-op and clean up manually.
         _drop_checkpoints(spark, cfg)
 
     logger.info(
@@ -1853,15 +1340,13 @@ def run_final_effective_percentages(
         catalog=catalog, schema=schema,
         cfg=cfg, verbose=verbose,
         ResultType=ResultType, VolumePath=VolumePath, ExecutionID=ExecutionID,
-        max_threads=kwargs.get("max_threads"),
-        MaxThreads=kwargs.get("MaxThreads"),
-        parallel_groups=kwargs.get("parallel_groups", "all"),
-        ParallelGroups=kwargs.get("ParallelGroups"),
-        execution_profile=kwargs.get("execution_profile"),
-        ExecutionProfile=kwargs.get("ExecutionProfile"),
-        checkpoint_mode=kwargs.get("checkpoint_mode"),
-        CheckpointMode=kwargs.get("CheckpointMode"),
-        SqlShufflePartitions=kwargs.get("SqlShufflePartitions"),
+        common_params={
+            "ClientID": client_id,
+            "TaxYear": kwargs.get("TaxYear"),
+            "CatalogName": CatalogName or catalog,
+            "CommonSchemaName": kwargs.get("CommonSchemaName"),
+            "IsSecondary": kwargs.get("IsSecondary", False),
+        },
     )
 
     # Reshape to {results: {sub_mode: df}, ...}.
@@ -1893,15 +1378,6 @@ def run_final_effective_percentages(
         "statuses": inner["statuses"],
         "_checkpoint_tables": inner.get("_checkpoint_tables", []),
     }
-
-
-def run_mode(spark, mode=0, **kwargs):
-    """Compatibility alias used by jobs that still call run_mode."""
-    return run_final_effective_percentages(spark, mode=mode, **kwargs)
-
-
-def get_last_run_profile():
-    return {}
 
 
 # ================================================================

@@ -545,6 +545,7 @@ def run_load_lookthrough_cost_alloc(
     rank_for_rule = (
         rank_for_rule
         or RankForRule
+        or run_params.get("RankForRulePickup", 0)
         or run_params.get("RankForRule", 0)
         or 0
     )
@@ -608,6 +609,14 @@ def run_load_lookthrough_cost_alloc(
         cfg["volume_path"] = volume_path
         cfg["execution_id"] = execution_id
         cfg["verbose"] = verbose
+        # Needed by the validation gates to resolve the SQL Server JDBC target.
+        cfg.setdefault("_common_params", {
+            "ClientID": client_id or cfg.get("client_id"),
+            "TaxYear": run_params.get("TaxYear"),
+            "CatalogName": catalog or cfg.get("catalog"),
+            "CommonSchemaName": run_params.get("CommonSchemaName"),
+            "IsSecondary": run_params.get("IsSecondary", False),
+        })
         cfg = {**cfg, "_checkpoint_tables": []}
         cfg["line_type"] = line_type
         cfg["rank_for_rule"] = rank_for_rule

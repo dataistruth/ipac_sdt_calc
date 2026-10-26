@@ -397,7 +397,7 @@ def _checkpoint(spark, df, name, cfg):
     from .plan_profiler import track_checkpoint_plan
 
     track_checkpoint_plan(name, df, cfg)
-    return common_checkpoint(spark, df, name, cfg)
+    return common_checkpoint(spark, df, f"fep_{name}", cfg)
 
 
 def _drop_checkpoints(spark, cfg):
@@ -495,6 +495,7 @@ def run_modes(
     ResultType: str = "deltalake",
     VolumePath: str = None,
     ExecutionID: str = None,
+    common_params: dict = None,
     max_threads: int = None,
     MaxThreads: int = None,
     parallel_groups: str = "all",
@@ -604,6 +605,9 @@ def run_modes(
         cfg["volume_path"] = VolumePath
     if ExecutionID is not None:
         cfg["execution_id"] = ExecutionID
+    # Needed by the validation gates to resolve the SQL Server JDBC target.
+    if common_params:
+        cfg["_common_params"] = common_params
 
     statuses = {}
     save_return_value = None
@@ -2014,6 +2018,13 @@ def run_final_effective_percentages(
         SqlShufflePartitions=kwargs.get("SqlShufflePartitions"),
         profile_plan=profile_plan,
         plan_checkpoint_threshold=plan_checkpoint_threshold,
+        common_params={
+            "ClientID": client_id,
+            "TaxYear": kwargs.get("TaxYear"),
+            "CatalogName": CatalogName or catalog,
+            "CommonSchemaName": kwargs.get("CommonSchemaName"),
+            "IsSecondary": kwargs.get("IsSecondary", False),
+        },
     )
 
     # Reshape to {results: {sub_mode: df}, ...}.

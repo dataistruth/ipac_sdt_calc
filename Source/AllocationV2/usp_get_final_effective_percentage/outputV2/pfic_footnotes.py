@@ -1108,7 +1108,7 @@ def build_footnote_dated_entities(
             .join(
                 F.broadcast(_tbl(spark, "QuarterDates", cfg)).alias("D"),
                 _parse_textvalue_date(F.col("PF.TextValue"))
-                .between(F.col("D.StartDate"), F.col("D.EndDate")),
+                == F.to_date(F.col("D.StartDate")),
             )
             .select(
                 F.coalesce(F.col("D.Quarter"), F.lit("Q0")).alias("Quarter"),
@@ -1402,7 +1402,7 @@ def build_footnote_dated_entities(
             .join(
                 F.broadcast(_tbl(spark, "QuarterDates", cfg)).alias("D"),
                 _parse_textvalue_date(F.col("PF.TextValue"))
-                .between(F.col("D.StartDate"), F.col("D.EndDate")),
+                == F.to_date(F.col("D.StartDate")),
             )
             .select(
                 F.col("PF.PFICFootnoteID"),

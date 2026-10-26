@@ -540,10 +540,8 @@ def build_mode1_704c_pe_book_allocations(
         _tbl(spark, "K1LineItem", cfg).alias("KL")
         .filter(
             (F.col("LineDataType") == "Number")
-            # Delta schemas can expose SQL Server BIT columns as Boolean or
-            # numeric. Casting supports both without comparing Boolean to INT.
-            & F.coalesce(F.col("IsActive").cast("boolean"), F.lit(False))
-            & F.coalesce(F.col("IsVisible").cast("boolean"), F.lit(False))
+            & (F.col("IsActive") == 1)
+            & (F.col("IsVisible") == 1)
         )
         .select("LineID", "ClientID", "TaxPeriodID")
     )

@@ -237,6 +237,27 @@ def build_pfic_conversion(
     tmp_pfic_footnote_input = qef_lines.unionByName(p10c_joined, allowMissingColumns=True)
 
     # -----------------------------------------------------------------------
+    # #PFICMappedK3CountryAttributeLines: PFICMappedK1Lines restricted to
+    # K1 lines flagged as 'K3 - Country Attribute'.
+    # -----------------------------------------------------------------------
+    k3_country_lines = (
+        pfic_mapped_df.alias("PFIC")
+        .join(
+            F.broadcast(tbl(spark, "K1LineItem", cfg).alias("K")),
+            F.col("PFIC.K1LineID") == F.col("K.LineID"),
+        )
+        .join(
+            F.broadcast(tbl(spark, "ENU_K3Attribute", cfg).alias("EK")),
+            F.col("K.K3AttributeTypeID") == F.col("EK.K3AttributeTypeID"),
+        )
+        .filter(F.lower(F.col("EK.K3AttributeType")) == "k3 - country attribute")
+        .select(
+            F.col("PFIC.K1LineID").alias("K1LineID"),
+            F.col("PFIC.PFICLineID").alias("PFICLineID"),
+        )
+    )
+
+    # -----------------------------------------------------------------------
     # Step 6: Build #ConvertedPFICAmounts (for income attribute calc)
     # -----------------------------------------------------------------------
     pfic_entity_tbl = tbl(spark, "PFICFootnoteEntity", cfg)
@@ -246,7 +267,7 @@ def build_pfic_conversion(
     converted_pfic_amounts = (
         tmp_pfic_footnote_input.alias("PFIC")
         .join(
-            pfic_mapped_df.alias("PK"),
+            k3_country_lines.alias("PK"),
             F.col("PFIC.LineID") == F.col("PK.PFICLineID"),
         )
         .join(
@@ -259,13 +280,17 @@ def build_pfic_conversion(
         )
         .join(
             country_list.alias("EC"),
-            F.col("EC.CountryCode") == F.coalesce(F.col("PE.CountryCode"), F.col("E.CountryCode")),
+            F.col("EC.CountryCode") == F.coalesce(
+                F.col("PE.CountryofIncorporation"), F.col("PE.CountryCode"), F.col("E.CountryCode")
+            ),
         )
         .select(
             F.col("PFIC.EntityID"),
             F.col("PK.K1LineID").alias("LineID"),
             F.col("PFIC.Amount"),
-            F.coalesce(F.col("PE.CountryCode"), F.col("E.CountryCode")).alias("CountryCode"),
+            F.coalesce(
+                F.col("PE.CountryofIncorporation"), F.col("PE.CountryCode"), F.col("E.CountryCode")
+            ).alias("CountryCode"),
             F.col("EC.CountryID").alias("AttributeID"),
             F.col("PFIC.EntityID").cast("string").alias("TrackingKey"),
         )
@@ -602,6 +627,10 @@ def build_pfic_conversion(
     converted_from_ungrouped = (
         all_ungrouped.alias("T")
         .join(
+            k3_country_lines.alias("K3"),
+            F.col("T.LineID") == F.col("K3.K1LineID"),
+        )
+        .join(
             pfic_footnote_entity_details_df.alias("PE"),
             F.col("T.PFICFootnoteID") == F.col("PE.PFICFootnoteID"),
         )
@@ -740,3 +769,4 @@ def build_pfic_income_attributes(
 
     log_timing("build_pfic_income_attributes", t0)
     return result
+

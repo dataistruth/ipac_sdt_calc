@@ -15,7 +15,14 @@ from pyspark.sql import Window
 import logging
 import time
 
+from Common_V2.core.writers import write_delta_and_sql
+
 logger = logging.getLogger(__name__)
+
+# Column subset of dbo.AllocationRunErrors written by this SP's validation gates.
+_ALLOCATION_RUN_ERRORS_SCHEMA = (
+    "RunID bigint, EntityID int, ErrorMessage string, LogID int, ErrororWarning string"
+)
 
 
 def _tbl(spark: SparkSession, name: str, cfg: dict) -> DataFrame:
@@ -228,8 +235,7 @@ def compute_effective_percentage_dated(
                 )
                 .join(
                     quarter_dates.alias("D"),
-                    F.coalesce(F.col("T.TransferDate"), F.lit("1900-01-01").cast("date"))
-                    .between(F.col("D.StartDate"), F.col("D.EndDate")),
+                    F.col("T.TransferDate") == F.col("D.StartDate"),
                 )
                 .join(
                     k1_items.alias("K"),
@@ -271,8 +277,7 @@ def compute_effective_percentage_dated(
                     )
                     .join(
                         quarter_dates.alias("D"),
-                        F.coalesce(F.col("T.TransferDate"), F.lit("1900-01-01").cast("date"))
-                        .between(F.col("D.StartDate"), F.col("D.EndDate")),
+                        F.col("T.TransferDate") == F.col("D.StartDate"),
                     )
                     .filter(
                         (F.coalesce(F.col("L.IsExcludefromTransfer"), F.lit(False)) == False)
@@ -340,8 +345,7 @@ def compute_effective_percentage_dated(
                 )
                 .join(
                     F.broadcast(_tbl(spark, "QuarterDates", cfg)).alias("D") if is_pe_book_dated else qm_ref.alias("D"),
-                    F.coalesce(F.col("T.TransferDate"), F.lit("1900-01-01").cast("date"))
-                    .between(F.col("D.StartDate"), F.col("D.EndDate")) if is_pe_book_dated
+                    F.col("T.TransferDate") == F.col("D.StartDate") if is_pe_book_dated
                     else (F.col("D.LookUpValue") == F.coalesce(F.month(F.col("T.TransferDate")), F.lit(0)).cast("string")),
                 )
                 .join(
@@ -981,9 +985,10 @@ def compute_effective_percentage_dated(
         logger.info("[CHECKPOINT] eff_pct_dated after missing partners")
 
     # Check if yearly data exists — if not, validate error
+    # SQL gate: IF NOT EXISTS(#TempYearly) AND @LocalIsPEModel = 0
     # Phase 3a-2: add _mode equality to anti-join. The cross-join inherits
     # _mode from P (entity_partners has no _mode — shared dim).
-    if yearly_dated.isEmpty():
+    if yearly_dated.isEmpty() and not cfg.get("is_pe_model", False):
         partner_check = (
             entity_partners.alias("Y")
             .crossJoin(
@@ -1007,14 +1012,13 @@ def compute_effective_percentage_dated(
             )
         )
         if not missing_yearly.isEmpty():
-            # Write error
+            error_msg = "Please update yearly prorata percentages"
+            logger.error(f"[VALIDATION] {error_msg}")
             error_df = spark.createDataFrame(
-                [(run_id, cfg["entity_id"], "Please update yearly prorata percentages", cfg.get("log_id"), "Error")],
-                ["RunID", "EntityID", "ErrorMessage", "LogID", "ErrororWarning"],
+                [(run_id, cfg["entity_id"], error_msg, cfg.get("log_id"), "Error")],
+                _ALLOCATION_RUN_ERRORS_SCHEMA,
             )
-            error_df.write.format("delta").mode("append").saveAsTable(
-                f"{cfg['catalog']}.{cfg['schema']}.AllocationRunErrors"
-            )
+            write_delta_and_sql(spark, cfg, error_df, "AllocationRunErrors")
             spark.sql(f"""
                 UPDATE {cfg['catalog']}.{cfg['schema']}.AllocationRun
                 SET RunStatus = 'FAIL', RunEndDate = current_timestamp()

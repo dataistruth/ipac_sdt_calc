@@ -9,38 +9,10 @@ import pyspark.sql.functions as F
 import logging
 import time
 
-from Common_V2.core.checkpoint import checkpoint as common_checkpoint
 from Common_V2.core.helpers import read_table, ns, ns0
 from Common_V2.core.observability import log_section, log_timing
 
 logger = logging.getLogger(__name__)
-
-
-def _seam(spark, df, name, cfg):
-    return common_checkpoint(spark, df, name, cfg)
-
-
-def derive_cost_underlying_types(df_cost_snapshot):
-    """Mirror sdt_d TempCostUnderlyingTypes derivation from a snapshot."""
-    return (
-        df_cost_snapshot.filter(
-            (F.lower(F.col("EntityUnderlyingtype")) != "k-1 only")
-            | (
-                (F.lower(F.col("EntityUnderlyingtype")) == "k-1 only")
-                & (F.col("InvestmentID") == -1)
-            )
-        )
-        .select(
-            "EntityId",
-            "InvestmentID",
-            "Quarter",
-            "AllocationTypeId",
-            "TrackingKey",
-            "Underlyingtype",
-            "EntityUnderlyingtype",
-        )
-        .distinct()
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -509,8 +481,6 @@ def build_entity_hierarchy(
         )
         all_levels = all_levels.unionByName(next_level)
         current_level = next_level
-
-    all_levels = _seam(spark, all_levels, "entity_levels", cfg)
 
     # ── Final SELECT from CTE joined back to TempCostUnderlyingTypes ──
     # JOIN EntityHierarchy EH ON EH.CurrentEntityId = CASE WHEN ... END

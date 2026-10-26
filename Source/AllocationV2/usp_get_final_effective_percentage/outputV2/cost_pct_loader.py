@@ -15,7 +15,14 @@ from pyspark.sql import Window
 import logging
 import time
 
+from Common_V2.core.writers import write_delta_and_sql
+
 logger = logging.getLogger(__name__)
+
+# Column subset of dbo.AllocationRunErrors written by this SP's validation gates.
+_ALLOCATION_RUN_ERRORS_SCHEMA = (
+    "RunID bigint, EntityID int, ErrorMessage string, LogID int, ErrororWarning string"
+)
 
 
 def _tbl(spark: SparkSession, name: str, cfg: dict) -> DataFrame:
@@ -1499,11 +1506,9 @@ def validate_cost_percentage_sum(
     # Write to AllocationRunErrors
     error_df = spark.createDataFrame(
         [(run_id, entity_id, error_msg, log_id, "Error")],
-        ["RunID", "EntityID", "ErrorMessage", "LogID", "ErrororWarning"],
+        _ALLOCATION_RUN_ERRORS_SCHEMA,
     )
-    error_df.write.format("delta").mode("append").saveAsTable(
-        f"{cfg['catalog']}.{cfg['schema']}.AllocationRunErrors"
-    )
+    write_delta_and_sql(spark, cfg, error_df, "AllocationRunErrors")
 
     # Update AllocationRun to FAIL
     spark.sql(f"""

@@ -15,6 +15,8 @@ from pyspark.sql import Window
 import logging
 import time
 
+from Common_V2.core.checkpoint import checkpoint
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,17 +26,6 @@ def _tbl(spark: SparkSession, name: str, cfg: dict) -> DataFrame:
 
 def _log_timing(name, start):
     logger.info(f"[TIMING] {name}: {time.time() - start:.1f}s")
-
-
-def _local_cp(df: DataFrame, name: str) -> DataFrame:
-    """Eager localCheckpoint that breaks the DAG without Delta I/O.
-    Mirrors orchestrator._checkpoint local-mode behavior so this module
-    stays import-independent of the orchestrator.
-    """
-    logger.info(f"[CHECKPOINT] {name} (localCheckpoint)")
-    cp = df.localCheckpoint(eager=True)
-    # toDF strips alias-qualifier metadata, mimicking spark.table() schema.
-    return cp.toDF(*cp.columns)
 
 
 def _match_key(col):
@@ -439,11 +430,15 @@ def build_state_allocation_input(
     # returned DF used by the orchestrator + build_cost_percentage_by_type).
     # Without this, the union+upstream DAG (state_ordered with row_number
     # Window over 4 tables) re-evaluates 3x. With this, materialize once,
-    # downstream consumers scan the in-memory checkpoint.
+    # downstream consumers scan the checkpoint table.
     # Replaces the outer all_und_final_m3 checkpoint that the orchestrator
     # used to do after this function returned (which couldn't help pass4 or
     # sm_entity_amounts since both were already wired to the lazy plan).
-    updated_all_underlyings = _local_cp(updated_all_underlyings, "state_updated_all_und")
+    # Durable Delta, not localCheckpoint: a lost executor would otherwise
+    # raise CHECKPOINT_RDD_BLOCK_ID_NOT_FOUND with no lineage to recompute.
+    updated_all_underlyings = checkpoint(
+        spark, updated_all_underlyings, "state_updated_all_und", cfg
+    )
 
     # --- State entity amounts (by-amount allocation) ---
     # SQL lines 5830-5950
@@ -550,10 +545,12 @@ def build_state_allocation_input(
             F.col("C.TrackingKey"),
             F.col("C.Tag"),
             F.col("C.LineID").alias("LineId"),
+            # Amount-based rows: EffPercentage is 0 (NOT NULL in target), value in EffAmount.
+            F.lit(0.0).alias("EffPercentage"),
             F.when(
                 F.col("T.TotalAmount") != 0,
                 F.try_divide(F.col("C.InputAmount"), F.col("T.TotalAmount")) * F.col("C.AllocatedAmount"),
-            ).otherwise(F.lit(0)).alias("EffectiveAmount"),
+            ).otherwise(F.lit(0)).alias("EffAmount"),
             F.col("C.UnderlyingTypeId"),
             F.col("C.LineTypeID").alias("LineTypeId"),
             F.col("C.ExcludeFromTransfers").cast("boolean").alias("IsExcludefromTransfer"),
@@ -827,8 +824,7 @@ def build_state_entities(
             )
             .join(
                 _tbl(spark, "QuarterDates", cfg).alias("D"),
-                F.coalesce(F.col("K.TransactionDate"), F.lit("1900-01-01").cast("timestamp"))
-                .between(F.col("D.StartDate"), F.col("D.EndDate")),
+                F.col("K.TransactionDate") == F.col("D.StartDate"),
             )
             .filter(F.col("K.TransactionDate").isNotNull())
             .select(

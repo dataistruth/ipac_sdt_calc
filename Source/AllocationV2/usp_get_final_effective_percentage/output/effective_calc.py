@@ -15,7 +15,14 @@ from pyspark.sql import Window
 import logging
 import time
 
+from Common_V2.core.writers import write_delta_and_sql
+
 logger = logging.getLogger(__name__)
+
+# Column subset of dbo.AllocationRunErrors written by this SP's validation gates.
+_ALLOCATION_RUN_ERRORS_SCHEMA = (
+    "RunID bigint, EntityID int, ErrorMessage string, LogID int, ErrororWarning string"
+)
 
 
 def _tbl(spark: SparkSession, name: str, cfg: dict) -> DataFrame:
@@ -228,8 +235,7 @@ def compute_effective_percentage_dated(
                 )
                 .join(
                     quarter_dates.alias("D"),
-                    F.coalesce(F.col("T.TransferDate"), F.lit("1900-01-01").cast("date"))
-                    .between(F.col("D.StartDate"), F.col("D.EndDate")),
+                    F.col("T.TransferDate") == F.col("D.StartDate"),
                 )
                 .join(
                     k1_items.alias("K"),
@@ -271,8 +277,7 @@ def compute_effective_percentage_dated(
                     )
                     .join(
                         quarter_dates.alias("D"),
-                        F.coalesce(F.col("T.TransferDate"), F.lit("1900-01-01").cast("date"))
-                        .between(F.col("D.StartDate"), F.col("D.EndDate")),
+                        F.col("T.TransferDate") == F.col("D.StartDate"),
                     )
                     .filter(
                         (F.coalesce(F.col("L.IsExcludefromTransfer"), F.lit(False)) == False)
@@ -340,8 +345,7 @@ def compute_effective_percentage_dated(
                 )
                 .join(
                     F.broadcast(_tbl(spark, "QuarterDates", cfg)).alias("D") if is_pe_book_dated else qm_ref.alias("D"),
-                    F.coalesce(F.col("T.TransferDate"), F.lit("1900-01-01").cast("date"))
-                    .between(F.col("D.StartDate"), F.col("D.EndDate")) if is_pe_book_dated
+                    F.col("T.TransferDate") == F.col("D.StartDate") if is_pe_book_dated
                     else (F.col("D.LookUpValue") == F.coalesce(F.month(F.col("T.TransferDate")), F.lit(0)).cast("string")),
                 )
                 .join(
@@ -648,71 +652,31 @@ def compute_effective_percentage_dated(
 
     # Delete ProRata (pickup=3) for these entities from pickup_order
     # Phase 3a-2: add _mode equality to both anti-joins.
-    if cfg.get("_output_v3_single_pickup_antijoin", False):
-        # The SQL-compatible expression below emits every non-3 row once and
-        # every unmatched pickup-3 row twice. Compute the expensive anti-join
-        # once, then reproduce its required duplicate multiplicity locally.
-        pickup_non3 = pickup_order_dated.filter(
-            F.col("PickUpOrder").isNull()
-            | (F.col("PickUpOrder") != F.lit(3))
-        )
-        pickup_three_remaining = (
-            pickup_order_dated.alias("P")
-            .filter(F.col("P.PickUpOrder") == F.lit(3))
-            .join(
-                no_transfer_entities.alias("D"),
-                (F.col("D.InvestmentID") == F.col("P.InvestmentID"))
-                & (F.col("D.TypeId") == F.col("P.TypeId"))
-                & (F.col("D.TrackingKey") == F.col("P.TrackingKey"))
-                & (F.col("D.Tag") == F.col("P.Tag"))
-                & (
-                    F.coalesce(F.col("D.LineTypeID"), F.lit(-1))
-                    == F.coalesce(F.col("P.LineTypeID"), F.lit(-1))
-                )
-                & (
-                    F.col("D.IsExcludefromTransfer")
-                    == F.col("P.IsExcludefromTransfer")
-                )
-                & (F.col("D._mode") == F.col("P._mode")),
-                "left_anti",
-            )
-            .select("P.*")
-            .withColumn(
-                "_output_v3_repeat",
-                F.explode(F.array(F.lit(1), F.lit(2))),
-            )
-            .drop("_output_v3_repeat")
-        )
-        pickup_order_dated = pickup_non3.unionByName(
-            pickup_three_remaining,
-            allowMissingColumns=True,
-        )
-    else:
-        pickup_order_dated = pickup_order_dated.join(
-            no_transfer_entities.alias("D"),
-            (F.col("D.InvestmentID") == pickup_order_dated["InvestmentID"])
-            & (F.col("D.TypeId") == pickup_order_dated["TypeId"])
-            & (F.col("D.TrackingKey") == pickup_order_dated["TrackingKey"])
-            & (F.col("D.Tag") == pickup_order_dated["Tag"])
-            & (F.coalesce(F.col("D.LineTypeID"), F.lit(-1)) == F.coalesce(pickup_order_dated["LineTypeID"], F.lit(-1)))
-            & (F.col("D.IsExcludefromTransfer") == pickup_order_dated["IsExcludefromTransfer"])
-            & (F.col("D._mode") == pickup_order_dated["_mode"])
-            & (pickup_order_dated["PickUpOrder"] == 3),
+    pickup_order_dated = pickup_order_dated.join(
+        no_transfer_entities.alias("D"),
+        (F.col("D.InvestmentID") == pickup_order_dated["InvestmentID"])
+        & (F.col("D.TypeId") == pickup_order_dated["TypeId"])
+        & (F.col("D.TrackingKey") == pickup_order_dated["TrackingKey"])
+        & (F.col("D.Tag") == pickup_order_dated["Tag"])
+        & (F.coalesce(F.col("D.LineTypeID"), F.lit(-1)) == F.coalesce(pickup_order_dated["LineTypeID"], F.lit(-1)))
+        & (F.col("D.IsExcludefromTransfer") == pickup_order_dated["IsExcludefromTransfer"])
+        & (F.col("D._mode") == pickup_order_dated["_mode"])
+        & (pickup_order_dated["PickUpOrder"] == 3),
+        "left_anti",
+    ).unionByName(
+        pickup_order_dated.join(
+            no_transfer_entities.alias("D2"),
+            (F.col("D2.InvestmentID") == pickup_order_dated["InvestmentID"])
+            & (F.col("D2.TypeId") == pickup_order_dated["TypeId"])
+            & (F.col("D2.TrackingKey") == pickup_order_dated["TrackingKey"])
+            & (F.col("D2.Tag") == pickup_order_dated["Tag"])
+            & (F.coalesce(F.col("D2.LineTypeID"), F.lit(-1)) == F.coalesce(pickup_order_dated["LineTypeID"], F.lit(-1)))
+            & (F.col("D2.IsExcludefromTransfer") == pickup_order_dated["IsExcludefromTransfer"])
+            & (F.col("D2._mode") == pickup_order_dated["_mode"]),
             "left_anti",
-        ).unionByName(
-            pickup_order_dated.join(
-                no_transfer_entities.alias("D2"),
-                (F.col("D2.InvestmentID") == pickup_order_dated["InvestmentID"])
-                & (F.col("D2.TypeId") == pickup_order_dated["TypeId"])
-                & (F.col("D2.TrackingKey") == pickup_order_dated["TrackingKey"])
-                & (F.col("D2.Tag") == pickup_order_dated["Tag"])
-                & (F.coalesce(F.col("D2.LineTypeID"), F.lit(-1)) == F.coalesce(pickup_order_dated["LineTypeID"], F.lit(-1)))
-                & (F.col("D2.IsExcludefromTransfer") == pickup_order_dated["IsExcludefromTransfer"])
-                & (F.col("D2._mode") == pickup_order_dated["_mode"]),
-                "left_anti",
-            ).filter(F.col("PickUpOrder") == 3),
-            allowMissingColumns=True,
-        )
+        ).filter(F.col("PickUpOrder") == 3),
+        allowMissingColumns=True,
+    )
 
     # Checkpoint pickup_order_dated after Step 4 modifications
     if checkpoint_fn is not None:
@@ -981,9 +945,10 @@ def compute_effective_percentage_dated(
         logger.info("[CHECKPOINT] eff_pct_dated after missing partners")
 
     # Check if yearly data exists — if not, validate error
+    # SQL gate: IF NOT EXISTS(#TempYearly) AND @LocalIsPEModel = 0
     # Phase 3a-2: add _mode equality to anti-join. The cross-join inherits
     # _mode from P (entity_partners has no _mode — shared dim).
-    if yearly_dated.isEmpty():
+    if yearly_dated.isEmpty() and not cfg.get("is_pe_model", False):
         partner_check = (
             entity_partners.alias("Y")
             .crossJoin(
@@ -1007,14 +972,13 @@ def compute_effective_percentage_dated(
             )
         )
         if not missing_yearly.isEmpty():
-            # Write error
+            error_msg = "Please update yearly prorata percentages"
+            logger.error(f"[VALIDATION] {error_msg}")
             error_df = spark.createDataFrame(
-                [(run_id, cfg["entity_id"], "Please update yearly prorata percentages", cfg.get("log_id"), "Error")],
-                ["RunID", "EntityID", "ErrorMessage", "LogID", "ErrororWarning"],
+                [(run_id, cfg["entity_id"], error_msg, cfg.get("log_id"), "Error")],
+                _ALLOCATION_RUN_ERRORS_SCHEMA,
             )
-            error_df.write.format("delta").mode("append").saveAsTable(
-                f"{cfg['catalog']}.{cfg['schema']}.AllocationRunErrors"
-            )
+            write_delta_and_sql(spark, cfg, error_df, "AllocationRunErrors")
             spark.sql(f"""
                 UPDATE {cfg['catalog']}.{cfg['schema']}.AllocationRun
                 SET RunStatus = 'FAIL', RunEndDate = current_timestamp()
