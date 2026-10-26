@@ -1,4 +1,4 @@
-"""Shared helpers for the 12-SP suite notebooks."""
+"""Shared helpers for the 7-SP suite notebooks."""
 
 from __future__ import annotations
 

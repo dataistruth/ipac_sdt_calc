@@ -1,13 +1,13 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Run 12 SPs in Production mode
+# MAGIC # Run 7 SPs in Production mode
 # MAGIC
 # MAGIC First cell is the locked list. Each SP is run by its own
 # MAGIC `output/notebook/run_*.py`. Child notebooks keep their own
 # MAGIC Entity / Client / Run / catalog widgets.
 # MAGIC
 # MAGIC Suite widgets: `source_path`, `ExecutionProfile`, `run_in_parallel`.
-# MAGIC `run_in_parallel=3` runs 12 SPs three at a time.
+# MAGIC `run_in_parallel=3` runs 7 SPs three at a time.
 
 # COMMAND ----------
 
@@ -15,15 +15,10 @@ SP_LIST = [
     "usp_load_allocation_input",
     "usp_load_footnotes_allocation_to_output",
     "usp_get_final_effective_percentage",
-    "usp_apply_investment_level_rounding",
     "usp_add_allocation_summary",
-    "usp_load_k3_allocation_summary",
     "usp_load_lookthrough_cost_alloc_to_output",
     "usp_load_lookthrough_allocation_input",
     "usp_load_lookthrough_footnote_effective_allocation_pct",
-    "usp_add_lookthrough_alloc_detail_step01",
-    "usp_sm_load_lookthrough_cost_allocation_to_output",
-    "usp_sm_load_lookthrough_effective_allocation_pct",
 ]
 print(f"[suite] {len(SP_LIST)} production SPs")
 for index, name in enumerate(SP_LIST, start=1):
