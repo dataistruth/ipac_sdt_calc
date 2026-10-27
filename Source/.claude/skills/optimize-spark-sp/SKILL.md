@@ -26,12 +26,12 @@ There is no `checkpoint_V2.py` and no SP-folder `parallel_helpers.py` /
 `write_helpers.py`. Each SP declares its own `KNOWN_GROUPS` frozenset in the
 orchestrator and passes it as `known_groups=`. SP-specific write wrappers
 (table lists, PFIC math) live in that SP's existing service module
-(rounding `write_service`, allocation input `ai_finalization_service`,
+(allocation input `ai_finalization_service`,
 look-through allocation input `lt_finalization_service`) and call the
 common write helpers. `checkpoint.py` is the original `sdt_d` file plus one
 local mode: `checkpoint()` uses the `checkpoint_mode` argument, else
 `cfg["checkpoint_mode"]`; anything other than 4 is the original Delta path,
-so every SP outside these 12 keeps its behavior unchanged. Local mode runs
+so every SP outside these 7 keeps its behavior unchanged. Local mode runs
 `localCheckpoint(eager=True)` + `toDF(*columns)` (Delta fallback on error).
 
 ## Execution profile at orchestrator start
@@ -93,11 +93,6 @@ and notebooks. Use the child skill when the work is that SP:
 | `usp_load_lookthrough_cost_alloc` | [usp-load-lookthrough-cost-alloc/SKILL.md](usp-load-lookthrough-cost-alloc/SKILL.md) |
 | `usp_load_allocation_input` | [usp-load-allocation-input/SKILL.md](usp-load-allocation-input/SKILL.md) |
 | `usp_add_allocation_summary` | [usp-add-allocation-summary/SKILL.md](usp-add-allocation-summary/SKILL.md) |
-| `usp_add_lookthrough_alloc_detail_step01` | [usp-add-lookthrough-alloc-detail-step01/SKILL.md](usp-add-lookthrough-alloc-detail-step01/SKILL.md) |
-| `usp_apply_investment_level_rounding` | [usp-apply-investment-level-rounding/SKILL.md](usp-apply-investment-level-rounding/SKILL.md) |
-| `usp_load_k3_allocation_summary` | [usp-load-k3-allocation-summary/SKILL.md](usp-load-k3-allocation-summary/SKILL.md) |
-| `usp_sm_load_lookthrough_cost_allocation_to_output` | [usp-sm-load-lookthrough-cost-allocation-to-output/SKILL.md](usp-sm-load-lookthrough-cost-allocation-to-output/SKILL.md) |
-| `usp_sm_load_lookthrough_effective_allocation_pct` | [usp-sm-load-lookthrough-effective-allocation-pct/SKILL.md](usp-sm-load-lookthrough-effective-allocation-pct/SKILL.md) |
 
 The child skill owns SP-only checkpoints, extra tables, and locked
 timings. Do not copy those into other SPs. For
@@ -261,7 +256,7 @@ Copy **all** of these under the notebook `source_path`:
 
 ## Production `output/` (locked inline)
 
-Each of the 12 SPs already has Mode 1 inline in `output/`: Checkpoint
+Each of the 7 SPs already has Mode 1 inline in `output/`: Checkpoint
 V2, `resolve_execution_profile`, locked seams/waves, production run
 notebook, **no** `plan_profiler` / `profile_plan`. That tree is
 `sdt_d` production plus the locked optimization overlay. Do not
@@ -273,7 +268,7 @@ Business logic must match production `output/`.
 **Production parity check (locked 2026-10-18):** after normalizing
 import paths and removing profiler code (`_start_dev_plan_profile`,
 `_finish_dev_plan_profile`, `track_plan` wraps, `profile_plan`),
-`output/` and `outputV2/` must be identical for all 12 SPs, including
+`output/` and `outputV2/` must be identical for all 7 SPs, including
 `services/` subpackages. Allowed differences are only import style
 (production keeps relative `try/except ImportError` fallbacks;
 `outputV2` uses absolute `...outputV2.*` imports) and the profiler. To
@@ -347,8 +342,8 @@ profile_plan = bool(
    `profile_plan=False`, and the entry function must pass
    `profile_plan` explicitly at the call site.
 3. Never reference `profile_plan` in a helper unless it is a parameter.
-   This exact omission broke K3, allocation summary, and look-through
-   detail step01 with `NameError: name 'profile_plan' is not defined`.
+   This exact omission broke allocation summary with
+   `NameError: name 'profile_plan' is not defined`.
 4. The A/B notebook must tolerate a stale/missing widget:
 
 ```python
@@ -502,14 +497,14 @@ schemas above. Hash min/max stay on the raw `_h` BIGINT.
    either in the entry-function scope or in a helper that declares it as
    a parameter. Verify the helper call passes it explicitly.
 
-To time all 12 SPs as a suite, use
+To time all 7 SPs as a suite, use
 `Source/AllocationV2/run_sp_test/`. First cell is the locked SP list.
 Suite widgets are only `source_path`, `ExecutionProfile`, and
 `run_in_parallel`. Both notebooks always call the per-SP notebooks
 (`outputV2/notebook/benchmark_*.py` in dev, `output/notebook/run_*.py`
 in prod) and pass only those two path/profile values so each SP keeps
 its own Entity / Client / Run / catalog defaults. `run_in_parallel=3`
-runs 12 SPs three at a time.
+runs 7 SPs three at a time.
 
 ## Completion summary
 

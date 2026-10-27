@@ -28,6 +28,8 @@ from AllocationV2.usp_load_allocation_input.outputV2.ai_finalization_service imp
     purge_output_tables,
     collect_output_frames_parallel,
     flush_collected_results,
+    write_allocation_input,
+    write_pfic_flowup,
 )
 from AllocationV2.usp_load_allocation_input.outputV2.ai_form_service import build_all_form_inputs
 from AllocationV2.usp_load_allocation_input.outputV2.ai_hierarchy_service import (
@@ -45,6 +47,7 @@ from AllocationV2.usp_load_allocation_input.outputV2.ai_pfic_service import (
     apply_part_v_vii_flags,
     apply_pfic_election_deletes,
     build_pfic_allocation_input,
+    build_pfic_elections,
     build_pfic_snapshot,
 )
 from AllocationV2.usp_load_allocation_input.outputV2.ai_shared_views import register_shared_views

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = ['run_final_effective_percentages', 'run_mode', 'run_modes']
+__all__ = ['get_last_run_profile', 'run_final_effective_percentages', 'run_mode', 'run_modes']
 
 
 def __getattr__(name):

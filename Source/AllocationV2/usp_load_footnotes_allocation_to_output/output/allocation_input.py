@@ -10,10 +10,15 @@ import pyspark.sql.functions as F
 import logging
 import time
 
+from Common_V2.core.checkpoint import checkpoint as common_checkpoint
 from Common_V2.core.helpers import read_table, ns, ns0
 from Common_V2.core.observability import log_section, log_timing
 
 logger = logging.getLogger(__name__)
+
+
+def _seam(spark, df, name, cfg):
+    return common_checkpoint(spark, df, name, cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +428,7 @@ def build_allocation_input(
         & (remaining_input["TrackingKey"] == F.col("del1.TrackingKey")),
         "left_anti",
     )
+    remaining_input = _seam(spark, remaining_input, "alloc_pass1", cfg)
     # Delete consumed BookEffective (AtRisk, FootNoteID<>-1, LineID<>-1)
     remaining_book = remaining_book.filter(
         ~((F.col("SourceID") == at_risk_lt)
@@ -497,6 +503,7 @@ def build_allocation_input(
         & (remaining_input["TrackingKey"] == F.col("del2.TrackingKey")),
         "left_anti",
     )
+    remaining_input = _seam(spark, remaining_input, "alloc_pass2", cfg)
     remaining_book = remaining_book.filter(
         ~((ns0(F.col("FootNoteID")) != -1) & (ns0(F.col("LineID")) != -1))
     )
@@ -551,6 +558,7 @@ def build_allocation_input(
         & (remaining_input["TrackingKey"] == F.col("del3.TrackingKey")),
         "left_anti",
     )
+    remaining_input = _seam(spark, remaining_input, "alloc_pass3", cfg)
     remaining_book = remaining_book.filter(
         ~((ns0(F.col("FootNoteID")) != -1) & (ns0(F.col("LineID")) == -1))
     )
@@ -605,6 +613,7 @@ def build_allocation_input(
         & (remaining_input["TrackingKey"] == F.col("del4.TrackingKey")),
         "left_anti",
     )
+    remaining_input = _seam(spark, remaining_input, "alloc_pass4", cfg)
     remaining_book = remaining_book.filter(
         ~((ns0(F.col("FootNoteID")) == -1) & (ns0(F.col("LineID")) != -1))
     )

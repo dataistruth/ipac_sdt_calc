@@ -1,4 +1,12 @@
-"""AllocationV2.usp_add_allocation_summary.output package."""
-from AllocationV2.usp_add_allocation_summary.output.add_allocation_summary import run_add_allocation_summary
+"""Production output package. Lazy exports only."""
 
-__all__ = ["run_add_allocation_summary"]
+from __future__ import annotations
+
+__all__ = ['run_add_allocation_summary']
+
+
+def __getattr__(name):
+    if name not in __all__:
+        raise AttributeError(name)
+    from . import add_allocation_summary as _mod
+    return getattr(_mod, name)

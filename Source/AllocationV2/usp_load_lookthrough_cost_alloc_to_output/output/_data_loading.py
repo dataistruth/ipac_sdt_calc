@@ -1,4 +1,4 @@
-﻿"""Data loading functions for lookthrough cost allocation.
+"""Data loading functions for lookthrough cost allocation.
 
 Consolidates all data retrieval: partners, line items, input, rules,
 cost percentages, book effective, footnote inheritance, and FEP.

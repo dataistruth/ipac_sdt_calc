@@ -2175,7 +2175,11 @@ def run_load_lt_footnote_effective_allocation_pct(
         f"{status['elapsed_seconds']}s | RunID={cfg['run_id']} "
         f"EntityID={cfg['entity_id']}"
     )
-    return status
+    # If GenericResultStorer returned a value (JSON string for Parquet mode,
+    # "SUCCESS" for Delta/SQL), propagate it directly so the task runtime can
+    # parse ResultFilePath/ResultFileName for DataBrickExecutionStatus (same
+    # pattern as uspGetFinalEffectivePercentage's run_mode).
+    return save_return_value if save_return_value else status
 
 
 
