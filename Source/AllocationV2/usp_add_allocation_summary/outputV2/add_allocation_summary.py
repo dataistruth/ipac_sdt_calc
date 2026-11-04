@@ -21,20 +21,22 @@ Usage:
                                tax_period_id=1, catalog="dev7", schema="myschema")
 """
 
-from pyspark.sql import SparkSession, DataFrame
-import pyspark.sql.functions as F
+import contextlib
+import json
 import logging
 import time
-import json
 
-from Common_V2.core.helpers import read_table, ns, ns0, table_prefix, tbl_name
-from Common_V2.core.config import load_common_config
-from Common_V2.core.generic_result_storer import GenericResultStorer
+import pyspark.sql.functions as F
+from pyspark.sql import DataFrame, SparkSession
+
 from Common_V2.core.checkpoint import (
     checkpoint as common_checkpoint,
     drop_checkpoints,
 )
+from Common_V2.core.config import load_common_config
 from Common_V2.core.execution_profiles import resolve_execution_profile
+from Common_V2.core.generic_result_storer import GenericResultStorer
+from Common_V2.core.helpers import ns, ns0, read_table, tbl_name
 from Common_V2.core.parallel_helpers import (
     normalize_workers,
     parse_enabled_groups,
@@ -180,13 +182,11 @@ def _apply_execution_profile(
             str(shuffle_override),
         )
     mode = profile["checkpoint_mode"]
-    cfg.update(
-        {
-            "checkpoint_mode": mode,
-            "max_threads": workers,
-            "execution_profile": profile_name,
-        }
-    )
+    cfg.update({
+        "checkpoint_mode": mode,
+        "max_threads": workers,
+        "execution_profile": profile_name,
+    })
     cfg.setdefault("_checkpoint_tables", [])
     cfg["profile_plan"] = bool(profile_plan)
     _plan_tokens = _start_dev_plan_profile(profile_plan)
@@ -208,6 +208,7 @@ def _isolated_cfg(cfg):
 # ---------------------------------------------------------------------------
 # Section 1: SP-specific config (SQL lines 200-600)
 # ---------------------------------------------------------------------------
+
 
 def load_sp_config(spark: SparkSession, cfg: dict) -> dict:
     """Alias common cfg scalars to the legacy SP-internal names used downstream.
@@ -233,11 +234,11 @@ def load_sp_config(spark: SparkSession, cfg: dict) -> dict:
     cfg["is_tracking_key"] = cfg.get("flag_keep_tracking_keys") or "C"
     cfg["is_investment_level_rounding"] = cfg.get("flag_investment_level_rounding_logic")
     cfg["is_auto_elec_d_enabled"] = (
-        (cfg.get("flag_automate_deemed_sale_election") or "U").strip().upper() in ("C", "CG")
-    )
+        cfg.get("flag_automate_deemed_sale_election") or "U"
+    ).strip().upper() in ("C", "CG")
     cfg["is_k1_input_international"] = (
-        (cfg.get("flag_separate_international_signoff") or "").strip().upper() == "C"
-    )
+        cfg.get("flag_separate_international_signoff") or ""
+    ).strip().upper() == "C"
 
     # PFIC-footnote line IDs (cfc_tested_income_line_id, cfc_tested_loss_line_id,
     # cumulative_qef_line_id, cumulative_qef_distributions_line_id,
@@ -252,6 +253,7 @@ def load_sp_config(spark: SparkSession, cfg: dict) -> dict:
 # Section 2: Build working tables (SQL lines 600-780)
 # ---------------------------------------------------------------------------
 
+
 def build_working_tables(spark: SparkSession, cfg: dict) -> dict:
     """Build K1Workflow, AtRiskWorkflow, LowerTierFunds, AllocationOutput, AllocationOutputSummary.
 
@@ -259,18 +261,19 @@ def build_working_tables(spark: SparkSession, cfg: dict) -> dict:
     Returns dict with DataFrames.
     """
     run_id = cfg["run_id"]
-    entity_id = cfg["entity_id"]
     client_id = cfg["client_id"]
 
     # AllocationInputWorkflow — read once
-    aiw = read_table(spark, "AllocationInputWorkflow", cfg).filter(
-        F.col("RunID") == run_id
-    ).select("EntityID", "K1WorkflowID", "K1InternationalWorkflowID", "ImportAtRiskWorkflowID")
+    aiw = (
+        read_table(spark, "AllocationInputWorkflow", cfg)
+        .filter(F.col("RunID") == run_id)
+        .select("EntityID", "K1WorkflowID", "K1InternationalWorkflowID", "ImportAtRiskWorkflowID")
+    )
 
     # #K1Workflow
-    k1_workflow = aiw.select(
-        F.col("EntityID"), F.col("K1WorkflowID").alias("WorkFlowID")
-    ).filter(F.col("WorkFlowID").isNotNull())
+    k1_workflow = aiw.select(F.col("EntityID"), F.col("K1WorkflowID").alias("WorkFlowID")).filter(
+        F.col("WorkFlowID").isNotNull()
+    )
 
     if cfg["is_k1_input_international"]:
         k1_intl = aiw.select(
@@ -284,16 +287,14 @@ def build_working_tables(spark: SparkSession, cfg: dict) -> dict:
     ).filter(F.col("WorkFlowID").isNotNull())
 
     # #LowerTierFunds
-    lower_tier_funds = read_table(spark, "LowerTierFunds", cfg).filter(
-        F.col("RunID") == run_id
-    ).select(
-        F.col("EntityID"), F.col("PartnerNumber"), F.col("LTRunID").alias("RunID")
+    lower_tier_funds = (
+        read_table(spark, "LowerTierFunds", cfg)
+        .filter(F.col("RunID") == run_id)
+        .select(F.col("EntityID"), F.col("PartnerNumber"), F.col("LTRunID").alias("RunID"))
     )
 
     # #AllocationOutput — full table for this run
-    allocation_output = read_table(spark, "AllocationOutput", cfg).filter(
-        F.col("RunID") == run_id
-    )
+    allocation_output = read_table(spark, "AllocationOutput", cfg).filter(F.col("RunID") == run_id)
 
     # #AllocationOutputSummary — full table for this run
     allocation_output_summary = read_table(spark, "AllocationOutputSummary", cfg).filter(
@@ -343,16 +344,14 @@ def build_working_tables(spark: SparkSession, cfg: dict) -> dict:
 # Helper: Tracking key expression
 # ---------------------------------------------------------------------------
 
-def _tracking_key_expr(is_tracking_key: str, entity_id: int, alias: str = None):
+
+def _tracking_key_expr(is_tracking_key: str, entity_id: int, alias: str | None = None):
     """Build the CASE WHEN tracking key expression used across multiple summary inserts."""
     if is_tracking_key != "C":
         return F.lit(None).cast("string")
     tk_col = F.col(f"{alias}.TrackingKey") if alias else F.col("TrackingKey")
     eid_col = F.col(f"{alias}.EntityID") if alias else F.col("EntityID")
-    return F.when(
-        tk_col.isNull(),
-        eid_col.cast("string")
-    ).otherwise(
+    return F.when(tk_col.isNull(), eid_col.cast("string")).otherwise(
         F.concat(tk_col, F.lit("~"), F.lit(entity_id).cast("string"))
     )
 
@@ -360,6 +359,7 @@ def _tracking_key_expr(is_tracking_key: str, entity_id: int, alias: str = None):
 # ---------------------------------------------------------------------------
 # Helper: PE Book Allocation condition
 # ---------------------------------------------------------------------------
+
 
 def _should_insert_pe_book(cfg: dict) -> bool:
     """Check if PE Book Allocation condition allows insert.
@@ -411,6 +411,7 @@ def _store_result_table(spark: SparkSession, cfg: dict, table_name: str, df: Dat
 # Section 3: K1AllocationSummary (SQL lines 780-890)
 # ---------------------------------------------------------------------------
 
+
 def write_k1_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into K1AllocationSummary from AllocationOutputSummary where LineTypeID = K1.
 
@@ -451,26 +452,30 @@ def write_k1_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) ->
     has_periodic = tables["has_periodic"]
 
     if has_periodic:
-        periodic_k1 = ao.filter(
-            (F.col("LineTypeID") == k1_lt_id) & F.col("PeriodID").isNotNull()
-        ).groupBy(
-            ns(F.col("ShareClass")).alias("ShareClass"),
-            F.col("PartnerNumber"),
-            F.col("LineID"),
-            F.col("PeriodID"),
-        ).agg(
-            F.sum(ns0(F.col("Amount"))).alias("Amount"),
-        ).select(
-            F.lit(run_id).cast("long").alias("RunID"),
-            F.lit(client_id).cast("long").alias("ClientID"),
-            F.lit(tax_period_id).alias("TaxPeriodID"),
-            F.lit(entity_id).alias("EntityID"),
-            F.col("ShareClass"),
-            F.col("PartnerNumber"),
-            F.col("LineID"),
-            F.col("Amount"),
-            F.col("Amount").alias("FlowupAmount"),
-            F.col("PeriodID"),
+        periodic_k1 = (
+            ao
+            .filter((F.col("LineTypeID") == k1_lt_id) & F.col("PeriodID").isNotNull())
+            .groupBy(
+                ns(F.col("ShareClass")).alias("ShareClass"),
+                F.col("PartnerNumber"),
+                F.col("LineID"),
+                F.col("PeriodID"),
+            )
+            .agg(
+                F.sum(ns0(F.col("Amount"))).alias("Amount"),
+            )
+            .select(
+                F.lit(run_id).cast("long").alias("RunID"),
+                F.lit(client_id).cast("long").alias("ClientID"),
+                F.lit(tax_period_id).alias("TaxPeriodID"),
+                F.lit(entity_id).alias("EntityID"),
+                F.col("ShareClass"),
+                F.col("PartnerNumber"),
+                F.col("LineID"),
+                F.col("Amount"),
+                F.col("Amount").alias("FlowupAmount"),
+                F.col("PeriodID"),
+            )
         )
         _store_result_table(spark, cfg, target_table, periodic_k1)
 
@@ -478,6 +483,7 @@ def write_k1_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) ->
 # ---------------------------------------------------------------------------
 # Section 4: M1AdjAllocationSummary (SQL lines 830-850)
 # ---------------------------------------------------------------------------
+
 
 def write_m1_adj_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into M1AdjAllocationSummary from AllocationOutputSummary.
@@ -510,28 +516,32 @@ def write_m1_adj_allocation_summary(spark: SparkSession, cfg: dict, tables: dict
     ao = tables["allocation_output"]
     has_periodic = tables["has_periodic"]
     if has_periodic:
-        periodic_m1 = ao.filter(
-            (F.col("LineTypeID") == m1_lt_id) & F.col("PeriodID").isNotNull()
-        ).groupBy(
-            ns(F.col("ShareClass")).alias("ShareClass"),
-            F.col("PartnerNumber"),
-            F.col("LineID"),
-            F.col("PeriodID"),
-            F.col("LineCode"),
-        ).agg(
-            F.sum(ns0(F.col("Amount"))).alias("Amount"),
-        ).select(
-            F.lit(run_id).cast("long").alias("RunID"),
-            F.lit(client_id).cast("long").alias("ClientID"),
-            F.lit(tax_period_id).alias("TaxPeriodID"),
-            F.lit(entity_id).alias("EntityID"),
-            F.col("ShareClass"),
-            F.col("PartnerNumber"),
-            F.col("LineID"),
-            F.col("Amount"),
-            F.col("Amount").alias("FlowupAmount"),
-            F.col("PeriodID"),
-            F.col("LineCode").alias("WorkPaperCode"),
+        periodic_m1 = (
+            ao
+            .filter((F.col("LineTypeID") == m1_lt_id) & F.col("PeriodID").isNotNull())
+            .groupBy(
+                ns(F.col("ShareClass")).alias("ShareClass"),
+                F.col("PartnerNumber"),
+                F.col("LineID"),
+                F.col("PeriodID"),
+                F.col("LineCode"),
+            )
+            .agg(
+                F.sum(ns0(F.col("Amount"))).alias("Amount"),
+            )
+            .select(
+                F.lit(run_id).cast("long").alias("RunID"),
+                F.lit(client_id).cast("long").alias("ClientID"),
+                F.lit(tax_period_id).alias("TaxPeriodID"),
+                F.lit(entity_id).alias("EntityID"),
+                F.col("ShareClass"),
+                F.col("PartnerNumber"),
+                F.col("LineID"),
+                F.col("Amount"),
+                F.col("Amount").alias("FlowupAmount"),
+                F.col("PeriodID"),
+                F.col("LineCode").alias("WorkPaperCode"),
+            )
         )
         _store_result_table(spark, cfg, target_table, periodic_m1)
 
@@ -539,6 +549,7 @@ def write_m1_adj_allocation_summary(spark: SparkSession, cfg: dict, tables: dict
 # ---------------------------------------------------------------------------
 # Section 5: BoxJKLAllocationSummary (SQL lines 890-905)
 # ---------------------------------------------------------------------------
+
 
 def write_box_jkl_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into BoxJKLAllocationSummary.
@@ -570,6 +581,7 @@ def write_box_jkl_allocation_summary(spark: SparkSession, cfg: dict, tables: dic
 # Section 6: Form926AllocationSummary (SQL lines 905-925)
 # ---------------------------------------------------------------------------
 
+
 def write_form926_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into Form926AllocationSummary with tracking key logic.
 
@@ -584,23 +596,28 @@ def write_form926_allocation_summary(spark: SparkSession, cfg: dict, tables: dic
     aos = tables["allocation_output_summary"]
     tk_expr = _tracking_key_expr(cfg["is_tracking_key"], entity_id)
 
-    df = aos.filter(F.col("LineTypeID") == cfg["form926_line_type_id"]).select(
-        F.lit(run_id).cast("long").alias("RunID"),
-        F.lit(client_id).cast("long").alias("ClientID"),
-        F.lit(tax_period_id).alias("TaxPeriodID"),
-        F.lit(entity_id).alias("EntityID"),
-        F.col("ShareClass"),
-        F.col("PartnerNumber"),
-        F.col("EntityID").alias("SourceEntityID"),
-        F.col("QuicklinkID").alias("Form926ID"),
-        F.col("LineID"),
-        F.col("Amount"),
-        F.col("Amount").alias("FlowupAmount"),
-        F.lit(None).cast("string").alias("TextValue"),
-        F.col("ParentEntityId"),
-        tk_expr.alias("TrackingKey"),
-        F.col("OriginalParentEntityID"),
-    ).distinct()
+    df = (
+        aos
+        .filter(F.col("LineTypeID") == cfg["form926_line_type_id"])
+        .select(
+            F.lit(run_id).cast("long").alias("RunID"),
+            F.lit(client_id).cast("long").alias("ClientID"),
+            F.lit(tax_period_id).alias("TaxPeriodID"),
+            F.lit(entity_id).alias("EntityID"),
+            F.col("ShareClass"),
+            F.col("PartnerNumber"),
+            F.col("EntityID").alias("SourceEntityID"),
+            F.col("QuicklinkID").alias("Form926ID"),
+            F.col("LineID"),
+            F.col("Amount"),
+            F.col("Amount").alias("FlowupAmount"),
+            F.lit(None).cast("string").alias("TextValue"),
+            F.col("ParentEntityId"),
+            tk_expr.alias("TrackingKey"),
+            F.col("OriginalParentEntityID"),
+        )
+        .distinct()
+    )
 
     _store_result_table(spark, cfg, target_table, df)
 
@@ -608,6 +625,7 @@ def write_form926_allocation_summary(spark: SparkSession, cfg: dict, tables: dic
 # ---------------------------------------------------------------------------
 # Section 7: Form8865AllocationSummary (SQL lines 925-940)
 # ---------------------------------------------------------------------------
+
 
 def write_form8865_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into Form8865AllocationSummary with tracking key + SchID.
@@ -649,6 +667,7 @@ def write_form8865_allocation_summary(spark: SparkSession, cfg: dict, tables: di
 # Section 8: Form199AAllocationSummary (SQL lines 940-960)
 # ---------------------------------------------------------------------------
 
+
 def write_form199a_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into Form199AAllocationSummary with tracking key.
 
@@ -663,23 +682,28 @@ def write_form199a_allocation_summary(spark: SparkSession, cfg: dict, tables: di
     aos = tables["allocation_output_summary"]
     tk_expr = _tracking_key_expr(cfg["is_tracking_key"], entity_id)
 
-    df = aos.filter(F.col("LineTypeID") == cfg["form199a_line_type_id"]).select(
-        F.lit(run_id).cast("long").alias("RunID"),
-        F.lit(client_id).cast("long").alias("ClientID"),
-        F.lit(tax_period_id).alias("TaxPeriodID"),
-        F.lit(entity_id).alias("EntityID"),
-        F.col("ShareClass"),
-        F.col("PartnerNumber"),
-        F.col("EntityID").alias("SourceEntityID"),
-        F.col("QuicklinkID").alias("Form199AID"),
-        F.col("LineID"),
-        F.col("Amount"),
-        F.col("Amount").alias("FlowupAmount"),
-        F.lit(None).cast("string").alias("TextValue"),
-        F.col("ParentEntityId"),
-        tk_expr.alias("TrackingKey"),
-        F.col("OriginalParentEntityID"),
-    ).distinct()
+    df = (
+        aos
+        .filter(F.col("LineTypeID") == cfg["form199a_line_type_id"])
+        .select(
+            F.lit(run_id).cast("long").alias("RunID"),
+            F.lit(client_id).cast("long").alias("ClientID"),
+            F.lit(tax_period_id).alias("TaxPeriodID"),
+            F.lit(entity_id).alias("EntityID"),
+            F.col("ShareClass"),
+            F.col("PartnerNumber"),
+            F.col("EntityID").alias("SourceEntityID"),
+            F.col("QuicklinkID").alias("Form199AID"),
+            F.col("LineID"),
+            F.col("Amount"),
+            F.col("Amount").alias("FlowupAmount"),
+            F.lit(None).cast("string").alias("TextValue"),
+            F.col("ParentEntityId"),
+            tk_expr.alias("TrackingKey"),
+            F.col("OriginalParentEntityID"),
+        )
+        .distinct()
+    )
 
     _store_result_table(spark, cfg, target_table, df)
 
@@ -687,6 +711,7 @@ def write_form199a_allocation_summary(spark: SparkSession, cfg: dict, tables: di
 # ---------------------------------------------------------------------------
 # Section 9: Build PFIC reclass data (SQL lines 960-1280)
 # ---------------------------------------------------------------------------
+
 
 def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> DataFrame:
     """Build the PFIC reclass temp table with non-allocable lines, reclass data,
@@ -707,15 +732,21 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
     fcr_txn_id = cfg.get("foreign_currency_rate_txn_id")
 
     # #TempPFICAllocationOutputSummary — distinct EntityID, QuicklinkID, TrackingKey from AOS
-    temp_pfic_aos = aos.filter(F.col("LineTypeID") == pfic_lt_id).select(
-        F.col("EntityID"), F.col("QuicklinkID"), F.col("TrackingKey")
-    ).distinct()
+    temp_pfic_aos = (
+        aos
+        .filter(F.col("LineTypeID") == pfic_lt_id)
+        .select(F.col("EntityID"), F.col("QuicklinkID"), F.col("TrackingKey"))
+        .distinct()
+    )
 
     # Existing PFICFootnoteAllocationText for this run (read from write schema —
     # SQL reads from the same table it inserts into, which starts empty for a fresh run)
-    existing_pfic_text = spark.table(tbl_name("PFICFootnoteAllocationText", cfg)).filter(
-        F.col("RunID") == run_id
-    ).select("PFICFootnoteID", "LineID")
+    existing_pfic_text = (
+        spark
+        .table(tbl_name("PFICFootnoteAllocationText", cfg))
+        .filter(F.col("RunID") == run_id)
+        .select("PFICFootnoteID", "LineID")
+    )
 
     # Part 1: Non-allocable lines from PFICFootnoteInput_Snapshot
     pfic_input = read_table(spark, "PFICFootnoteInput_Snapshot", cfg)
@@ -741,45 +772,39 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
     fx_rates = read_table(spark, "ForeignCurrencyAverageRate", cfg)
 
     non_alloc_pfic = (
-        pfic_input.alias("PFIC")
+        pfic_input
+        .alias("PFIC")
         .join(
-            F.broadcast(pfic_line_item.filter(
-                (F.coalesce(F.col("IsAllocated"), F.lit(False)) == False)
-                & excl_line_filter
-            ).select("LineID", "ClientID", "TaxPeriodID")).alias("FL"),
+            F.broadcast(
+                pfic_line_item.filter(
+                    (F.coalesce(F.col("IsAllocated"), F.lit(False)) == False) & excl_line_filter  # noqa: E712
+                ).select("LineID", "ClientID", "TaxPeriodID")
+            ).alias("FL"),
             (F.col("PFIC.LineID") == F.col("FL.LineID"))
             & (F.col("FL.ClientID") == F.col("PFIC.ClientID"))
             & (F.col("FL.TaxPeriodID") == F.col("PFIC.TaxPeriodID")),
-            "inner"
+            "inner",
         )
-        .join(
-            k1_workflow.alias("KW"),
-            F.col("PFIC.WorkflowID") == F.col("KW.WorkFlowID"),
-            "inner"
-        )
-        .join(
-            entity_tbl.alias("E"),
-            F.col("E.EntityID") == F.col("KW.EntityID"),
-            "inner"
-        )
+        .join(k1_workflow.alias("KW"), F.col("PFIC.WorkflowID") == F.col("KW.WorkFlowID"), "inner")
+        .join(entity_tbl.alias("E"), F.col("E.EntityID") == F.col("KW.EntityID"), "inner")
         .join(
             temp_pfic_aos.alias("AO"),
             (F.col("AO.EntityID") == F.col("E.EntityID"))
             & (F.col("AO.QuicklinkID") == F.col("PFIC.PFICFootnoteID")),
-            "inner"
+            "inner",
         )
         .join(
             fx_rates.alias("R"),
             (F.col("FL.ClientID") == F.col("R.ClientID"))
             & (F.col("R.CurrencyCode") == F.col("E.CurrencyCode"))
             & (F.col("R.TransactionID") == F.lit(fcr_txn_id).cast("int")),
-            "left"
+            "left",
         )
         .join(
             existing_pfic_text.alias("P"),
             (F.col("P.PFICFootnoteID") == F.col("PFIC.PFICFootnoteID"))
             & (F.col("P.LineID") == F.col("FL.LineID")),
-            "left_anti"
+            "left_anti",
         )
     )
 
@@ -795,10 +820,12 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
         F.col("KW.EntityID").alias("SourceEntityID"),
         F.col("PFIC.PFICFootnoteID").alias("PFICFootnoteID"),
         F.col("PFIC.LineID").alias("LineID"),
-        F.when(
-            _cfc_condition,
-            ns0(F.col("PFIC.Amount")) / F.coalesce(F.col("R.AverageRate"), F.lit(1))
-        ).otherwise(ns0(F.col("PFIC.Amount"))).alias("Amount"),
+        F
+        .when(
+            _cfc_condition, ns0(F.col("PFIC.Amount")) / F.coalesce(F.col("R.AverageRate"), F.lit(1))
+        )
+        .otherwise(ns0(F.col("PFIC.Amount")))
+        .alias("Amount"),
         F.lit(None).cast("float").alias("FlowupAmount"),
         F.col("PFIC.TextValue"),
         F.lit(0).alias("ParentEntityId"),
@@ -809,53 +836,42 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
     )
 
     # Part 2: Reclass from ReclassFootnoteAllocationData
-    reclass_data = tables["reclass_footnote_data"].filter(
-        F.col("LineTypeID") == pfic_lt_id
-    )
+    reclass_data = tables["reclass_footnote_data"].filter(F.col("LineTypeID") == pfic_lt_id)
     pfic_package = read_table(spark, "PFICFootnotePackage", cfg)
     k1_package = tables["k1_package"]
 
     reclass_pfic = (
-        reclass_data.alias("PFIC")
+        reclass_data
+        .alias("PFIC")
         .join(
-            F.broadcast(pfic_line_item.filter(
-                F.coalesce(F.col("IsAllocated"), F.lit(False)) == False
-            ).select("LineID", "ClientID", "TaxPeriodID")).alias("FL"),
+            F.broadcast(
+                pfic_line_item.filter(
+                    F.coalesce(F.col("IsAllocated"), F.lit(False)) == False  # noqa: E712
+                ).select("LineID", "ClientID", "TaxPeriodID")
+            ).alias("FL"),
             (F.col("PFIC.LineID") == F.col("FL.LineID"))
             & (F.col("FL.ClientID") == F.col("PFIC.ClientID"))
             & (F.col("FL.TaxPeriodID") == F.col("PFIC.TaxPeriodID")),
-            "inner"
+            "inner",
         )
         .join(
-            pfic_package.alias("P"),
-            F.col("P.PFICFootnoteID") == F.col("PFIC.FootnoteID"),
-            "inner"
+            pfic_package.alias("P"), F.col("P.PFICFootnoteID") == F.col("PFIC.FootnoteID"), "inner"
         )
-        .join(
-            k1_package.alias("K"),
-            F.col("K.K1PackageID") == F.col("P.K1PackageID"),
-            "inner"
-        )
+        .join(k1_package.alias("K"), F.col("K.K1PackageID") == F.col("P.K1PackageID"), "inner")
         .join(
             temp_pfic_aos.alias("AO"),
             (F.col("AO.QuicklinkID") == F.col("PFIC.FootnoteID"))
             & (F.col("AO.EntityID") == F.col("PFIC.SourceEntityID"))
             & (F.col("AO.TrackingKey") == F.col("PFIC.TrackingKey")),
-            "inner"
+            "inner",
         )
-    ).filter(
-        (F.col("FL.ClientID") == client_id)
-        & (F.col("FL.TaxPeriodID") == tax_period_id)
-    )
+    ).filter((F.col("FL.ClientID") == client_id) & (F.col("FL.TaxPeriodID") == tax_period_id))
 
     tk_expr_reclass = F.when(
         F.lit(cfg["is_tracking_key"] == "C"),
-        F.when(
-            F.col("PFIC.TrackingKey").isNull(),
-            F.col("PFIC.EntityID").cast("string")
-        ).otherwise(
+        F.when(F.col("PFIC.TrackingKey").isNull(), F.col("PFIC.EntityID").cast("string")).otherwise(
             F.concat(F.col("PFIC.TrackingKey"), F.lit("~"), F.lit(entity_id).cast("string"))
-        )
+        ),
     ).otherwise(F.lit(None).cast("string"))
 
     reclass_result = reclass_pfic.select(
@@ -865,12 +881,15 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
         F.col("PFIC.Amount"),
         F.col("PFIC.FlowupAmount"),
         F.col("PFIC.TextValue"),
-        F.when(
+        F
+        .when(
             ns0(F.col("PFIC.ParentEntityId")) == 0,
-            F.when(
-                F.col("PFIC.LTEntityID") == F.col("K.LowerTierEntityID"), F.lit(0)
-            ).otherwise(F.col("PFIC.LTEntityID"))
-        ).otherwise(F.col("PFIC.ParentEntityId")).alias("ParentEntityId"),
+            F.when(F.col("PFIC.LTEntityID") == F.col("K.LowerTierEntityID"), F.lit(0)).otherwise(
+                F.col("PFIC.LTEntityID")
+            ),
+        )
+        .otherwise(F.col("PFIC.ParentEntityId"))
+        .alias("ParentEntityId"),
         tk_expr_reclass.alias("TrackingKey"),
         F.col("PFIC.OriginalParentEntityID"),
     ).distinct()
@@ -879,15 +898,16 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
     temp_reclass = non_alloc_result.unionByName(reclass_result)
 
     # Part 3: Update Part 5 and 7 values from PFICfootnoteflowup
-    pfic_flowup = read_table(spark, "PFICfootnoteflowup", cfg).filter(
-        F.col("RunID") == run_id
-    )
+    pfic_flowup = read_table(spark, "PFICfootnoteflowup", cfg).filter(F.col("RunID") == run_id)
     # SQL: INNER JOIN PFICFootnoteLineItem L ON L.ShortName IN ('IsPart_7','IsPart_5')
     # has NO ClientID/TaxPeriodID filter — use the shared global PFICFootnoteLineItem read.
     pfic_line_item_all = tables["pfic_line_item_all"]
-    part_5_7_lines = pfic_line_item_all.filter(
-        F.col("ShortName").isin(["IsPart_7", "IsPart_5"])
-    ).select("LineID").collect()
+    part_5_7_lines = (
+        pfic_line_item_all
+        .filter(F.col("ShortName").isin(["IsPart_7", "IsPart_5"]))
+        .select("LineID")
+        .collect()
+    )
     part_5_7_ids = [r["LineID"] for r in part_5_7_lines]
 
     if part_5_7_ids:
@@ -905,15 +925,20 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
         # so duplicates can exist; SQL's UPDATE acts in-place (one result per PFA row), but a
         # LEFT JOIN would multiply rows when multiple PF rows match the same T row. Deduplicate
         # PF on the join keys so the LEFT JOIN behaves like the SQL UPDATE (one match per T row).
-        pfic_flowup_deduped = pfic_flowup.dropDuplicates(["PFICFootnoteID", "lineid", "SourceEntityID"])
+        pfic_flowup_deduped = pfic_flowup.dropDuplicates([
+            "PFICFootnoteID",
+            "lineid",
+            "SourceEntityID",
+        ])
         updated_rows = (
-            temp_reclass_update_target.alias("T")
+            temp_reclass_update_target
+            .alias("T")
             .join(
                 pfic_flowup_deduped.alias("PF"),
                 (F.col("PF.PFICFootnoteID") == F.col("T.PFICFootnoteID"))
                 & (F.col("PF.lineid") == F.col("T.LineID"))
                 & (F.col("PF.SourceEntityID") == F.col("T.SourceEntityID")),
-                "left"
+                "left",
             )
             .select(
                 F.col("T.SourceEntityID"),
@@ -921,8 +946,10 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
                 F.col("T.LineID"),
                 F.col("T.Amount"),
                 F.col("T.FlowupAmount"),
-                F.when(F.col("PF.PFICFootnoteID").isNotNull(), F.col("PF.textvalue"))
-                 .otherwise(F.col("T.TextValue")).alias("TextValue"),
+                F
+                .when(F.col("PF.PFICFootnoteID").isNotNull(), F.col("PF.textvalue"))
+                .otherwise(F.col("T.TextValue"))
+                .alias("TextValue"),
                 F.col("T.ParentEntityId"),
                 F.col("T.TrackingKey"),
                 F.col("T.OriginalParentEntityID"),
@@ -947,14 +974,21 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
         # No .distinct(): SQL UPDATE does not deduplicate — rows differing in Amount or other
         # non-join columns must remain separate even after the textvalue is updated.
         updated_elec_d = (
-            temp_reclass_elec_d.alias("PFA")
+            temp_reclass_elec_d
+            .alias("PFA")
             .join(
                 pfic_flowup_tk.alias("PF"),
-                (ns(F.col("PFA.PFICFootnoteID").cast("string")) == ns(F.col("PF.PFICFootnoteID").cast("string")))
-                & (ns(F.col("PFA.SourceEntityID").cast("string")) == ns(F.col("PF.SourceEntityID").cast("string")))
+                (
+                    ns(F.col("PFA.PFICFootnoteID").cast("string"))
+                    == ns(F.col("PF.PFICFootnoteID").cast("string"))
+                )
+                & (
+                    ns(F.col("PFA.SourceEntityID").cast("string"))
+                    == ns(F.col("PF.SourceEntityID").cast("string"))
+                )
                 & (F.col("PFA.LineID") == F.col("PF.LineID"))
                 & (ns(F.col("PFA.TrackingKey")) == ns(F.col("PF.TrackingKey"))),
-                "left"
+                "left",
             )
             .select(
                 F.col("PFA.SourceEntityID"),
@@ -962,8 +996,10 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
                 F.col("PFA.LineID"),
                 F.col("PFA.Amount"),
                 F.col("PFA.FlowupAmount"),
-                F.when(F.col("PF.LineID").isNotNull(), F.col("PF.TextValue"))
-                 .otherwise(F.col("PFA.TextValue")).alias("TextValue"),
+                F
+                .when(F.col("PF.LineID").isNotNull(), F.col("PF.TextValue"))
+                .otherwise(F.col("PFA.TextValue"))
+                .alias("TextValue"),
                 F.col("PFA.ParentEntityId"),
                 F.col("PFA.TrackingKey"),
                 F.col("PFA.OriginalParentEntityID"),
@@ -982,14 +1018,17 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
         temp_reclass_null_tk = temp_reclass.filter(F.col("TrackingKey").isNull())
 
         missing_elec_d = (
-            pfic_flowup_tk.alias("PFA")
+            pfic_flowup_tk
+            .alias("PFA")
             .join(
                 temp_reclass_null_tk.alias("PF"),
                 (F.col("PFA.PFICFootnoteID") == F.col("PF.PFICFootnoteID"))
-                & (F.coalesce(F.col("PFA.SourceEntityID").cast("string"), F.lit("")) ==
-                   F.coalesce(F.col("PF.SourceEntityID").cast("string"), F.lit("")))
+                & (
+                    F.coalesce(F.col("PFA.SourceEntityID").cast("string"), F.lit(""))
+                    == F.coalesce(F.col("PF.SourceEntityID").cast("string"), F.lit(""))
+                )
                 & (F.col("PFA.LineID") == F.col("PF.LineID")),
-                "inner"
+                "inner",
             )
             .filter(
                 F.coalesce(F.col("PFA.TrackingKey"), F.lit(""))
@@ -1008,26 +1047,36 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
             )
         )
 
-        temp_reclass = temp_reclass_not_elec_d.unionByName(updated_elec_d).unionByName(missing_elec_d)
+        temp_reclass = temp_reclass_not_elec_d.unionByName(updated_elec_d).unionByName(
+            missing_elec_d
+        )
 
     # Part 5: Domestic Blocker filtering
     if cfg["is_domestic_blocker"]:
         type_of_pfic_line_id = cfg["type_of_pfic_line_id"]
 
         # IDs to delete: PFICFootnoteIDs where SourceEntityID != local entity
-        delete_ids = temp_reclass.filter(
-            F.col("SourceEntityID") != entity_id
-        ).select("PFICFootnoteID").distinct()
+        delete_ids = (
+            temp_reclass
+            .filter(F.col("SourceEntityID") != entity_id)
+            .select("PFICFootnoteID")
+            .distinct()
+        )
 
         # IDs NOT to delete: where SourceEntityID == local entity AND TypeOfPFIC line
         # has a value other than the two allowed PFIC types.
         # SQL: D.TEXTVALUE NOT IN ('IS1293ELIGIBLEDEEMED','IS1291ANYDISTRIBUTION')
         # SQL Server collation is typically CI so matching exact uppercase constants.
-        non_delete_ids = temp_reclass.filter(
-            (F.col("SourceEntityID") == entity_id)
-            & (F.col("LineID") == type_of_pfic_line_id)
-            & (~F.col("TextValue").isin("IS1293ELIGIBLEDEEMED", "IS1291ANYDISTRIBUTION"))
-        ).select("PFICFootnoteID").distinct()
+        non_delete_ids = (
+            temp_reclass
+            .filter(
+                (F.col("SourceEntityID") == entity_id)
+                & (F.col("LineID") == type_of_pfic_line_id)
+                & (~F.col("TextValue").isin("IS1293ELIGIBLEDEEMED", "IS1291ANYDISTRIBUTION"))
+            )
+            .select("PFICFootnoteID")
+            .distinct()
+        )
 
         # Delete from temp_reclass where PFICFootnoteID in delete_ids AND NOT in non_delete_ids
         ids_to_remove = delete_ids.join(non_delete_ids, "PFICFootnoteID", "left_anti")
@@ -1039,6 +1088,7 @@ def build_pfic_reclass_data(spark: SparkSession, cfg: dict, tables: dict) -> Dat
 # ---------------------------------------------------------------------------
 # Section 10: PFICFootnoteAllocationSummary (SQL lines 1080-1120)
 # ---------------------------------------------------------------------------
+
 
 def write_pfic_footnote_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into PFICFootnoteAllocationSummary from AllocationOutputSummary.
@@ -1055,23 +1105,28 @@ def write_pfic_footnote_allocation_summary(spark: SparkSession, cfg: dict, table
     aos = tables["allocation_output_summary"]
     tk_expr = _tracking_key_expr(cfg["is_tracking_key"], entity_id)
 
-    df = aos.filter(F.col("LineTypeID") == pfic_lt_id).select(
-        F.lit(run_id).cast("long").alias("RunID"),
-        F.lit(client_id).cast("long").alias("ClientID"),
-        F.lit(tax_period_id).alias("TaxPeriodID"),
-        F.lit(entity_id).alias("EntityID"),
-        F.col("ShareClass"),
-        F.col("PartnerNumber"),
-        F.col("EntityID").alias("SourceEntityID"),
-        F.col("QuicklinkID").alias("PFICFootnoteID"),
-        F.col("LineID"),
-        F.col("Amount"),
-        F.col("Amount").alias("FlowupAmount"),
-        F.lit(None).cast("string").alias("TextValue"),
-        F.col("ParentEntityId"),
-        tk_expr.alias("TrackingKey"),
-        F.col("OriginalParentEntityID"),
-    ).distinct()
+    df = (
+        aos
+        .filter(F.col("LineTypeID") == pfic_lt_id)
+        .select(
+            F.lit(run_id).cast("long").alias("RunID"),
+            F.lit(client_id).cast("long").alias("ClientID"),
+            F.lit(tax_period_id).alias("TaxPeriodID"),
+            F.lit(entity_id).alias("EntityID"),
+            F.col("ShareClass"),
+            F.col("PartnerNumber"),
+            F.col("EntityID").alias("SourceEntityID"),
+            F.col("QuicklinkID").alias("PFICFootnoteID"),
+            F.col("LineID"),
+            F.col("Amount"),
+            F.col("Amount").alias("FlowupAmount"),
+            F.lit(None).cast("string").alias("TextValue"),
+            F.col("ParentEntityId"),
+            tk_expr.alias("TrackingKey"),
+            F.col("OriginalParentEntityID"),
+        )
+        .distinct()
+    )
 
     _store_result_table(spark, cfg, target_table, df)
 
@@ -1080,7 +1135,10 @@ def write_pfic_footnote_allocation_summary(spark: SparkSession, cfg: dict, table
 # Section 11: PFICFootnoteAllocationText (SQL lines 1280-1370)
 # ---------------------------------------------------------------------------
 
-def write_pfic_footnote_allocation_text(spark: SparkSession, cfg: dict, pfic_reclass_df: DataFrame) -> None:
+
+def write_pfic_footnote_allocation_text(
+    spark: SparkSession, cfg: dict, pfic_reclass_df: DataFrame
+) -> None:
     """Insert into PFICFootnoteAllocationText from the PFIC reclass temp DataFrame.
 
     SQL lines: 1280-1370
@@ -1116,6 +1174,7 @@ def write_pfic_footnote_allocation_text(spark: SparkSession, cfg: dict, pfic_rec
 # Inlines: udfGetLatestCustomFootnoteTransactionIDs, udfGetPhaseID, udfGetLastTransactionID_Phase
 # ---------------------------------------------------------------------------
 
+
 def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: dict) -> dict:
     """Inline udfGetLatestCustomFootnoteTransactionIDs: build custom footnote
     transaction IDs, line items, and footnote IDs.
@@ -1123,7 +1182,6 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
     SQL lines: 1380-1490
     Returns dict with DataFrames: custom_footnote_txns, custom_footnote_line_items, custom_footnote_ids
     """
-    run_id = cfg["run_id"]
     entity_id = cfg["entity_id"]
     client_id = cfg["client_id"]
     tax_period_id = cfg["tax_period_id"]
@@ -1133,11 +1191,16 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
 
     # Inline udfGetPhaseID if phase_id is None
     if phase_id is None:
-        phase_row = read_table(spark, "Phase", cfg).filter(
-            (F.col("ClientID") == client_id)
-            & (F.col("TaxPeriodID") == tax_period_id)
-            & (F.col("EndDate").isNull())
-        ).select("PhaseID").first()
+        phase_row = (
+            read_table(spark, "Phase", cfg)
+            .filter(
+                (F.col("ClientID") == client_id)
+                & (F.col("TaxPeriodID") == tax_period_id)
+                & (F.col("EndDate").isNull())
+            )
+            .select("PhaseID")
+            .first()
+        )
         phase_id = phase_row["PhaseID"] if phase_row else None
 
     # Build entity list: just the local entity + its lower-tier investments
@@ -1148,34 +1211,49 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
     # The UDF looks up InvestmentTypeID with ClientID only (no TaxPeriodID):
     #   SELECT EntityTypeID FROM ENU_EntityType WHERE EntityTypeName='Investment' AND ClientID=@LocalClientID
     # We intentionally use a ClientID-only lookup here to match the UDF exactly.
-    enu_et_row = read_table(spark, "ENU_EntityType", cfg).filter(
-        (F.col("ClientID") == client_id) & (F.col("EntityTypeName") == "Investment")
-    ).select("EntityTypeID").first()
+    enu_et_row = (
+        read_table(spark, "ENU_EntityType", cfg)
+        .filter((F.col("ClientID") == client_id) & (F.col("EntityTypeName") == "Investment"))
+        .select("EntityTypeID")
+        .first()
+    )
     udf_inv_entity_type_id = enu_et_row["EntityTypeID"] if enu_et_row else None
 
     lower_tier_entities = (
-        er_tbl.filter(F.col("UpperTierEntityID") == entity_id)
+        er_tbl
+        .filter(F.col("UpperTierEntityID") == entity_id)
         .join(
             entity_tbl.filter(F.col("FundOrInvestmentID") == udf_inv_entity_type_id),
             er_tbl["LowerTierEntityID"] == entity_tbl["EntityID"],
-            "inner"
+            "inner",
         )
         .select(er_tbl["LowerTierEntityID"].alias("EntityID"))
     )
-    tmp_entity = spark.createDataFrame([(entity_id,)], ["EntityID"]).unionByName(lower_tier_entities)
+    tmp_entity = spark.createDataFrame([(entity_id,)], ["EntityID"]).unionByName(
+        lower_tier_entities
+    )
 
     # Build custom footnote event IDs
     custom_import_detail = read_table(spark, "CustomImportDetail", cfg).filter(
-        F.col("IsCustomFootnote") == True
+        F.col("IsCustomFootnote") == True  # noqa: E712
     )
     # SQL UDF joins ENU_Event and ENU_LineType with NO ClientID/TaxPeriodID filter — global tables.
     enu_event = read_table(spark, "ENU_Event", cfg)
     enu_line_type = read_table(spark, "ENU_LineType", cfg)
 
     custom_footnote_events = (
-        custom_import_detail.alias("CD")
-        .join(F.broadcast(enu_event).alias("EE"), F.col("CD.ImportName") == F.col("EE.EventName"), "inner")
-        .join(F.broadcast(enu_line_type).alias("EL"), F.col("EL.LineType") == F.col("CD.ImportName"), "inner")
+        custom_import_detail
+        .alias("CD")
+        .join(
+            F.broadcast(enu_event).alias("EE"),
+            F.col("CD.ImportName") == F.col("EE.EventName"),
+            "inner",
+        )
+        .join(
+            F.broadcast(enu_line_type).alias("EL"),
+            F.col("EL.LineType") == F.col("CD.ImportName"),
+            "inner",
+        )
         .select(
             F.col("EE.EventTypeID").alias("CustomFootnoteEventTypeID"),
             F.col("EL.LineTypeID"),
@@ -1187,7 +1265,8 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
     # dbo.udfGetLatestCustomFootnoteTransactionIDs + dbo.udfGetLastTransactionID_Phase.
     k1_package = tables["k1_package"]
     eligible_entities = (
-        tmp_entity.alias("E")
+        tmp_entity
+        .alias("E")
         .join(k1_package.alias("K"), F.col("E.EntityID") == F.col("K.UpperTierEntityID"), "inner")
         .select(
             F.col("E.EntityID").alias("EntityID"),
@@ -1212,12 +1291,16 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
         "Import_WHPaymentAllocation",
         "Import_EntityConfiguration",
     ]
-    entityless_event_ids = enu_event.filter(
-        F.col("EventName").isin(entityless_event_names)
-    ).select("EventTypeID").distinct()
+    entityless_event_ids = (
+        enu_event
+        .filter(F.col("EventName").isin(entityless_event_names))
+        .select("EventTypeID")
+        .distinct()
+    )
 
     custom_footnote_events = (
-        custom_footnote_events.alias("TF")
+        custom_footnote_events
+        .alias("TF")
         .join(
             entityless_event_ids.alias("EE"),
             F.col("TF.CustomFootnoteEventTypeID") == F.col("EE.EventTypeID"),
@@ -1227,17 +1310,26 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
             F.col("TF.CustomFootnoteEventTypeID"),
             F.col("TF.LineTypeID"),
             F.col("TF.RegisterTypeID"),
-            F.when(F.col("EE.EventTypeID").isNotNull(), F.lit(0)).otherwise(F.lit(1)).alias("UseEntityID"),
+            F
+            .when(F.col("EE.EventTypeID").isNotNull(), F.lit(0))
+            .otherwise(F.lit(1))
+            .alias("UseEntityID"),
         )
         .distinct()
     )
 
     if phase_id is None:
-        custom_footnote_txns = spark.createDataFrame([], "EntityID INT, TransactionID INT, LineTypeID INT, EventTypeid INT, RegisterTypeID INT, K1PackageID INT")
+        custom_footnote_txns = spark.createDataFrame(
+            [],
+            "EntityID INT, TransactionID INT, LineTypeID INT, EventTypeid INT, RegisterTypeID INT, K1PackageID INT",
+        )
     else:
-        excluded_status_ids = read_table(spark, "WorkflowStatus", cfg).filter(
-            F.col("EnumerationName").isin(["Rejected", "Err_Critical", "Err_NonCritical"])
-        ).select("StatusID").distinct()
+        excluded_status_ids = (
+            read_table(spark, "WorkflowStatus", cfg)
+            .filter(F.col("EnumerationName").isin(["Rejected", "Err_Critical", "Err_NonCritical"]))
+            .select("StatusID")
+            .distinct()
+        )
 
         filtered_transaction_log = (
             read_table(spark, "TransactionLog", cfg)
@@ -1258,8 +1350,11 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
         )
 
         scoped_entity_txns = (
-            eligible_entities.alias("E")
-            .crossJoin(F.broadcast(custom_footnote_events.filter(F.col("UseEntityID") == 1).alias("TF")))
+            eligible_entities
+            .alias("E")
+            .crossJoin(
+                F.broadcast(custom_footnote_events.filter(F.col("UseEntityID") == 1).alias("TF"))
+            )
             .join(
                 entity_latest_txn.alias("TL"),
                 (F.col("TL.EventTypeID") == F.col("TF.CustomFootnoteEventTypeID"))
@@ -1277,8 +1372,11 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
         )
 
         unscoped_entity_txns = (
-            eligible_entities.alias("E")
-            .crossJoin(F.broadcast(custom_footnote_events.filter(F.col("UseEntityID") == 0).alias("TF")))
+            eligible_entities
+            .alias("E")
+            .crossJoin(
+                F.broadcast(custom_footnote_events.filter(F.col("UseEntityID") == 0).alias("TF"))
+            )
             .join(
                 global_latest_txn.alias("TL"),
                 F.col("TL.EventTypeID") == F.col("TF.CustomFootnoteEventTypeID"),
@@ -1304,16 +1402,20 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
     custom_footnote_line_types = custom_footnote_txns.select("LineTypeID").distinct()
 
     # Get CustomFootnoteLineItems (non-allocable)
-    custom_footnote_line_items = read_table(spark, "CustomFootnoteLineItem", cfg).filter(
-        (F.col("ClientID") == client_id)
-        & (F.col("TaxPeriodID") == tax_period_id)
-        & (F.coalesce(F.col("IsAllocable"), F.lit(False)) == False)
-    ).select("LineID", "IsActive", "LineDataType", "IsAllocable", "ClientID", "TaxPeriodID")
+    custom_footnote_line_items = (
+        read_table(spark, "CustomFootnoteLineItem", cfg)
+        .filter(
+            (F.col("ClientID") == client_id)
+            & (F.col("TaxPeriodID") == tax_period_id)
+            & (F.coalesce(F.col("IsAllocable"), F.lit(False)) == False)  # noqa: E712
+        )
+        .select("LineID", "IsActive", "LineDataType", "IsAllocable", "ClientID", "TaxPeriodID")
+    )
 
     # Add the -1 LineID row for entity ID text
     extra_row = spark.createDataFrame(
         [(-1, True, "TEXT", False, client_id, tax_period_id)],
-        ["LineID", "IsActive", "LineDataType", "IsAllocable", "ClientID", "TaxPeriodID"]
+        ["LineID", "IsActive", "LineDataType", "IsAllocable", "ClientID", "TaxPeriodID"],
     )
     custom_footnote_line_items = custom_footnote_line_items.unionByName(extra_row)
 
@@ -1323,7 +1425,8 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
     #   FROM #AllocationOutputSummary AO
     #   INNER JOIN #tmpCustomFootnoteLineTypes CFT ON CFT.LineTypeID = AO.LineTypeID
     custom_footnote_ids = (
-        aos.join(F.broadcast(custom_footnote_line_types), "LineTypeID", "inner")
+        aos
+        .join(F.broadcast(custom_footnote_line_types), "LineTypeID", "inner")
         .select(F.col("QuicklinkID").alias("CustomFootnoteID"))
         .distinct()
     )
@@ -1339,6 +1442,7 @@ def build_custom_footnote_transactions(spark: SparkSession, cfg: dict, tables: d
 # ---------------------------------------------------------------------------
 # Section 13: CustomFootnoteAllocationSummary (SQL lines 1490-1600)
 # ---------------------------------------------------------------------------
+
 
 def write_custom_footnote_allocation_summary(
     spark: SparkSession, cfg: dict, tables: dict, cf_data: dict, partner_pfic: DataFrame
@@ -1358,16 +1462,21 @@ def write_custom_footnote_allocation_summary(
     custom_footnote_line_types = cf_data["custom_footnote_line_types"]
 
     # Non-allocable: from CustomFootnoteFlowup joined with line items and footnote IDs
-    cf_flowup = read_table(spark, "CustomFootnoteFlowup", cfg).filter(
-        F.col("RunID") == run_id
-    )
+    cf_flowup = read_table(spark, "CustomFootnoteFlowup", cfg).filter(F.col("RunID") == run_id)
 
     non_alloc_cf = (
-        cf_flowup.alias("CFI")
-        .join(F.broadcast(custom_footnote_line_items.alias("CFL")),
-              F.col("CFI.LineID") == F.col("CFL.LineID"), "inner")
-        .join(F.broadcast(custom_footnote_ids.alias("CF")),
-              F.col("CFI.CustomFootnoteID") == F.col("CF.CustomFootnoteID"), "inner")
+        cf_flowup
+        .alias("CFI")
+        .join(
+            F.broadcast(custom_footnote_line_items.alias("CFL")),
+            F.col("CFI.LineID") == F.col("CFL.LineID"),
+            "inner",
+        )
+        .join(
+            F.broadcast(custom_footnote_ids.alias("CF")),
+            F.col("CFI.CustomFootnoteID") == F.col("CF.CustomFootnoteID"),
+            "inner",
+        )
         .crossJoin(partner_pfic.alias("AO"))
         .select(
             F.lit(run_id).cast("long").alias("RunID"),
@@ -1395,7 +1504,8 @@ def write_custom_footnote_allocation_summary(
     tk_expr = _tracking_key_expr(cfg["is_tracking_key"], entity_id)
 
     alloc_cf = (
-        aos.join(F.broadcast(custom_footnote_line_types), "LineTypeID", "inner")
+        aos
+        .join(F.broadcast(custom_footnote_line_types), "LineTypeID", "inner")
         .select(
             F.lit(run_id).cast("long").alias("RunID"),
             F.lit(client_id).cast("long").alias("ClientID"),
@@ -1413,7 +1523,8 @@ def write_custom_footnote_allocation_summary(
             F.col("ParentEntityId"),
             tk_expr.alias("TrackingKey"),
             F.col("OriginalParentEntityID"),
-        ).distinct()
+        )
+        .distinct()
     )
 
     _store_result_table(spark, cfg, target_table, alloc_cf)
@@ -1422,6 +1533,7 @@ def write_custom_footnote_allocation_summary(
 # ---------------------------------------------------------------------------
 # Section 14: Line18AAllocationSummary (SQL lines 1600-1620)
 # ---------------------------------------------------------------------------
+
 
 def write_line18a_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into Line18AAllocationSummary.
@@ -1453,6 +1565,7 @@ def write_line18a_allocation_summary(spark: SparkSession, cfg: dict, tables: dic
 # Section 15: UBTIAllocationSummary (SQL lines 1630-1650)
 # ---------------------------------------------------------------------------
 
+
 def write_ubti_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into UBTIAllocationSummary with UBTIType CASE expression.
 
@@ -1475,9 +1588,10 @@ def write_ubti_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) 
         F.lit(entity_id).alias("EntityID"),
         F.col("ShareClass"),
         F.col("PartnerNumber"),
-        F.when(F.col("QuicklinkID") == 1, F.lit("Qualified"))
-         .when(F.col("QuicklinkID") == 2, F.lit("Non-Qualified"))
-         .alias("UBTIType"),
+        F
+        .when(F.col("QuicklinkID") == 1, F.lit("Qualified"))
+        .when(F.col("QuicklinkID") == 2, F.lit("Non-Qualified"))
+        .alias("UBTIType"),
         F.col("LineID"),
         F.col("Amount"),
         F.col("Amount").alias("FlowupAmount"),
@@ -1488,6 +1602,7 @@ def write_ubti_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) 
 # ---------------------------------------------------------------------------
 # Section 16: PassiveIncomeAllocationSummary (SQL lines 1650-1670)
 # ---------------------------------------------------------------------------
+
 
 def write_passive_income_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into PassiveIncomeAllocationSummary.
@@ -1522,6 +1637,7 @@ def write_passive_income_allocation_summary(spark: SparkSession, cfg: dict, tabl
 # Section 17: Form200616AllocationSummary (SQL lines 1670-1740)
 # ---------------------------------------------------------------------------
 
+
 def write_form200616_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into Form200616AllocationSummary: direct + LTF flowup.
 
@@ -1537,11 +1653,12 @@ def write_form200616_allocation_summary(spark: SparkSession, cfg: dict, tables: 
     lower_tier_funds = tables["lower_tier_funds"]
 
     # Build #AllocationPercentage
-    alloc_pct = read_table(spark, "AllocationPercentage", cfg).filter(
-        (F.col("RunID") == run_id) & (F.col("ClientID") == client_id)
-    ).select(
-        F.col("PartnerNumber"), ns(F.col("ShareClass")).alias("ShareClass")
-    ).distinct()
+    alloc_pct = (
+        read_table(spark, "AllocationPercentage", cfg)
+        .filter((F.col("RunID") == run_id) & (F.col("ClientID") == client_id))
+        .select(F.col("PartnerNumber"), ns(F.col("ShareClass")).alias("ShareClass"))
+        .distinct()
+    )
 
     # Direct insert: Form200616_Snapshot x K1Workflow x AllocationPercentage
     form200616_snapshot = read_table(spark, "Form200616_Snapshot", cfg).filter(
@@ -1549,7 +1666,8 @@ def write_form200616_allocation_summary(spark: SparkSession, cfg: dict, tables: 
     )
 
     direct_df = (
-        form200616_snapshot.alias("F2006")
+        form200616_snapshot
+        .alias("F2006")
         .join(k1_workflow.alias("KW"), F.col("F2006.WorkflowID") == F.col("KW.WorkFlowID"), "inner")
         .crossJoin(F.broadcast(alloc_pct.alias("AP")))
         .select(
@@ -1572,13 +1690,14 @@ def write_form200616_allocation_summary(spark: SparkSession, cfg: dict, tables: 
     )
 
     ltf_df = (
-        existing_form200616.alias("F2006")
+        existing_form200616
+        .alias("F2006")
         .join(
             lower_tier_funds.alias("LT"),
             (F.col("F2006.RunID") == F.col("LT.RunID"))
             & (F.col("F2006.EntityID") == F.col("LT.EntityID"))
             & (F.col("F2006.PartnerNumber") == F.col("LT.PartnerNumber")),
-            "inner"
+            "inner",
         )
         .crossJoin(F.broadcast(alloc_pct.alias("AP")))
         .select(
@@ -1590,7 +1709,8 @@ def write_form200616_allocation_summary(spark: SparkSession, cfg: dict, tables: 
             F.col("AP.PartnerNumber"),
             F.col("F2006.SourceEntityID"),
             F.col("F2006.Form2006EntityID"),
-        ).distinct()
+        )
+        .distinct()
     )
 
     _store_result_table(spark, cfg, target_table, ltf_df)
@@ -1599,6 +1719,7 @@ def write_form200616_allocation_summary(spark: SparkSession, cfg: dict, tables: 
 # ---------------------------------------------------------------------------
 # Section 18: Form8886AllocationSummary (SQL lines 1740-1810)
 # ---------------------------------------------------------------------------
+
 
 def write_form8886_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into Form8886AllocationSummary: direct + reclass.
@@ -1619,26 +1740,39 @@ def write_form8886_allocation_summary(spark: SparkSession, cfg: dict, tables: di
     # Direct insert
     form8886_input = read_table(spark, "Form8886Input_Snapshot", cfg)
     form8886_line_item = read_table(spark, "Form8886LineItem", cfg).filter(
-        F.coalesce(F.col("IsActive"), F.lit(False)) == True
+        F.coalesce(F.col("IsActive"), F.lit(False)) == True  # noqa: E712
     )
 
     direct_df = (
-        aos.filter(F.col("LineTypeID") == form8886_lt_id).alias("AO")
+        aos
+        .filter(F.col("LineTypeID") == form8886_lt_id)
+        .alias("AO")
         .join(
             form8886_input.select(
-                F.col("Form8886ID"), F.col("LineID").alias("F8886_LineID"),
-                F.col("WorkflowID"), F.col("TransactionName"),
+                F.col("Form8886ID"),
+                F.col("LineID").alias("F8886_LineID"),
+                F.col("WorkflowID"),
+                F.col("TransactionName"),
                 F.col("EntityID").alias("F8886_EntityID"),
-                F.col("Comments"), F.col("SecIIComments"),
+                F.col("Comments"),
+                F.col("SecIIComments"),
             ).alias("F8886"),
             (F.col("AO.QuicklinkID") == F.col("F8886.Form8886ID"))
             & (F.col("AO.LineID") == F.col("F8886.F8886_LineID")),
-            "inner"
+            "inner",
         )
-        .join(k1_workflow.select(
-            F.col("WorkFlowID"), F.col("EntityID").alias("KW_EntityID")
-        ).alias("KW"), F.col("F8886.WorkflowID") == F.col("KW.WorkFlowID"), "inner")
-        .join(F.broadcast(form8886_line_item.select("LineID").alias("F")), F.col("F.LineID") == F.col("F8886.F8886_LineID"), "inner")
+        .join(
+            k1_workflow.select(F.col("WorkFlowID"), F.col("EntityID").alias("KW_EntityID")).alias(
+                "KW"
+            ),
+            F.col("F8886.WorkflowID") == F.col("KW.WorkFlowID"),
+            "inner",
+        )
+        .join(
+            F.broadcast(form8886_line_item.select("LineID").alias("F")),
+            F.col("F.LineID") == F.col("F8886.F8886_LineID"),
+            "inner",
+        )
         .select(
             F.lit(run_id).cast("long").alias("RunID"),
             F.lit(client_id).cast("long").alias("ClientID"),
@@ -1665,31 +1799,32 @@ def write_form8886_allocation_summary(spark: SparkSession, cfg: dict, tables: di
     _store_result_table(spark, cfg, target_table, direct_df)
 
     # Reclass insert
-    reclass_data = tables["reclass_footnote_data"].filter(
-        F.col("LineTypeID") == form8886_lt_id
-    )
+    reclass_data = tables["reclass_footnote_data"].filter(F.col("LineTypeID") == form8886_lt_id)
 
-    reclass_f8886 = (
-        reclass_data
-        .select(
-            F.col("SourceEntityID"),
-            F.col("FootnoteID").alias("Form8886ID"),
-            F.col("TransactionName"),
-            F.col("TransactionEntityID"),
-            F.col("LineID"),
-            F.col("Comments"),
-            F.col("SecIIComments"),
-        ).distinct()
-    )
+    reclass_f8886 = reclass_data.select(
+        F.col("SourceEntityID"),
+        F.col("FootnoteID").alias("Form8886ID"),
+        F.col("TransactionName"),
+        F.col("TransactionEntityID"),
+        F.col("LineID"),
+        F.col("Comments"),
+        F.col("SecIIComments"),
+    ).distinct()
 
     reclass_df = (
-        aos.filter(F.col("LineTypeID") == form8886_lt_id).alias("AO")
-        .join(F.broadcast(form8886_line_item.select("LineID").alias("F")), F.col("F.LineID") == F.col("AO.LineID"), "inner")
+        aos
+        .filter(F.col("LineTypeID") == form8886_lt_id)
+        .alias("AO")
+        .join(
+            F.broadcast(form8886_line_item.select("LineID").alias("F")),
+            F.col("F.LineID") == F.col("AO.LineID"),
+            "inner",
+        )
         .join(
             reclass_f8886.alias("F8886"),
             (F.col("AO.QuicklinkID") == F.col("F8886.Form8886ID"))
             & (F.col("AO.LineID") == F.col("F8886.LineID")),
-            "inner"
+            "inner",
         )
         .select(
             F.lit(run_id).cast("long").alias("RunID"),
@@ -1711,7 +1846,8 @@ def write_form8886_allocation_summary(spark: SparkSession, cfg: dict, tables: di
             F.col("AO.ParentEntityId"),
             tk_expr.alias("TrackingKey"),
             F.col("AO.OriginalParentEntityID"),
-        ).distinct()
+        )
+        .distinct()
     )
 
     _store_result_table(spark, cfg, target_table, reclass_df)
@@ -1720,6 +1856,7 @@ def write_form8886_allocation_summary(spark: SparkSession, cfg: dict, tables: di
 # ---------------------------------------------------------------------------
 # Section 19: AtRiskAllocationSummary (SQL lines 1810-1840)
 # ---------------------------------------------------------------------------
+
 
 def write_at_risk_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into AtRiskAllocationSummary (conditional on data existence).
@@ -1736,22 +1873,27 @@ def write_at_risk_allocation_summary(spark: SparkSession, cfg: dict, tables: dic
     aos = tables["allocation_output_summary"]
     tk_expr = _tracking_key_expr(cfg["is_tracking_key"], entity_id)
 
-    df = aos.filter(F.col("LineTypeID") == at_risk_lt_id).select(
-        F.lit(run_id).cast("long").alias("RunID"),
-        F.lit(client_id).cast("long").alias("ClientID"),
-        F.lit(tax_period_id).alias("TaxPeriodID"),
-        F.lit(entity_id).alias("EntityID"),
-        F.col("ShareClass"),
-        F.col("PartnerNumber"),
-        F.col("EntityID").alias("SourceEntityID"),
-        F.col("QuicklinkID").alias("AtRiskID"),
-        F.col("LineID"),
-        F.col("Amount"),
-        F.col("Amount").alias("FlowupAmount"),
-        F.col("OriginalParentEntityID"),
-        F.col("ParentEntityID").alias("ParentEntityId"),
-        tk_expr.alias("TrackingKey"),
-    ).distinct()
+    df = (
+        aos
+        .filter(F.col("LineTypeID") == at_risk_lt_id)
+        .select(
+            F.lit(run_id).cast("long").alias("RunID"),
+            F.lit(client_id).cast("long").alias("ClientID"),
+            F.lit(tax_period_id).alias("TaxPeriodID"),
+            F.lit(entity_id).alias("EntityID"),
+            F.col("ShareClass"),
+            F.col("PartnerNumber"),
+            F.col("EntityID").alias("SourceEntityID"),
+            F.col("QuicklinkID").alias("AtRiskID"),
+            F.col("LineID"),
+            F.col("Amount"),
+            F.col("Amount").alias("FlowupAmount"),
+            F.col("OriginalParentEntityID"),
+            F.col("ParentEntityID").alias("ParentEntityId"),
+            tk_expr.alias("TrackingKey"),
+        )
+        .distinct()
+    )
 
     _store_result_table(spark, cfg, target_table, df)
 
@@ -1759,6 +1901,7 @@ def write_at_risk_allocation_summary(spark: SparkSession, cfg: dict, tables: dic
 # ---------------------------------------------------------------------------
 # Section 20: GAAPToTaxAllocation (SQL lines 1840-1860)
 # ---------------------------------------------------------------------------
+
 
 def write_gaap_to_tax_allocation(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into GAAPToTaxAllocation.
@@ -1773,8 +1916,7 @@ def write_gaap_to_tax_allocation(spark: SparkSession, cfg: dict, tables: dict) -
 
     aos = tables["allocation_output_summary"]
     df = aos.filter(
-        (F.col("EntityID") == entity_id)
-        & (F.col("LineTypeID") == cfg["gaap_to_tax_line_type_id"])
+        (F.col("EntityID") == entity_id) & (F.col("LineTypeID") == cfg["gaap_to_tax_line_type_id"])
     ).select(
         F.lit(run_id).cast("long").alias("RunID"),
         F.lit(client_id).cast("int").alias("ClientID"),
@@ -1793,6 +1935,7 @@ def write_gaap_to_tax_allocation(spark: SparkSession, cfg: dict, tables: dict) -
 # ---------------------------------------------------------------------------
 # Section 21: AdjustmentAllocationSummary (SQL lines 1860-1910)
 # ---------------------------------------------------------------------------
+
 
 def write_adjustment_allocation_summary(spark: SparkSession, cfg: dict, tables: dict) -> None:
     """Insert into AdjustmentAllocationSummary (conditional on PE Book).
@@ -1829,26 +1972,27 @@ def write_adjustment_allocation_summary(spark: SparkSession, cfg: dict, tables: 
 # Orchestrator: run_add_allocation_summary
 # ---------------------------------------------------------------------------
 
+
 def run_add_allocation_summary(
     spark: SparkSession,
-    cfg: dict = None,
-    EntityID: int = None,
-    ClientID: int = None,
-    TaxPeriodID: int = None,
-    RunID: int = None,
-    CatalogName: str = None,
-    SchemaName: str = None,
+    cfg: dict | None = None,
+    EntityID: int | None = None,
+    ClientID: int | None = None,
+    TaxPeriodID: int | None = None,
+    RunID: int | None = None,
+    CatalogName: str | None = None,
+    SchemaName: str | None = None,
     ResultType: str = "None",
-    VolumePath: str = None,
-    ExecutionID: str = None,
-    max_threads: int = None,
-    MaxThreads: int = None,
+    VolumePath: str | None = None,
+    ExecutionID: str | None = None,
+    max_threads: int | None = None,
+    MaxThreads: int | None = None,
     parallel_groups: str = "all",
-    ParallelGroups: str = None,
-    execution_profile: str = None,
-    ExecutionProfile: str = None,
-    checkpoint_mode: int = None,
-    CheckpointMode: int = None,
+    ParallelGroups: str | None = None,
+    execution_profile: str | None = None,
+    ExecutionProfile: str | None = None,
+    checkpoint_mode: int | None = None,
+    CheckpointMode: int | None = None,
     SqlShufflePartitions=None,
     profile_plan: bool = False,
     plan_checkpoint_threshold: int = 30,
@@ -1867,12 +2011,12 @@ def run_add_allocation_summary(
     schema = SchemaName
     t0 = time.time()
     parallel_activity = []
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    enabled_groups = parse_enabled_groups(
+        parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS
+    )
     profile = resolve_execution_profile(
         _blank(ExecutionProfile) or _blank(execution_profile),
-        checkpoint_mode=(
-            CheckpointMode if CheckpointMode is not None else checkpoint_mode
-        ),
+        checkpoint_mode=(CheckpointMode if CheckpointMode is not None else checkpoint_mode),
     )
     profile_name = profile["name"]
     workers = normalize_workers(
@@ -1885,7 +2029,6 @@ def run_add_allocation_summary(
         ),
         MaxThreads=MaxThreads,
     )
-    mode = None
     status = {
         "sp_name": "uspAddAllocationSummary",
         "run_id": run_id,
@@ -1917,7 +2060,7 @@ def run_add_allocation_summary(
         if ExecutionID is not None:
             cfg["execution_id"] = ExecutionID
         cfg["_result_file_infos"] = []
-        mode = _apply_execution_profile(
+        _apply_execution_profile(
             spark,
             cfg,
             profile_name,
@@ -1944,41 +2087,38 @@ def run_add_allocation_summary(
         tables = build_working_tables(spark, cfg)
         partner_wf_id = cfg.get("partner_workflow_id")
         partner_txn_id = cfg.get("partner_transaction_id")
-        partner_pfic = read_table(spark, "Partner_Snapshot", cfg).filter(
-            (
-                F.coalesce(F.col("WorkFlowID"), F.col("TransactionID"))
-                == F.lit(
-                    partner_wf_id
-                    if partner_wf_id is not None
-                    else partner_txn_id
-                ).cast("int")
+        partner_pfic = (
+            read_table(spark, "Partner_Snapshot", cfg)
+            .filter(
+                (
+                    F.coalesce(F.col("WorkFlowID"), F.col("TransactionID"))
+                    == F.lit(partner_wf_id if partner_wf_id is not None else partner_txn_id).cast(
+                        "int"
+                    )
+                )
+                & (F.col("EntityID") == cfg["entity_id"])
+                & (F.col("ClientID") == cfg["client_id"])
             )
-            & (F.col("EntityID") == cfg["entity_id"])
-            & (F.col("ClientID") == cfg["client_id"])
-        ).select(
-            ns(F.col("ShareClass")).alias("ShareClass"),
-            F.col("PartnerNumber"),
-        ).distinct()
+            .select(
+                ns(F.col("ShareClass")).alias("ShareClass"),
+                F.col("PartnerNumber"),
+            )
+            .distinct()
+        )
         tables["partner_pfic"] = partner_pfic
         for frame_name in _MULTI_CONSUMER_FRAMES:
             frame = tables.get(frame_name)
             if frame is not None and hasattr(frame, "columns"):
-                tables[frame_name] = _checkpoint_frame(
-                    spark, frame, frame_name, cfg
-                )
+                tables[frame_name] = _checkpoint_frame(spark, frame, frame_name, cfg)
         partner_pfic = tables["partner_pfic"]
 
         builder_holder = {}
 
         def _pfic_task():
-            builder_holder["pfic_reclass"] = build_pfic_reclass_data(
-                spark, cfg, tables
-            )
+            builder_holder["pfic_reclass"] = build_pfic_reclass_data(spark, cfg, tables)
 
         def _cf_task():
-            builder_holder["cf_data"] = build_custom_footnote_transactions(
-                spark, cfg, tables
-            )
+            builder_holder["cf_data"] = build_custom_footnote_transactions(spark, cfg, tables)
 
         run_parallel(
             [
@@ -2006,51 +2146,35 @@ def run_add_allocation_summary(
         write_tasks = [
             _wrap(
                 "k1",
-                lambda local: write_k1_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_k1_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "m1",
-                lambda local: write_m1_adj_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_m1_adj_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "box_jkl",
-                lambda local: write_box_jkl_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_box_jkl_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "form926",
-                lambda local: write_form926_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_form926_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "form8865",
-                lambda local: write_form8865_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_form8865_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "form199a",
-                lambda local: write_form199a_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_form199a_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "pfic_summary",
-                lambda local: write_pfic_footnote_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_pfic_footnote_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "pfic_text",
-                lambda local: write_pfic_footnote_allocation_text(
-                    spark, local, pfic_reclass_df
-                ),
+                lambda local: write_pfic_footnote_allocation_text(spark, local, pfic_reclass_df),
             ),
             _wrap(
                 "custom_footnote",
@@ -2060,51 +2184,35 @@ def run_add_allocation_summary(
             ),
             _wrap(
                 "line18a",
-                lambda local: write_line18a_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_line18a_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "ubti",
-                lambda local: write_ubti_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_ubti_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "passive_income",
-                lambda local: write_passive_income_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_passive_income_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "form200616",
-                lambda local: write_form200616_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_form200616_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "form8886",
-                lambda local: write_form8886_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_form8886_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "at_risk",
-                lambda local: write_at_risk_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_at_risk_allocation_summary(spark, local, tables),
             ),
             _wrap(
                 "gaap_to_tax",
-                lambda local: write_gaap_to_tax_allocation(
-                    spark, local, tables
-                ),
+                lambda local: write_gaap_to_tax_allocation(spark, local, tables),
             ),
             _wrap(
                 "adjustment",
-                lambda local: write_adjustment_allocation_summary(
-                    spark, local, tables
-                ),
+                lambda local: write_adjustment_allocation_summary(spark, local, tables),
             ),
         ]
         branch_infos = run_parallel(
@@ -2120,10 +2228,8 @@ def run_add_allocation_summary(
 
         merged = {}
         for blob in cfg.get("_result_file_infos", []):
-            try:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
                 merged.update(json.loads(blob))
-            except (json.JSONDecodeError, TypeError):
-                pass
         result_json = json.dumps(merged) if merged else ""
         if result_json:
             print(f"[PARQUET] Return JSON: {result_json}")
@@ -2158,10 +2264,12 @@ def run_add_allocation_summary(
 
 if __name__ == "__main__":
     import json
+
     try:
         spark = SparkSession.builder.getOrCreate()
     except Exception:
         from databricks.connect import DatabricksSession
+
         spark = DatabricksSession.builder.profile("dev").getOrCreate()
 
     try:
@@ -2177,6 +2285,7 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"Usage: provide run_id, entity_id, etc. as widget parameters ({exc})")
         import sys
+
         sys.exit(1)
 
     try:

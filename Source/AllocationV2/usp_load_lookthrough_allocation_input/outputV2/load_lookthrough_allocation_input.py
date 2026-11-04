@@ -437,9 +437,9 @@ def run_load_lookthrough_allocation_input(
                 pfic_mapped_df,
                 lower_tier_funds_df,
             )
-            alloc_input_df = _checkpoint(
-                spark, alloc_input_df, "alloc_input_post_pfic", cfg
-            )
+            # alloc_input_df = _checkpoint(
+            #     spark, alloc_input_df, "alloc_input_post_pfic", cfg
+            # )
             status["sections_completed"] = 14
 
         with _timed(timings, "S15-S19 sequential finalization"):

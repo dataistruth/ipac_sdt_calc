@@ -4,14 +4,16 @@ Write operations for uspLoadFootnotesAllocationToOutput.
 Handles the final INSERT into AllocationOutput and the UPDATE operations
 to deduct allocated amounts from AllocationInput.
 """
-from pyspark.sql import SparkSession, DataFrame
-import pyspark.sql.functions as F
+
 import logging
 import time
 
-from Common_V2.core.helpers import read_table, ns, ns0
-from Common_V2.core.writers import write_insert, write_merge_custom
+import pyspark.sql.functions as F
+from pyspark.sql import DataFrame, SparkSession
+
+from Common_V2.core.helpers import ns, read_table
 from Common_V2.core.observability import log_section, log_timing
+from Common_V2.core.writers import write_insert, write_merge_custom
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,8 @@ logger = logging.getLogger(__name__)
 # Row count: ALWAYS-NON-EMPTY
 # ---------------------------------------------------------------------------
 def write_allocation_output(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_tmp_alloc_output: DataFrame,
 ) -> int:
     """INSERT allocated rows into permanent AllocationOutput table.
@@ -41,15 +44,25 @@ def write_allocation_output(
         return 0
 
     # Filter Amount<>0
-    df_write = df_tmp_alloc_output.filter(
-        F.coalesce(F.col("Amount"), F.lit(0)) != 0
-    )
+    df_write = df_tmp_alloc_output.filter(F.coalesce(F.col("Amount"), F.lit(0)) != 0)
 
     columns = [
-        "RunID", "ClientID", "EntityID", "ShareClass", "PartnerNumber",
-        "LineTypeID", "QuicklinkID", "LineID", "Amount", "AllocationType",
-        "ParentEntityID", "SuperParentEntityID", "AllocationTypeID",
-        "TrackingKey", "SchID", "OriginalParentEntityID",
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "ShareClass",
+        "PartnerNumber",
+        "LineTypeID",
+        "QuicklinkID",
+        "LineID",
+        "Amount",
+        "AllocationType",
+        "ParentEntityID",
+        "SuperParentEntityID",
+        "AllocationTypeID",
+        "TrackingKey",
+        "SchID",
+        "OriginalParentEntityID",
     ]
 
     # Ensure SchID column exists
@@ -57,7 +70,11 @@ def write_allocation_output(
         df_write = df_write.withColumn("SchID", F.lit(None).cast("int"))
 
     row_count = write_insert(
-        spark, cfg, df_write, "AllocationOutput", columns,
+        spark,
+        cfg,
+        df_write,
+        "AllocationOutput",
+        columns,
         description="Footnote allocation output",
     )
 
@@ -71,7 +88,8 @@ def write_allocation_output(
 # Row count: ALWAYS-NON-EMPTY
 # ---------------------------------------------------------------------------
 def apply_deduction(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_tmp_alloc_output: DataFrame,
     df_alloc_input: DataFrame,
     df_fn_allocated_lines: DataFrame,
@@ -108,19 +126,20 @@ def apply_deduction(
     # groups/joins on NULL. We mirror that by emitting AdjustmentTypeID = NULL and NOT
     # grouping by AllocationTypeID (SQL doesn't either).
     # SchID is always present by this point (added as NULL if missing upstream)
-    _filtered = (
-        df_tmp_alloc_output
-        .filter(
-            (F.col("RunID") == run_id)
-            & F.col("AllocationType").like("Footnote%")
-        )
-        .withColumn("TrackingKey_ns", ns(F.col("TrackingKey")))
-    )
+    _filtered = df_tmp_alloc_output.filter(
+        (F.col("RunID") == run_id) & F.col("AllocationType").like("Footnote%")
+    ).withColumn("TrackingKey_ns", ns(F.col("TrackingKey")))
 
     _group_cols = [
-        "RunID", "ClientID", "EntityID", "LineTypeID",
-        "QuicklinkID", "LineID", "ParentEntityID",
-        "SuperParentEntityID", "TrackingKey_ns",
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "LineTypeID",
+        "QuicklinkID",
+        "LineID",
+        "ParentEntityID",
+        "SuperParentEntityID",
+        "TrackingKey_ns",
     ]
     if "SchID" in df_tmp_alloc_output.columns:
         _group_cols.append("SchID")
@@ -144,9 +163,13 @@ def apply_deduction(
     # Build UPDATE source using temp view + SQL MERGE
     # Join AllocationOutputTotal with DAR to determine cap condition
     df_update_source = (
-        df_aot.alias("AO")
+        df_aot
+        .alias("AO")
         .join(
-            df_alloc_input.select("TypeID", "EntityID", "LineID", "TrackingKey", "Tag", "QuicklinkID").distinct().alias("AI_types"),
+            df_alloc_input
+            .select("TypeID", "EntityID", "LineID", "TrackingKey", "Tag", "QuicklinkID")
+            .distinct()
+            .alias("AI_types"),
             (F.col("AO.EntityID") == F.col("AI_types.EntityID"))
             & (F.col("AO.LineID") == F.col("AI_types.LineID"))
             & (ns(F.col("AO.TrackingKey")) == ns(F.col("AI_types.TrackingKey")))
@@ -155,11 +178,17 @@ def apply_deduction(
         )
         .join(dar, F.col("AI_types.TypeID") == F.col("dar_RuleID"), "left")
         .select(
-            F.col("AO.RunID"), F.col("AO.ClientID"), F.col("AO.EntityID"),
-            F.col("AO.LineTypeID"), F.col("AO.QuicklinkID"), F.col("AO.LineID"),
-            F.col("AO.ParentEntityID"), F.col("AO.SuperParentEntityID"),
+            F.col("AO.RunID"),
+            F.col("AO.ClientID"),
+            F.col("AO.EntityID"),
+            F.col("AO.LineTypeID"),
+            F.col("AO.QuicklinkID"),
+            F.col("AO.LineID"),
+            F.col("AO.ParentEntityID"),
+            F.col("AO.SuperParentEntityID"),
             F.col("AO.AdjustmentTypeID"),
-            F.col("AO.TrackingKey"), F.col("AI_types.Tag").alias("Tag"),
+            F.col("AO.TrackingKey"),
+            F.col("AI_types.Tag").alias("Tag"),
             F.col("AO.AllocatedAmount"),
             F.col("dar_RuleID"),
         )
@@ -168,9 +197,13 @@ def apply_deduction(
     # Add SchID if available
     if "SchID" in df_aot.columns:
         df_update_source = (
-            df_aot.alias("AO")
+            df_aot
+            .alias("AO")
             .join(
-                df_alloc_input.select("TypeID", "EntityID", "LineID", "TrackingKey", "Tag", "QuicklinkID").distinct().alias("AI_types"),
+                df_alloc_input
+                .select("TypeID", "EntityID", "LineID", "TrackingKey", "Tag", "QuicklinkID")
+                .distinct()
+                .alias("AI_types"),
                 (F.col("AO.EntityID") == F.col("AI_types.EntityID"))
                 & (F.col("AO.LineID") == F.col("AI_types.LineID"))
                 & (ns(F.col("AO.TrackingKey")) == ns(F.col("AI_types.TrackingKey")))
@@ -179,11 +212,17 @@ def apply_deduction(
             )
             .join(dar, F.col("AI_types.TypeID") == F.col("dar_RuleID"), "left")
             .select(
-                F.col("AO.RunID"), F.col("AO.ClientID"), F.col("AO.EntityID"),
-                F.col("AO.LineTypeID"), F.col("AO.QuicklinkID"), F.col("AO.LineID"),
-                F.col("AO.ParentEntityID"), F.col("AO.SuperParentEntityID"),
+                F.col("AO.RunID"),
+                F.col("AO.ClientID"),
+                F.col("AO.EntityID"),
+                F.col("AO.LineTypeID"),
+                F.col("AO.QuicklinkID"),
+                F.col("AO.LineID"),
+                F.col("AO.ParentEntityID"),
+                F.col("AO.SuperParentEntityID"),
                 F.col("AO.AdjustmentTypeID"),
-                F.col("AO.TrackingKey"), F.col("AI_types.Tag").alias("Tag"),
+                F.col("AO.TrackingKey"),
+                F.col("AI_types.Tag").alias("Tag"),
                 F.col("AO.SchID"),
                 F.col("AO.AllocatedAmount"),
                 F.col("dar_RuleID"),
@@ -208,7 +247,10 @@ def apply_deduction(
     """
 
     write_merge_custom(
-        spark, cfg, df_update_source, "AllocationInput",
+        spark,
+        cfg,
+        df_update_source,
+        "AllocationInput",
         merge_on=merge_on,
         update_exprs={
             "Amount": (
@@ -224,11 +266,7 @@ def apply_deduction(
     )
 
     # Step 3: Accumulate FNAllocatedLines (for zero-out)
-    df_new_fn_lines = (
-        df_aot
-        .select("LineID", "LineTypeID", "RunID")
-        .distinct()
-    )
+    df_new_fn_lines = df_aot.select("LineID", "LineTypeID", "RunID").distinct()
 
     # Combine with existing fn_allocated_lines (from 704c deduction)
     if df_fn_allocated_lines is not None:
@@ -258,7 +296,10 @@ def apply_deduction(
     )
 
     write_merge_custom(
-        spark, cfg, None, "AllocationInput",
+        spark,
+        cfg,
+        None,
+        "AllocationInput",
         merge_on=zero_merge_on,
         update_exprs={"Amount": "0"},
         source_sql=zero_source_sql,

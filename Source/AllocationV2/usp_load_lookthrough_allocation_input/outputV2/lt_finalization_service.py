@@ -938,7 +938,8 @@ def write_final_output(spark: SparkSession, cfg: dict,
             final_input = final_input.withColumn(field.name, F.col(field.name).cast(field.dataType))
 
     final_input.write.mode("append").saveAsTable(tbl_name("LookThroughAllocationInput", cfg))
-    logger.info(f"Wrote {final_input.count()} rows to LookThroughAllocationInput.")
+    # logger.info(f"Wrote {final_input.count()} rows to LookThroughAllocationInput.")
+    logger.info("Wrote LookThroughAllocationInput.")
 
     # --- Write SchKTaxableIncome ---
     k1_line_item = tbl(spark, "K1LineItem", cfg)
@@ -1135,10 +1136,11 @@ def write_lookthrough_allocation_input(spark, cfg, alloc_input_df):
     final_input.write.mode("append").saveAsTable(
         tbl_name("LookThroughAllocationInput", cfg)
     )
-    logger.info(
-        "Wrote %s rows to LookThroughAllocationInput.",
-        final_input.count(),
-    )
+    # logger.info(
+    #     "Wrote %s rows to LookThroughAllocationInput.",
+    #     final_input.count(),
+    # )
+    logger.info("Wrote LookThroughAllocationInput.")
 
 
 def write_sch_k_taxable_income(

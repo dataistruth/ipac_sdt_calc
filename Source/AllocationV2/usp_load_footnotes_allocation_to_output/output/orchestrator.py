@@ -98,12 +98,10 @@ def _timed(timings, step):
     try:
         yield
     finally:
-        timings.append(
-            {
-                "step": step,
-                "elapsed_seconds": round(time.time() - started, 3),
-            }
-        )
+        timings.append({
+            "step": step,
+            "elapsed_seconds": round(time.time() - started, 3),
+        })
 
 
 def _checkpoint(spark, df, name, cfg):
@@ -112,23 +110,23 @@ def _checkpoint(spark, df, name, cfg):
 
 def run_load_footnotes_allocation_to_output(
     spark,
-    cfg: dict = None,
+    cfg: dict | None = None,
     verbose: bool = False,
-    EntityID: int = None,
-    ClientID: int = None,
-    TaxPeriodID: int = None,
-    RunID: int = None,
-    CatalogName: str = None,
-    SchemaName: str = None,
-    RankForRulePickup: int = None,
-    max_threads: int = None,
-    MaxThreads: int = None,
+    EntityID: int | None = None,
+    ClientID: int | None = None,
+    TaxPeriodID: int | None = None,
+    RunID: int | None = None,
+    CatalogName: str | None = None,
+    SchemaName: str | None = None,
+    RankForRulePickup: int | None = None,
+    max_threads: int | None = None,
+    MaxThreads: int | None = None,
     parallel_groups: str = "all",
-    ParallelGroups: str = None,
-    execution_profile: str = None,
-    ExecutionProfile: str = None,
-    checkpoint_mode: int = None,
-    CheckpointMode: int = None,
+    ParallelGroups: str | None = None,
+    execution_profile: str | None = None,
+    ExecutionProfile: str | None = None,
+    checkpoint_mode: int | None = None,
+    CheckpointMode: int | None = None,
     SqlShufflePartitions=None,
     **kwargs,
 ):
@@ -143,12 +141,12 @@ def run_load_footnotes_allocation_to_output(
 
     started = time.time()
     timings = []
-    enabled_groups = parse_enabled_groups(parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS)
+    enabled_groups = parse_enabled_groups(
+        parallel_groups, ParallelGroups, known_groups=KNOWN_GROUPS
+    )
     profile = resolve_execution_profile(
         _blank(ExecutionProfile) or _blank(execution_profile),
-        checkpoint_mode=(
-            CheckpointMode if CheckpointMode is not None else checkpoint_mode
-        ),
+        checkpoint_mode=(CheckpointMode if CheckpointMode is not None else checkpoint_mode),
     )
     profile_name = profile["name"]
     workers = _normalize_workers(
@@ -220,9 +218,7 @@ def run_load_footnotes_allocation_to_output(
             status["entity_id"] = cfg.get("entity_id")
             from Common_V2.core.helpers import read_table as _read
 
-            cfg["_df_pfic_footnote_line_item"] = _read(
-                spark, "PFICFootnoteLineItem", cfg
-            )
+            cfg["_df_pfic_footnote_line_item"] = _read(spark, "PFICFootnoteLineItem", cfg)
             cfg["_df_entity"] = _read(spark, "Entity", cfg)
             load_sp_config(spark, cfg)
             if not validate_run_preconditions(spark, cfg):
@@ -281,17 +277,13 @@ def run_load_footnotes_allocation_to_output(
 
         with _timed(timings, "S4 quarter updates"):
             with quarter_join_hints():
-                df_temp_alloc_input, df_part_v_allocable = (
-                    update_pfic_partv_quarters(
-                        spark,
-                        cfg,
-                        df_temp_alloc_input,
-                        df_temp_final_eff_pct,
-                    )
+                df_temp_alloc_input, df_part_v_allocable = update_pfic_partv_quarters(
+                    spark,
+                    cfg,
+                    df_temp_alloc_input,
+                    df_temp_final_eff_pct,
                 )
-                df_part_v_allocable = broadcast_part_v_lines(
-                    df_part_v_allocable
-                )
+                df_part_v_allocable = broadcast_part_v_lines(df_part_v_allocable)
                 df_temp_alloc_input = update_pfic_quarters_by_config(
                     spark,
                     cfg,
@@ -299,22 +291,14 @@ def run_load_footnotes_allocation_to_output(
                     df_part_v_allocable,
                     df_temp_final_eff_pct,
                 )
-                df_temp_alloc_input = update_form_quarters(
-                    spark, cfg, df_temp_alloc_input
-                )
-            df_temp_alloc_input = _checkpoint(
-                spark, df_temp_alloc_input, "temp_alloc_input", cfg
-            )
+                df_temp_alloc_input = update_form_quarters(spark, cfg, df_temp_alloc_input)
+            df_temp_alloc_input = _checkpoint(spark, df_temp_alloc_input, "temp_alloc_input", cfg)
             status["sections_completed"] = 4
 
         with _timed(timings, "S5 cost"):
             df_cost_pct_snapshot = planned["cost"]
-            df_cost_pct_snapshot = _checkpoint(
-                spark, df_cost_pct_snapshot, "cost_snapshot", cfg
-            )
-            df_temp_cost_underlying_types = derive_cost_underlying_types(
-                df_cost_pct_snapshot
-            )
+            df_cost_pct_snapshot = _checkpoint(spark, df_cost_pct_snapshot, "cost_snapshot", cfg)
+            df_temp_cost_underlying_types = derive_cost_underlying_types(df_cost_pct_snapshot)
             status["sections_completed"] = 5
 
         with _timed(timings, "S6 hierarchy"):
@@ -330,18 +314,14 @@ def run_load_footnotes_allocation_to_output(
             df_all_underlyings = filter_asset_class(
                 spark, cfg, df_all_underlyings, df_asset_class_rel
             )
-            df_all_underlyings = _checkpoint(
-                spark, df_all_underlyings, "all_underlyings", cfg
-            )
+            df_all_underlyings = _checkpoint(spark, df_all_underlyings, "all_underlyings", cfg)
             status["sections_completed"] = 7
 
         with _timed(timings, "S8 ordering"):
             df_underlyings_fn = build_underlyings_footnotes_ordered(
                 spark, cfg, df_all_underlyings, df_temp_alloc_input
             )
-            df_underlyings_fn = _checkpoint(
-                spark, df_underlyings_fn, "underlyings_fn", cfg
-            )
+            df_underlyings_fn = _checkpoint(spark, df_underlyings_fn, "underlyings_fn", cfg)
             status["sections_completed"] = 8
 
         with _timed(timings, "S9 allocation input"):
@@ -352,9 +332,7 @@ def run_load_footnotes_allocation_to_output(
                 df_temp_book_eff,
                 df_underlyings_fn,
             )
-            df_alloc_input = _checkpoint(
-                spark, df_alloc_input, "alloc_input", cfg
-            )
+            df_alloc_input = _checkpoint(spark, df_alloc_input, "alloc_input", cfg)
             status["sections_completed"] = 9
 
         if df_alloc_input.isEmpty():
@@ -390,24 +368,20 @@ def run_load_footnotes_allocation_to_output(
             status["sections_completed"] = 11
 
         with _timed(timings, "S12 effective"):
-            from Common_V2.core.helpers import read_table as _read
             from pyspark.sql import Window
 
-            partner_snapshot = _read(
-                spark, "Partner_Snapshot", cfg
-            ).filter(
+            from Common_V2.core.helpers import read_table as _read
+
+            partner_snapshot = _read(spark, "Partner_Snapshot", cfg).filter(
                 (F.col("ClientID") == cfg["client_id"])
                 & (F.col("TaxPeriodID") == cfg["tax_period_id"])
                 & (F.col("EntityID") == cfg["entity_id"])
             )
             window = Window.partitionBy("EntityID")
             latest = (
-                partner_snapshot.withColumn(
-                    "_wf", F.coalesce(F.col("WorkFlowID"), F.lit(0))
-                )
-                .withColumn(
-                    "_tx", F.coalesce(F.col("TransactionID"), F.lit(0))
-                )
+                partner_snapshot
+                .withColumn("_wf", F.coalesce(F.col("WorkFlowID"), F.lit(0)))
+                .withColumn("_tx", F.coalesce(F.col("TransactionID"), F.lit(0)))
                 .withColumn("_max_wf", F.max("_wf").over(window))
                 .withColumn("_max_tx", F.max("_tx").over(window))
                 .filter(
@@ -436,21 +410,27 @@ def run_load_footnotes_allocation_to_output(
 
         with _timed(timings, "S13 writes"):
             shared_cols = [
-                "RunID", "ClientID", "EntityID", "ShareClass",
-                "PartnerNumber", "LineTypeID", "QuicklinkID", "LineID",
-                "Amount", "AllocationType", "ParentEntityID",
-                "SuperParentEntityID", "AllocationTypeID", "TrackingKey",
-                "OriginalParentEntityID", "SchID",
+                "RunID",
+                "ClientID",
+                "EntityID",
+                "ShareClass",
+                "PartnerNumber",
+                "LineTypeID",
+                "QuicklinkID",
+                "LineID",
+                "Amount",
+                "AllocationType",
+                "ParentEntityID",
+                "SuperParentEntityID",
+                "AllocationTypeID",
+                "TrackingKey",
+                "OriginalParentEntityID",
+                "SchID",
             ]
-            if (
-                df_tmp_alloc_output_704c is not None
-                and df_tmp_alloc_output_eff is not None
-            ):
+            if df_tmp_alloc_output_704c is not None and df_tmp_alloc_output_eff is not None:
                 normalized = df_tmp_alloc_output_704c
                 if "SchID" not in normalized.columns:
-                    normalized = normalized.withColumn(
-                        "SchID", F.lit(None).cast("int")
-                    )
+                    normalized = normalized.withColumn("SchID", F.lit(None).cast("int"))
                 df_combined = normalized.select(*shared_cols).unionByName(
                     df_tmp_alloc_output_eff.select(*shared_cols)
                 )
@@ -459,9 +439,7 @@ def run_load_footnotes_allocation_to_output(
             elif df_tmp_alloc_output_704c is not None:
                 df_combined = df_tmp_alloc_output_704c
                 if "SchID" not in df_combined.columns:
-                    df_combined = df_combined.withColumn(
-                        "SchID", F.lit(None).cast("int")
-                    )
+                    df_combined = df_combined.withColumn("SchID", F.lit(None).cast("int"))
             else:
                 df_combined = None
 
@@ -508,7 +486,7 @@ if __name__ == "__main__":
         TaxPeriodID=int(dbutils.widgets.get("tax_period_id")),  # noqa: F821
         CatalogName=dbutils.widgets.get("catalog"),  # noqa: F821
         SchemaName=dbutils.widgets.get("schema"),  # noqa: F821
-        RankForRulePickup=int(  # noqa: F821
+        RankForRulePickup=int(
             dbutils.widgets.get("rank_for_rule_pickup")  # noqa: F821
         ),
     )

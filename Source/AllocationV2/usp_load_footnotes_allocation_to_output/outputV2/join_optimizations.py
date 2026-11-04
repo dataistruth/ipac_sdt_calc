@@ -21,7 +21,8 @@ from AllocationV2.usp_load_footnotes_allocation_to_output.outputV2.allocation_70
 def derive_cost_underlying_types(df_cost_snapshot):
     """Mirror sdt_d TempCostUnderlyingTypes derivation from a snapshot."""
     return (
-        df_cost_snapshot.filter(
+        df_cost_snapshot
+        .filter(
             (F.lower(F.col("EntityUnderlyingtype")) != "k-1 only")
             | (
                 (F.lower(F.col("EntityUnderlyingtype")) == "k-1 only")
@@ -45,7 +46,8 @@ def _quarter_update(df, source, line_type, ql, lid, tk, quarter):
     base = df.alias("base")
     update = F.broadcast(source).alias("upd")
     return (
-        base.join(
+        base
+        .join(
             update,
             (F.col("base.QuicklinkID") == F.col(f"upd.{ql}"))
             & (F.col("base.LineID") == F.col(f"upd.{lid}"))
@@ -55,27 +57,23 @@ def _quarter_update(df, source, line_type, ql, lid, tk, quarter):
         )
         .withColumn(
             "Quarter",
-            F.when(
-                F.col(f"upd.{ql}").isNotNull(), F.col(f"upd.{quarter}")
-            ).otherwise(F.col("base.Quarter")),
+            F.when(F.col(f"upd.{ql}").isNotNull(), F.col(f"upd.{quarter}")).otherwise(
+                F.col("base.Quarter")
+            ),
         )
-        .select(
-            *[
-                F.col("Quarter")
-                if column == "Quarter"
-                else F.col(f"base.{column}")
-                for column in df.columns
-            ]
-        )
+        .select(*[
+            F.col("Quarter") if column == "Quarter" else F.col(f"base.{column}")
+            for column in df.columns
+        ])
     )
 
 
-def _quarter_update_schid(df, source, line_type, flow_df):
-    del flow_df
+def _quarter_update_schid(df, source, line_type):
     base = df.alias("base")
     update = F.broadcast(source).alias("upd")
     return (
-        base.join(
+        base
+        .join(
             update,
             (F.col("base.QuicklinkID") == F.col("upd._ql"))
             & (F.col("base.LineID") == F.col("upd._lid"))
@@ -91,14 +89,10 @@ def _quarter_update_schid(df, source, line_type, flow_df):
                 F.col("upd._new_quarter"),
             ).otherwise(F.col("base.Quarter")),
         )
-        .select(
-            *[
-                F.col("Quarter")
-                if column == "Quarter"
-                else F.col(f"base.{column}")
-                for column in df.columns
-            ]
-        )
+        .select(*[
+            F.col("Quarter") if column == "Quarter" else F.col(f"base.{column}")
+            for column in df.columns
+        ])
     )
 
 

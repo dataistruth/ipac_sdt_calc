@@ -4,12 +4,14 @@ Quarter resolution logic for uspLoadFootnotesAllocationToOutput.
 Handles PartV quarter assignment, PFIC distribution date logic,
 and form-specific quarter updates (Form8886, Form199A, Form926, Form8865).
 """
-from pyspark.sql import SparkSession, DataFrame
-import pyspark.sql.functions as F
+
 import logging
 import time
 
-from Common_V2.core.helpers import read_table, ns, ns0
+import pyspark.sql.functions as F
+from pyspark.sql import DataFrame, SparkSession
+
+from Common_V2.core.helpers import ns, read_table
 from Common_V2.core.observability import log_section, log_timing
 
 logger = logging.getLogger(__name__)
@@ -21,7 +23,8 @@ logger = logging.getLogger(__name__)
 # Row count: POSSIBLY-EMPTY
 # ---------------------------------------------------------------------------
 def update_pfic_partv_quarters(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_alloc_input: DataFrame,
     df_temp_final_eff_pct: DataFrame,
 ) -> tuple:
@@ -53,7 +56,8 @@ def update_pfic_partv_quarters(
         # SQL: IF(ISNULL(@PartVAllocated,0) = 1) — skip if not allocated
         logger.info("[SKIP] PartV not allocated — skipping PartV quarter logic")
         # Return empty PartV allocable lines
-        from pyspark.sql.types import StructType, StructField, IntegerType
+        from pyspark.sql.types import IntegerType, StructField, StructType
+
         schema = StructType([
             StructField("LineID", IntegerType()),
             StructField("QuicklinkID", IntegerType()),
@@ -96,13 +100,10 @@ def update_pfic_partv_quarters(
     pfic_input = df_alloc_input.filter(F.col("LineTypeID") == pfic_lt)
 
     # Join: T → PFICFootNoteFlowUP
-    joined = (
-        pfic_input
-        .join(
-            pfic_flowup,
-            pfic_input["QuicklinkID"] == pfic_flowup["PFICFootNoteID"],
-            "inner",
-        )
+    joined = pfic_input.alias("ai").join(
+        pfic_flowup.alias("pf"),
+        F.col("ai.QuicklinkID") == F.col("pf.PFICFootNoteID"),
+        "inner",
     )
 
     # BUG-08 FIX: SQL uses Convert(date, ISNULL(PF.TextValue, '1900-01-01'))
@@ -110,25 +111,25 @@ def update_pfic_partv_quarters(
     joined = joined.withColumn(
         "_dist_date",
         F.coalesce(
-            F.expr("try_to_date(coalesce(TextValue, '1900-01-01'), 'yyyy-MM-dd')"),
-            F.expr("try_to_date(coalesce(TextValue, '1900-01-01'), 'MM/dd/yyyy')"),
-            F.expr("try_to_date(split(coalesce(TextValue, '1900-01-01'), ' ')[0], 'M/d/yyyy')"),
-        )
+            F.expr("try_to_date(coalesce(pf.TextValue, '1900-01-01'), 'yyyy-MM-dd')"),
+            F.expr("try_to_date(coalesce(pf.TextValue, '1900-01-01'), 'MM/dd/yyyy')"),
+            F.expr("try_to_date(split(coalesce(pf.TextValue, '1900-01-01'), ' ')[0], 'M/d/yyyy')"),
+        ),
     )
 
     # BUG-01 FIX: Alias Quarter to _pv_quarter to avoid ambiguity with other
     # DataFrames that also have a Quarter column in downstream joins.
     part_v_quarters = (
-        joined.join(
-            quarter_dates,
-
-            F.col("_dist_date") == F.to_date(F.col("StartDate")),
+        joined
+        .join(
+            quarter_dates.alias("qd"),
+            F.col("_dist_date") == F.to_date(F.col("qd.StartDate")),
             "inner",
         )
         .select(
-            quarter_dates["Quarter"].alias("_pv_quarter"),
-            pfic_input["QuicklinkID"],
-            ns(pfic_input["TrackingKey"], F.lit("")).alias("TrackingKey"),
+            F.col("qd.Quarter").alias("_pv_quarter"),
+            F.col("ai.QuicklinkID"),
+            ns(F.col("ai.TrackingKey"), F.lit("")).alias("TrackingKey"),
         )
         .distinct()
     )
@@ -151,21 +152,26 @@ def update_pfic_partv_quarters(
 
     part_v_allocable = (
         pfic_input
-        .join(pfic_line_items, pfic_input["LineID"] == pfic_line_items["pfli_LineID"], "inner")
+        .alias("ai2")
         .join(
-            part_v_quarters,
-            (pfic_input["QuicklinkID"] == part_v_quarters["QuicklinkID"])
-            & (ns(pfic_input["TrackingKey"], F.lit("")) == part_v_quarters["TrackingKey"]),
+            pfic_line_items.alias("pli"),
+            F.col("ai2.LineID") == F.col("pli.pfli_LineID"),
             "inner",
         )
         .join(
-            df_temp_final_eff_pct,
-            df_temp_final_eff_pct["Quarter"] == part_v_quarters["_pv_quarter"],
+            part_v_quarters.alias("pvq"),
+            (F.col("ai2.QuicklinkID") == F.col("pvq.QuicklinkID"))
+            & (ns(F.col("ai2.TrackingKey"), F.lit("")) == F.col("pvq.TrackingKey")),
+            "inner",
+        )
+        .join(
+            df_temp_final_eff_pct.alias("tfep"),
+            F.col("tfep.Quarter") == F.col("pvq._pv_quarter"),
             "inner",
         )
         .select(
-            pfic_line_items["pfli_LineID"].alias("LineID"),
-            pfic_input["QuicklinkID"],
+            F.col("pli.pfli_LineID").alias("LineID"),
+            F.col("ai2.QuicklinkID"),
         )
         .distinct()
     )
@@ -183,33 +189,34 @@ def update_pfic_partv_quarters(
     # Build the quarter values to assign
     update_source = (
         pfic_input
+        .alias("ai3")
         .join(
-            pfic_flowup,
-            pfic_input["QuicklinkID"] == pfic_flowup["PFICFootNoteID"],
+            pfic_flowup.alias("pf2"),
+            F.col("ai3.QuicklinkID") == F.col("pf2.PFICFootNoteID"),
             "inner",
         )
         .join(
-            part_v_allocable,
-            (pfic_input["LineID"] == part_v_allocable["LineID"])
-            & (pfic_input["QuicklinkID"] == part_v_allocable["QuicklinkID"]),
+            part_v_allocable.alias("pva"),
+            (F.col("ai3.LineID") == F.col("pva.LineID"))
+            & (F.col("ai3.QuicklinkID") == F.col("pva.QuicklinkID")),
             "inner",
         )
         .join(
-            part_v_quarters,
-            (pfic_input["QuicklinkID"] == part_v_quarters["QuicklinkID"])
-            & (ns(pfic_input["TrackingKey"], F.lit("")) == part_v_quarters["TrackingKey"]),
+            part_v_quarters.alias("pvq2"),
+            (F.col("ai3.QuicklinkID") == F.col("pvq2.QuicklinkID"))
+            & (ns(F.col("ai3.TrackingKey"), F.lit("")) == F.col("pvq2.TrackingKey")),
             "inner",
         )
         .join(
-            df_temp_final_eff_pct,
-            df_temp_final_eff_pct["Quarter"] == part_v_quarters["_pv_quarter"],
+            df_temp_final_eff_pct.alias("tfep2"),
+            F.col("tfep2.Quarter") == F.col("pvq2._pv_quarter"),
             "inner",
         )
         .select(
-            pfic_input["QuicklinkID"].alias("_upd_ql"),
-            pfic_input["LineID"].alias("_upd_lid"),
-            ns(pfic_input["TrackingKey"], F.lit("")).alias("_upd_tk"),
-            part_v_quarters["_pv_quarter"].alias("_new_quarter"),
+            F.col("ai3.QuicklinkID").alias("_upd_ql"),
+            F.col("ai3.LineID").alias("_upd_lid"),
+            ns(F.col("ai3.TrackingKey"), F.lit("")).alias("_upd_tk"),
+            F.col("pvq2._pv_quarter").alias("_new_quarter"),
         )
         .distinct()
     )
@@ -219,7 +226,8 @@ def update_pfic_partv_quarters(
     update_source = update_source.alias("U")
 
     df_result = (
-        df_alloc_input.join(
+        df_alloc_input
+        .join(
             update_source,
             (F.col("T.QuicklinkID") == F.col("U._upd_ql"))
             & (F.col("T.LineID") == F.col("U._upd_lid"))
@@ -234,8 +242,9 @@ def update_pfic_partv_quarters(
                 F.col("U._new_quarter"),
             ).otherwise(F.col("T.Quarter")),
         )
-        .select([F.col(f"T.{c}") if c != "Quarter" else F.col("Quarter")
-                 for c in df_alloc_input.columns])
+        .select([
+            F.col(f"T.{c}") if c != "Quarter" else F.col("Quarter") for c in df_alloc_input.columns
+        ])
     )
 
     log_timing("update_pfic_partv_quarters", t0)
@@ -248,7 +257,8 @@ def update_pfic_partv_quarters(
 # Row count: POSSIBLY-EMPTY
 # ---------------------------------------------------------------------------
 def update_pfic_quarters_by_config(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_alloc_input: DataFrame,
     df_part_v_allocable: DataFrame,
     df_temp_final_eff_pct: DataFrame,
@@ -265,7 +275,7 @@ def update_pfic_quarters_by_config(
 
     When IsPFICAllocationbyQuarter != 'C':
       1. Simple UPDATE using PFICQuarterLineID
-    
+
     Both branches exclude PartVAllocableLines (LEFT JOIN + IS NULL pattern).
     """
     log_section("update_pfic_quarters_by_config")
@@ -278,10 +288,7 @@ def update_pfic_quarters_by_config(
     is_pfic_by_quarter = cfg.get("is_pfic_allocation_by_quarter")
 
     # Filter to PFIC lines only for the update source
-    pfic_flowup = (
-        read_table(spark, "PFICFootNoteFlowUP", cfg)
-        .filter(F.col("RunID") == run_id)
-    )
+    pfic_flowup = read_table(spark, "PFICFootNoteFlowUP", cfg).filter(F.col("RunID") == run_id)
 
     if is_pfic_by_quarter == "C":
         # ── Branch: IsPFICAllocationbyQuarter = 'C' ──
@@ -311,30 +318,36 @@ def update_pfic_quarters_by_config(
 
         dist_quarter = (
             pfic_input
+            .alias("pi")
             .join(
-                pfic_dist,
-                pfic_input["QuicklinkID"] == pfic_dist["PFICFootnoteID"],
+                pfic_dist.alias("pd"),
+                F.col("pi.QuicklinkID") == F.col("pd.PFICFootnoteID"),
                 "inner",
             )
             # BUG-09 FIX: SQL uses ISNULL(Month(PF.TextValue), 0) as integer.
             # Use try_to_date (ANSI-safe: returns NULL on parse failure).
-            .withColumn("_month", F.coalesce(
-                F.month(F.coalesce(
-                    F.expr("try_to_date(TextValue, 'yyyy-MM-dd')"),
-                    F.expr("try_to_date(TextValue, 'MM/dd/yyyy')"),
-                    F.expr("try_to_date(split(TextValue, ' ')[0], 'M/d/yyyy')"),
-                )),
-                F.lit(0),
-            ))
+            .withColumn(
+                "_month",
+                F.coalesce(
+                    F.month(
+                        F.coalesce(
+                            F.expr("try_to_date(pd.TextValue, 'yyyy-MM-dd')"),
+                            F.expr("try_to_date(pd.TextValue, 'MM/dd/yyyy')"),
+                            F.expr("try_to_date(split(pd.TextValue, ' ')[0], 'M/d/yyyy')"),
+                        )
+                    ),
+                    F.lit(0),
+                ),
+            )
             .join(
-                enu_df_datalist,
-                F.col("_month") == enu_df_datalist["LookUpValue"].cast("int"),
+                enu_df_datalist.alias("ed"),
+                F.col("_month") == F.col("ed.LookUpValue").cast("int"),
                 "inner",
             )
             .select(
-                enu_df_datalist["LookUpData"].alias("LOOKUPDATA"),
-                pfic_input["QuicklinkID"],
-                ns(pfic_input["TrackingKey"], F.lit("")).alias("TrackingKey"),
+                F.col("ed.LookUpData").alias("LOOKUPDATA"),
+                F.col("pi.QuicklinkID"),
+                ns(F.col("pi.TrackingKey"), F.lit("")).alias("TrackingKey"),
             )
             .distinct()
         )
@@ -359,18 +372,15 @@ def update_pfic_quarters_by_config(
 
         # BUG-11 FIX: SQL has INNER JOIN PFICFootNoteFlowUP as existence check.
         # Only update PFIC lines that have at least one FlowUP record for this RunID.
-        pfic_existence = (
-            pfic_flowup
-            .select(F.col("PFICFootnoteID").alias("_ex_ql"))
-            .distinct()
-        )
+        pfic_existence = pfic_flowup.select(F.col("PFICFootnoteID").alias("_ex_ql")).distinct()
 
         # Build update source for DefaultAllocationRule lines
         # CASE WHEN 'max quarter allocation' THEN 'Q4'
         #      WHEN 'q0 allocation' THEN 'Q0'
         #      WHEN 'distribution date allocation' THEN ISNULL(D.LOOKUPDATA, 'Q0')
         dar_update = (
-            df_alloc_input.alias("T")
+            df_alloc_input
+            .alias("T")
             .filter(F.col("T.LineTypeID") == pfic_lt)
             .join(pfic_existence, F.col("T.QuicklinkID") == pfic_existence["_ex_ql"], "inner")
             .join(pfic_li, F.col("T.LineID") == pfic_li["pl_LineID"], "inner")
@@ -391,7 +401,8 @@ def update_pfic_quarters_by_config(
                 F.col("T.QuicklinkID").alias("_ql"),
                 F.col("T.LineID").alias("_lid"),
                 ns(F.col("T.TrackingKey"), F.lit("")).alias("_tk"),
-                F.when(F.col("dar_lower") == "max quarter allocation", F.lit("Q4"))
+                F
+                .when(F.col("dar_lower") == "max quarter allocation", F.lit("Q4"))
                 .when(F.col("dar_lower") == "q0 allocation", F.lit("Q0"))
                 .when(
                     F.col("dar_lower") == "distribution date allocation",
@@ -409,8 +420,7 @@ def update_pfic_quarters_by_config(
         # Step 3: UPDATE remaining using PFIC Quarter line
         # WHERE ISNULL(PL.DefaultAllocationRule,'')='' AND VL.LineID IS NULL
         pfic_quarter_flow = pfic_flowup.filter(
-            (F.col("LineID") == pfic_quarter_line_id)
-            & (ns(F.col("TextValue"), "") != "")
+            (F.col("LineID") == pfic_quarter_line_id) & (ns(F.col("TextValue"), "") != "")
         ).select(
             F.col("PFICFootnoteID").alias("pf_ql"),
             F.col("TextValue").alias("_pf_quarter"),
@@ -423,7 +433,8 @@ def update_pfic_quarters_by_config(
         )
 
         quarter_update = (
-            df_alloc_input.alias("T2")
+            df_alloc_input
+            .alias("T2")
             .filter(F.col("T2.LineTypeID") == pfic_lt)
             .join(pfic_quarter_flow, F.col("T2.QuicklinkID") == pfic_quarter_flow["pf_ql"], "inner")
             .join(pfic_li_no_dar, F.col("T2.LineID") == pfic_li_no_dar["pl2_LineID"], "inner")
@@ -457,15 +468,15 @@ def update_pfic_quarters_by_config(
         #   AND VL.LineID IS NULL
 
         pfic_quarter_flow = pfic_flowup.filter(
-            (F.col("LineID") == pfic_quarter_line_id)
-            & (ns(F.col("TextValue"), "") != "")
+            (F.col("LineID") == pfic_quarter_line_id) & (ns(F.col("TextValue"), "") != "")
         ).select(
             F.col("PFICFootnoteID").alias("pf_ql"),
             F.col("TextValue").alias("_pf_quarter"),
         )
 
         quarter_update = (
-            df_alloc_input.alias("T3")
+            df_alloc_input
+            .alias("T3")
             .filter(F.col("T3.LineTypeID") == pfic_lt)
             .join(pfic_quarter_flow, F.col("T3.QuicklinkID") == pfic_quarter_flow["pf_ql"], "inner")
             .join(
@@ -497,7 +508,8 @@ def update_pfic_quarters_by_config(
 # Row count: POSSIBLY-EMPTY
 # ---------------------------------------------------------------------------
 def update_form_quarters(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_alloc_input: DataFrame,
 ) -> DataFrame:
     """Update quarters for Form8886, Form199A, Form926, Form8865 lines.
@@ -536,7 +548,8 @@ def update_form_quarters(
     )
 
     f8886_update = (
-        df_alloc_input.alias("T")
+        df_alloc_input
+        .alias("T")
         .filter(F.col("T.LineTypeID") == f8886_lt)
         .join(f8886_flow, F.col("T.QuicklinkID") == f8886_flow["_fid"], "inner")
         .select(
@@ -568,7 +581,8 @@ def update_form_quarters(
     )
 
     f199a_update = (
-        df_alloc_input.alias("T")
+        df_alloc_input
+        .alias("T")
         .filter(F.col("T.LineTypeID") == f199a_lt)
         .join(f199a_flow, F.col("T.QuicklinkID") == f199a_flow["_fid"], "inner")
         .select(
@@ -610,39 +624,42 @@ def update_form_quarters(
         )
 
         f926_update = (
-            df_alloc_input.alias("T")
+            df_alloc_input
+            .alias("T")
             .filter(F.col("T.LineTypeID") == f926_lt)
-            .join(f926_flow, F.col("T.QuicklinkID") == f926_flow["_fid"], "inner")
-            .withColumn("_dt",
-                        # BUG-14 FIX: SQL CONVERT(date, TextValue) handles multiple date formats.
-                        # Use try_to_date (ANSI-safe: returns NULL on parse failure).
-                        F.coalesce(
-                            F.expr("try_to_date(_tv, 'yyyy-MM-dd')"),
-                            F.expr("try_to_date(_tv, 'MM/dd/yyyy')"),
-                            F.to_date(F.lit("1900-01-01"), "yyyy-MM-dd"),
-                        )
-                        )
+            .join(f926_flow.alias("ff"), F.col("T.QuicklinkID") == F.col("ff._fid"), "inner")
+            .withColumn(
+                "_dt",
+                # BUG-14 FIX: SQL CONVERT(date, TextValue) handles multiple date formats.
+                # Use try_to_date (ANSI-safe: returns NULL on parse failure).
+                F.coalesce(
+                    F.expr("try_to_date(ff._tv, 'yyyy-MM-dd')"),
+                    F.expr("try_to_date(ff._tv, 'MM/dd/yyyy')"),
+                    F.to_date(F.lit("1900-01-01"), "yyyy-MM-dd"),
+                ),
+            )
             .join(
-                quarter_dates,
+                quarter_dates.alias("qd2"),
                 # See build_part_v_quarters: anchor on StartDate rather than the
                 # SQL's double-matching BETWEEN, and to_date() the DATETIME side
                 # so both sides are DateType.
-                F.col("_dt") == F.to_date(quarter_dates["StartDate"]),
+                F.col("_dt") == F.to_date(F.col("qd2.StartDate")),
                 "inner",
             )
             .select(
                 F.col("T.QuicklinkID").alias("_ql"),
                 F.col("T.LineID").alias("_lid"),
                 ns(F.col("T.TrackingKey"), F.lit("")).alias("_tk"),
-                F.coalesce(F.col("_qd_quarter"), F.lit("Q0")).alias("_new_quarter"),
+                F.coalesce(F.col("qd2._qd_quarter"), F.lit("Q0")).alias("_new_quarter"),
             )
         )
     else:
         # Quarter = 'Q' + DATEPART(qq, TextValue)
         f926_update = (
-            df_alloc_input.alias("T")
+            df_alloc_input
+            .alias("T")
             .filter(F.col("T.LineTypeID") == f926_lt)
-            .join(f926_flow, F.col("T.QuicklinkID") == f926_flow["_fid"], "inner")
+            .join(f926_flow.alias("ff2"), F.col("T.QuicklinkID") == F.col("ff2._fid"), "inner")
             .select(
                 F.col("T.QuicklinkID").alias("_ql"),
                 F.col("T.LineID").alias("_lid"),
@@ -652,10 +669,12 @@ def update_form_quarters(
                 F.concat(
                     F.lit("Q"),
                     F.coalesce(
-                        F.quarter(F.coalesce(
-                            F.expr("try_to_date(_tv, 'yyyy-MM-dd')"),
-                            F.expr("try_to_date(_tv, 'MM/dd/yyyy')"),
-                        )).cast("string"),
+                        F.quarter(
+                            F.coalesce(
+                                F.expr("try_to_date(ff2._tv, 'yyyy-MM-dd')"),
+                                F.expr("try_to_date(ff2._tv, 'MM/dd/yyyy')"),
+                            )
+                        ).cast("string"),
                         F.lit("0"),
                     ),
                 ).alias("_new_quarter"),
@@ -687,12 +706,12 @@ def update_form_quarters(
 
     # Form8865 also joins on SchID (unlike other forms)
     f8865_update = (
-        df_alloc_input.alias("T")
+        df_alloc_input
+        .alias("T")
         .filter(F.col("T.LineTypeID") == f8865_lt)
         .join(
-            f8865_flow,
-            (F.col("T.QuicklinkID") == f8865_flow["_fid"])
-            & (F.col("T.SchID") == f8865_flow["_sch"]),
+            f8865_flow.alias("ff8"),
+            (F.col("T.QuicklinkID") == F.col("ff8._fid")) & (F.col("T.SchID") == F.col("ff8._sch")),
             "inner",
         )
         .select(
@@ -705,19 +724,19 @@ def update_form_quarters(
             F.concat(
                 F.lit("Q"),
                 F.coalesce(
-                    F.quarter(F.coalesce(
-                        F.expr("try_to_date(_tv, 'yyyy-MM-dd')"),
-                        F.expr("try_to_date(_tv, 'MM/dd/yyyy')"),
-                    )).cast("string"),
+                    F.quarter(
+                        F.coalesce(
+                            F.expr("try_to_date(ff8._tv, 'yyyy-MM-dd')"),
+                            F.expr("try_to_date(ff8._tv, 'MM/dd/yyyy')"),
+                        )
+                    ).cast("string"),
                     F.lit("0"),
                 ),
             ).alias("_new_quarter"),
         )
     )
     # For Form8865 we need SchID in the match because same QuicklinkID can have different SchIDs
-    df_alloc_input = _apply_quarter_update_with_schid(
-        df_alloc_input, f8865_update, f8865_lt, f8865_flow
-    )
+    df_alloc_input = _apply_quarter_update_with_schid(df_alloc_input, f8865_update, f8865_lt)
 
     log_timing("update_form_quarters", t0)
     return df_alloc_input
@@ -727,8 +746,13 @@ def update_form_quarters(
 # Private helper: _apply_quarter_update
 # ---------------------------------------------------------------------------
 def _apply_quarter_update(
-    df: DataFrame, update_source: DataFrame, line_type_id: int,
-    ql_col: str, lid_col: str, tk_col: str, quarter_col: str,
+    df: DataFrame,
+    update_source: DataFrame,
+    line_type_id: int,
+    ql_col: str,
+    lid_col: str,
+    tk_col: str,
+    quarter_col: str,
 ) -> DataFrame:
     """Apply a quarter update to df via left join on QuicklinkID + LineID + TrackingKey.
 
@@ -738,10 +762,11 @@ def _apply_quarter_update(
     update_source = update_source.alias("upd")
 
     result = (
-        df_a.join(
+        df_a
+        .join(
             update_source,
-            (F.col(f"base.QuicklinkID") == F.col(f"upd.{ql_col}"))
-            & (F.col(f"base.LineID") == F.col(f"upd.{lid_col}"))
+            (F.col("base.QuicklinkID") == F.col(f"upd.{ql_col}"))
+            & (F.col("base.LineID") == F.col(f"upd.{lid_col}"))
             & (ns(F.col("base.TrackingKey"), F.lit("")) == F.col(f"upd.{tk_col}"))
             & (F.col("base.LineTypeID") == line_type_id),
             "left",
@@ -756,8 +781,7 @@ def _apply_quarter_update(
                 F.col(f"upd.{quarter_col}"),
             ).otherwise(F.col("base.Quarter")),
         )
-        .select([F.col(f"base.{c}") if c != "Quarter" else F.col("Quarter")
-                 for c in df.columns])
+        .select([F.col(f"base.{c}") if c != "Quarter" else F.col("Quarter") for c in df.columns])
     )
     return result
 
@@ -767,15 +791,17 @@ def _apply_quarter_update(
 # Form8865 requires SchID in match key
 # ---------------------------------------------------------------------------
 def _apply_quarter_update_with_schid(
-    df: DataFrame, update_source: DataFrame, line_type_id: int,
-    flow_df: DataFrame,
+    df: DataFrame,
+    update_source: DataFrame,
+    line_type_id: int,
 ) -> DataFrame:
     """Apply Form8865 quarter update with SchID match."""
     df_a = df.alias("base")
     update_source = update_source.alias("upd")
 
     result = (
-        df_a.join(
+        df_a
+        .join(
             update_source,
             (F.col("base.QuicklinkID") == F.col("upd._ql"))
             & (F.col("base.LineID") == F.col("upd._lid"))
@@ -793,7 +819,6 @@ def _apply_quarter_update_with_schid(
                 F.col("upd._new_quarter"),
             ).otherwise(F.col("base.Quarter")),
         )
-        .select([F.col(f"base.{c}") if c != "Quarter" else F.col("Quarter")
-                 for c in df.columns])
+        .select([F.col(f"base.{c}") if c != "Quarter" else F.col("Quarter") for c in df.columns])
     )
     return result

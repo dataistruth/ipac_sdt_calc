@@ -373,7 +373,7 @@ def build_mode3_results(
         "IsExcludefromTransfer", "EffAmount",
         F.coalesce(F.col("AssetClassId"), F.lit(0)).alias("AssetClassID"),
         "RankForRule",
-    )
+    ).distinct()
 
     # Sentinel row — mode 3 sentinel has IsExcludefromTransfer=1 (TRUE) per SQL SP.
     sentinel = _build_sentinel_row(spark, cfg, sm_fep, is_exclude_from_transfer=True)

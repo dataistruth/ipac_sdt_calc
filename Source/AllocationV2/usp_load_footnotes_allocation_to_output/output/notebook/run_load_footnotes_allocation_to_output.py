@@ -57,10 +57,7 @@ TABLES = ("AllocationOutput", "AllocationInput")
 
 def _clear_modules():
     for loaded in list(sys.modules):
-        if any(
-            loaded == root or loaded.startswith(root + ".")
-            for root in MODULE_ROOTS
-        ):
+        if any(loaded == root or loaded.startswith(root + ".") for root in MODULE_ROOTS):
             del sys.modules[loaded]
     importlib.invalidate_caches()
 
@@ -78,10 +75,7 @@ module = importlib.import_module(MODULE)
 
 
 def _quoted_fqn(table_name):
-    return ".".join(
-        f"`{part.replace('`', '``')}`"
-        for part in (catalog, schema, table_name)
-    )
+    return ".".join(f"`{part.replace('`', '``')}`" for part in (catalog, schema, table_name))
 
 
 def _row_counts():

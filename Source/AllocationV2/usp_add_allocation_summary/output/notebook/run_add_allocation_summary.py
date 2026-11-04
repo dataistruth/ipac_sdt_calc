@@ -48,7 +48,25 @@ VOLUME_PATH = "/Volumes/qa7/datavolume/databrickdata"
 PACKAGE = "AllocationV2.usp_add_allocation_summary"
 MODULE = "AllocationV2.usp_add_allocation_summary.output.add_allocation_summary"
 ENTRY = "run_add_allocation_summary"
-OUTPUT_TABLES = ('K1AllocationSummary', 'M1AdjAllocationSummary', 'BoxJKLAllocationSummary', 'Form926AllocationSummary', 'Form8865AllocationSummary', 'Form199AAllocationSummary', 'PFICFootnoteAllocationSummary', 'PFICFootnoteAllocationText', 'CustomFootnoteAllocationSummary', 'Line18AAllocationSummary', 'UBTIAllocationSummary', 'PassiveIncomeAllocationSummary', 'Form200616AllocationSummary', 'Form8886AllocationSummary', 'AtRiskAllocationSummary', 'GAAPToTaxAllocation', 'AdjustmentAllocationSummary')
+OUTPUT_TABLES = (
+    "K1AllocationSummary",
+    "M1AdjAllocationSummary",
+    "BoxJKLAllocationSummary",
+    "Form926AllocationSummary",
+    "Form8865AllocationSummary",
+    "Form199AAllocationSummary",
+    "PFICFootnoteAllocationSummary",
+    "PFICFootnoteAllocationText",
+    "CustomFootnoteAllocationSummary",
+    "Line18AAllocationSummary",
+    "UBTIAllocationSummary",
+    "PassiveIncomeAllocationSummary",
+    "Form200616AllocationSummary",
+    "Form8886AllocationSummary",
+    "AtRiskAllocationSummary",
+    "GAAPToTaxAllocation",
+    "AdjustmentAllocationSummary",
+)
 
 while source_path in sys.path:
     sys.path.remove(source_path)
@@ -111,7 +129,7 @@ def _reported_seconds(result):
         return None
 
 
-kwargs = dict(
+kwargs = dict(  # noqa: C408
     EntityID=entity_id,
     ClientID=client_id,
     TaxPeriodID=tax_period_id,

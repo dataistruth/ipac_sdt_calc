@@ -13,7 +13,6 @@ import logging
 import time
 
 from pyspark.sql import SparkSession
-import pyspark.sql.functions as F
 
 from Common_V2.core.observability import log_section, log_timing
 
@@ -35,13 +34,13 @@ def load_sp_config(spark: SparkSession, cfg: dict) -> dict:
     cfg["allocation_type_name"] = cfg.get("entity_allocation_type_name") or ""
 
     # ── GlobalMenu flag derivations ──
-    cfg["part_v_allocated"] = (cfg.get("flag_part_v_by_distribution_date") == "C")
+    cfg["part_v_allocated"] = cfg.get("flag_part_v_by_distribution_date") == "C"
     cfg["is_dated_transfers_configured"] = cfg.get("flag_transfer_by_date")
-    cfg["ignore_assetclass_for_partnership_level"] = (
-        cfg.get("flag_ignore_asset_class_partnership_level")
+    cfg["ignore_assetclass_for_partnership_level"] = cfg.get(
+        "flag_ignore_asset_class_partnership_level"
     )
-    cfg["override_indirect_lookthrough_asset_class"] = (
-        cfg.get("flag_override_indirect_lookthrough_asset_class")
+    cfg["override_indirect_lookthrough_asset_class"] = cfg.get(
+        "flag_override_indirect_lookthrough_asset_class"
     )
     cfg["is_pfic_allocation_by_quarter"] = cfg.get("flag_pfic_allocation_by_quarter")
 

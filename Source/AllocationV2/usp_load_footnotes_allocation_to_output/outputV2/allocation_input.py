@@ -5,13 +5,15 @@ Handles the initial AllocationInput read, BookEffective_Snapshot load,
 and the complex multi-pass INSERT/DELETE logic that builds the final
 #AllocationInput working DataFrame.
 """
-from pyspark.sql import SparkSession, DataFrame
-import pyspark.sql.functions as F
+
 import logging
 import time
 
+import pyspark.sql.functions as F
+from pyspark.sql import DataFrame, SparkSession
+
 from Common_V2.core.checkpoint import checkpoint as common_checkpoint
-from Common_V2.core.helpers import read_table, ns, ns0
+from Common_V2.core.helpers import ns, ns0, read_table
 from Common_V2.core.observability import log_section, log_timing
 
 logger = logging.getLogger(__name__)
@@ -69,7 +71,9 @@ def build_temp_book_effective(spark: SparkSession, cfg: dict) -> DataFrame:
             F.col("TrackingKey"),
             F.col("Tag"),
             # ISNULL(IsExcludefromTransfer, 0) — BIT column → cast to INT to match downstream
-            F.coalesce(F.col("IsExcludefromTransfer").cast("int"), F.lit(0)).alias("IsExcludefromTransfer"),
+            F.coalesce(F.col("IsExcludefromTransfer").cast("int"), F.lit(0)).alias(
+                "IsExcludefromTransfer"
+            ),
         )
     )
 
@@ -120,10 +124,23 @@ def build_temp_allocation_input(spark: SparkSession, cfg: dict) -> DataFrame:
             & (ns0(F.col("Amount")) != 0)
         )
         .select(
-            "RunID", "ClientID", "EntityID", "LineTypeID", "LineID",
-            "Amount", "QuicklinkID", "Amount704b", "CategoryID", "PeriodID",
-            "LineCode", "ParentEntityID", "SuperParentEntityID",
-            "AdjustmentTypeID", "Tag", "TrackingKey", "SchID",
+            "RunID",
+            "ClientID",
+            "EntityID",
+            "LineTypeID",
+            "LineID",
+            "Amount",
+            "QuicklinkID",
+            "Amount704b",
+            "CategoryID",
+            "PeriodID",
+            "LineCode",
+            "ParentEntityID",
+            "SuperParentEntityID",
+            "AdjustmentTypeID",
+            "Tag",
+            "TrackingKey",
+            "SchID",
             "OriginalParentEntityID",
         )
         .withColumn("Quarter", F.lit("Q0"))
@@ -207,9 +224,13 @@ def build_temp_final_effective_pct(spark: SparkSession, cfg: dict) -> DataFrame:
     if rank == 2:
         # SQL: if(@LocalRankForRulePickup <> 2) — skip when rank=2
         from pyspark.sql.types import (
-            StructType, StructField, IntegerType, StringType,
             DoubleType,
+            IntegerType,
+            StringType,
+            StructField,
+            StructType,
         )
+
         schema = StructType([
             StructField("InvestmentID", IntegerType()),
             StructField("PartnerNumber", StringType()),
@@ -230,16 +251,18 @@ def build_temp_final_effective_pct(spark: SparkSession, cfg: dict) -> DataFrame:
 
     df = (
         read_table(spark, "FNFinalEffectivePercentages", cfg)
-        .filter(
-            (F.col("RunID") == cfg["run_id"])
-            & (F.col("RankForRule") == rank)
-        )
+        .filter((F.col("RunID") == cfg["run_id"]) & (F.col("RankForRule") == rank))
         .select(
-            "InvestmentID", "PartnerNumber", "EffPercentage", "AllocationType",
+            "InvestmentID",
+            "PartnerNumber",
+            "EffPercentage",
+            "AllocationType",
             "Quarter",
             F.col("TypeId").alias("TypeID"),
             F.col("Trackingkey").alias("TrackingKey"),
-            "Tag", "LineTypeID", "LineID",
+            "Tag",
+            "LineTypeID",
+            "LineID",
             F.col("IsExcludefromTransfer").cast("int").alias("IsExcludefromTransfer"),
             "AssetClassID",
         )
@@ -256,7 +279,8 @@ def build_temp_final_effective_pct(spark: SparkSession, cfg: dict) -> DataFrame:
 # Row count: ALWAYS-NON-EMPTY
 # ---------------------------------------------------------------------------
 def build_allocation_input(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_temp_alloc_input: DataFrame,
     df_temp_book_eff: DataFrame,
     df_underlyings_fn: DataFrame,
@@ -295,12 +319,14 @@ def build_allocation_input(
 
     # Load PFICFootnoteLineItem and K1Lineitem for LineDescription lookup (broadcast — small)
     pfic_li = F.broadcast(
-        cfg["_df_pfic_footnote_line_item"]
-        .select(F.col("LineID").alias("pli_LineID"), F.col("LineDescription").alias("pli_desc"))
+        cfg["_df_pfic_footnote_line_item"].select(
+            F.col("LineID").alias("pli_LineID"), F.col("LineDescription").alias("pli_desc")
+        )
     )
     k1_li = F.broadcast(
-        read_table(spark, "K1Lineitem", cfg)
-        .select(F.col("LineID").alias("k1_LineID"), F.col("LineDescription").alias("k1_desc"))
+        read_table(spark, "K1Lineitem", cfg).select(
+            F.col("LineID").alias("k1_LineID"), F.col("LineDescription").alias("k1_desc")
+        )
     )
 
     # Initialize accumulators
@@ -316,11 +342,9 @@ def build_allocation_input(
     #   = CASE WHEN ISNULL(B.TrackingKey,'')='' THEN '-1' ELSE I.TrackingKey END
     def _ns_match(b_col, i_col):
         """Null-safe match: both empty → match; both non-empty → equal."""
-        return (
-            F.when(ns(b_col) == "", F.lit("-1")).otherwise(b_col)
-            ==
-            F.when(ns(b_col) == "", F.lit("-1")).otherwise(i_col)
-        )
+        return F.when(ns(b_col) == "", F.lit("-1")).otherwise(b_col) == F.when(
+            ns(b_col) == "", F.lit("-1")
+        ).otherwise(i_col)
 
     # ── Helper: resolve TypeID ──
     def _type_id_expr(b_adj, bk_adj, ai_alloc, line_type_col, desc_col, is_at_risk=False):
@@ -331,25 +355,28 @@ def build_allocation_input(
             b_adj if b_adj is not None else _null_int,
             bk_adj if bk_adj is not None else _null_int,
             ai_alloc if ai_alloc is not None else _null_int,
-            F.when(
-                (line_type_col == lt_ref)
-                & (F.lower(ns(desc_col)).endswith("- lp - offset")),
+            F
+            .when(
+                (line_type_col == lt_ref) & (F.lower(ns(desc_col)).endswith("- lp - offset")),
                 F.lit(lp_offset_at),
-            ).when(
-                (line_type_col == lt_ref)
-                & (F.lower(ns(desc_col)).endswith("- gp - offset")),
+            )
+            .when(
+                (line_type_col == lt_ref) & (F.lower(ns(desc_col)).endswith("- gp - offset")),
                 F.lit(gp_offset_at),
-            ).otherwise(F.lit(cost_at)),
+            )
+            .otherwise(F.lit(cost_at)),
         )
 
     # ── PASS 1: At Risk lines with BookEffective (FootNoteID<>-1, LineID<>-1) ──
     be_p1 = remaining_book.filter(
-        (ns0(F.col("FootNoteID")) != -1) & (ns0(F.col("LineID")) != -1)
+        (ns0(F.col("FootNoteID")) != -1)
+        & (ns0(F.col("LineID")) != -1)
         & (F.col("SourceID") == at_risk_lt)
     ).alias("B1")
 
     be_k1 = remaining_book.filter(
-        (ns0(F.col("FootNoteID")) != -1) & (ns0(F.col("LineID")) != -1)
+        (ns0(F.col("FootNoteID")) != -1)
+        & (ns0(F.col("LineID")) != -1)
         & (F.col("SourceID") == k1_lt)
     ).alias("BK1")
 
@@ -388,42 +415,57 @@ def build_allocation_input(
         )
         .filter(
             (ns0(F.col("B1.FootNoteID")) != -1)
-            & ((ns0(F.col("B1.LineID")) != -1) | (F.col("AI1.LineID").isNotNull())
-               | (ns0(F.col("BK1.LineID")) != -1))
+            & (
+                (ns0(F.col("B1.LineID")) != -1)
+                | (F.col("AI1.LineID").isNotNull())
+                | (ns0(F.col("BK1.LineID")) != -1)
+            )
         )
     )
 
-    p1_insert = (
-        p1_joined
-        .select(
-            F.col("I1.RunID"), F.col("I1.ClientID"), F.col("I1.EntityID"),
-            F.col("I1.LineTypeID"), F.col("I1.LineID"), F.col("I1.Amount"),
-            F.col("I1.QuicklinkID"), F.col("I1.Amount704b"), F.col("I1.CategoryID"),
-            F.col("I1.PeriodID"), F.col("I1.LineCode"),
-            F.col("I1.ParentEntityID"), F.col("I1.SuperParentEntityID"),
-            _type_id_expr(
-                F.col("B1.AdjustmentAllocationTypeID"),
-                F.col("BK1.AdjustmentAllocationTypeID"),
-                F.col("AI1.AllocationTypeId"),
-                F.col("I1.LineTypeID"), F.col("k1_desc"), is_at_risk=True,
-            ).alias("TypeID"),
-            ns(F.col("I1.Tag"), F.lit("")).alias("Tag"),
-            F.coalesce(
-                F.col("B1.IsExcludefromTransfer").cast("int"),
-                F.col("AI1.ExcludeFromTransfers"),
-                F.lit(0),
-            ).alias("IsExcludefromTransfer"),
-            F.coalesce(F.col("B1.TrackingKey"), F.col("I1.TrackingKey"), F.lit("")).alias("TrackingKey"),
-            F.col("I1.Quarter"), F.col("I1.SchID"), F.col("I1.OriginalParentEntityID"),
-        )
-        .distinct()
-    )
+    p1_insert = p1_joined.select(
+        F.col("I1.RunID"),
+        F.col("I1.ClientID"),
+        F.col("I1.EntityID"),
+        F.col("I1.LineTypeID"),
+        F.col("I1.LineID"),
+        F.col("I1.Amount"),
+        F.col("I1.QuicklinkID"),
+        F.col("I1.Amount704b"),
+        F.col("I1.CategoryID"),
+        F.col("I1.PeriodID"),
+        F.col("I1.LineCode"),
+        F.col("I1.ParentEntityID"),
+        F.col("I1.SuperParentEntityID"),
+        _type_id_expr(
+            F.col("B1.AdjustmentAllocationTypeID"),
+            F.col("BK1.AdjustmentAllocationTypeID"),
+            F.col("AI1.AllocationTypeId"),
+            F.col("I1.LineTypeID"),
+            F.col("k1_desc"),
+            is_at_risk=True,
+        ).alias("TypeID"),
+        ns(F.col("I1.Tag"), F.lit("")).alias("Tag"),
+        F.coalesce(
+            F.col("B1.IsExcludefromTransfer").cast("int"),
+            F.col("AI1.ExcludeFromTransfers"),
+            F.lit(0),
+        ).alias("IsExcludefromTransfer"),
+        F.coalesce(F.col("B1.TrackingKey"), F.col("I1.TrackingKey"), F.lit("")).alias(
+            "TrackingKey"
+        ),
+        F.col("I1.Quarter"),
+        F.col("I1.SchID"),
+        F.col("I1.OriginalParentEntityID"),
+    ).distinct()
     all_inserts.append(p1_insert)
 
     # Delete matched rows from remaining_input (At Risk pass 1)
     remaining_input = remaining_input.join(
-        p1_insert.select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
-        .distinct().alias("del1"),
+        p1_insert
+        .select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
+        .distinct()
+        .alias("del1"),
         (remaining_input["EntityID"] == F.col("del1.EntityID"))
         & (remaining_input["LineID"] == F.col("del1.LineID"))
         & (remaining_input["LineTypeID"] == F.col("del1.LineTypeID"))
@@ -434,8 +476,11 @@ def build_allocation_input(
     remaining_input = _seam(spark, remaining_input, "alloc_pass1", cfg)
     # Delete consumed BookEffective (AtRisk, FootNoteID<>-1, LineID<>-1)
     remaining_book = remaining_book.filter(
-        ~((F.col("SourceID") == at_risk_lt)
-          & (ns0(F.col("FootNoteID")) != -1) & (ns0(F.col("LineID")) != -1))
+        ~(
+            (F.col("SourceID") == at_risk_lt)
+            & (ns0(F.col("FootNoteID")) != -1)
+            & (ns0(F.col("LineID")) != -1)
+        )
     )
 
     # ── PASS 2: Non-AtRisk lines (FootNoteID<>-1, LineID<>-1) ──
@@ -444,7 +489,8 @@ def build_allocation_input(
     ).alias("B2")
 
     p2_joined = (
-        remaining_input.alias("I2")
+        remaining_input
+        .alias("I2")
         .join(pfic_li, F.col("I2.LineID") == pfic_li["pli_LineID"], "left")
         .join(
             be_p2,
@@ -470,35 +516,48 @@ def build_allocation_input(
         )
     )
 
-    p2_insert = (
-        p2_joined
-        .select(
-            F.col("I2.RunID"), F.col("I2.ClientID"), F.col("I2.EntityID"),
-            F.col("I2.LineTypeID"), F.col("I2.LineID"), F.col("I2.Amount"),
-            F.col("I2.QuicklinkID"), F.col("I2.Amount704b"), F.col("I2.CategoryID"),
-            F.col("I2.PeriodID"), F.col("I2.LineCode"),
-            F.col("I2.ParentEntityID"), F.col("I2.SuperParentEntityID"),
-            _type_id_expr(
-                F.col("B2.AdjustmentAllocationTypeID"), None,
-                F.col("AI2.AllocationTypeId"),
-                F.col("I2.LineTypeID"), F.col("pli_desc"), is_at_risk=False,
-            ).alias("TypeID"),
-            ns(F.col("I2.Tag"), F.lit("")).alias("Tag"),
-            F.coalesce(
-                F.col("B2.IsExcludefromTransfer").cast("int"),
-                F.col("AI2.ExcludeFromTransfers"),
-                F.lit(0),
-            ).alias("IsExcludefromTransfer"),
-            F.coalesce(F.col("B2.TrackingKey"), F.col("I2.TrackingKey"), F.lit("")).alias("TrackingKey"),
-            F.col("I2.Quarter"), F.col("I2.SchID"), F.col("I2.OriginalParentEntityID"),
-        )
-        .distinct()
-    )
+    p2_insert = p2_joined.select(
+        F.col("I2.RunID"),
+        F.col("I2.ClientID"),
+        F.col("I2.EntityID"),
+        F.col("I2.LineTypeID"),
+        F.col("I2.LineID"),
+        F.col("I2.Amount"),
+        F.col("I2.QuicklinkID"),
+        F.col("I2.Amount704b"),
+        F.col("I2.CategoryID"),
+        F.col("I2.PeriodID"),
+        F.col("I2.LineCode"),
+        F.col("I2.ParentEntityID"),
+        F.col("I2.SuperParentEntityID"),
+        _type_id_expr(
+            F.col("B2.AdjustmentAllocationTypeID"),
+            None,
+            F.col("AI2.AllocationTypeId"),
+            F.col("I2.LineTypeID"),
+            F.col("pli_desc"),
+            is_at_risk=False,
+        ).alias("TypeID"),
+        ns(F.col("I2.Tag"), F.lit("")).alias("Tag"),
+        F.coalesce(
+            F.col("B2.IsExcludefromTransfer").cast("int"),
+            F.col("AI2.ExcludeFromTransfers"),
+            F.lit(0),
+        ).alias("IsExcludefromTransfer"),
+        F.coalesce(F.col("B2.TrackingKey"), F.col("I2.TrackingKey"), F.lit("")).alias(
+            "TrackingKey"
+        ),
+        F.col("I2.Quarter"),
+        F.col("I2.SchID"),
+        F.col("I2.OriginalParentEntityID"),
+    ).distinct()
     all_inserts.append(p2_insert)
 
     remaining_input = remaining_input.join(
-        p2_insert.select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
-        .distinct().alias("del2"),
+        p2_insert
+        .select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
+        .distinct()
+        .alias("del2"),
         (remaining_input["EntityID"] == F.col("del2.EntityID"))
         & (remaining_input["LineID"] == F.col("del2.LineID"))
         & (remaining_input["LineTypeID"] == F.col("del2.LineTypeID"))
@@ -517,7 +576,8 @@ def build_allocation_input(
     ).alias("B3")
 
     p3_joined = (
-        remaining_input.alias("I3")
+        remaining_input
+        .alias("I3")
         .join(pfic_li, F.col("I3.LineID") == pfic_li["pli_LineID"], "left")
         .join(
             be_p3,
@@ -530,30 +590,46 @@ def build_allocation_input(
         )
     )
 
-    p3_insert = (
-        p3_joined
-        .select(
-            F.col("I3.RunID"), F.col("I3.ClientID"), F.col("I3.EntityID"),
-            F.col("I3.LineTypeID"), F.col("I3.LineID"), F.col("I3.Amount"),
-            F.col("I3.QuicklinkID"), F.col("I3.Amount704b"), F.col("I3.CategoryID"),
-            F.col("I3.PeriodID"), F.col("I3.LineCode"),
-            F.col("I3.ParentEntityID"), F.col("I3.SuperParentEntityID"),
-            _type_id_expr(
-                F.col("B3.AdjustmentAllocationTypeID"), None, None,
-                F.col("I3.LineTypeID"), F.col("pli_desc"), is_at_risk=False,
-            ).alias("TypeID"),
-            ns(F.col("I3.Tag"), F.lit("")).alias("Tag"),
-            F.coalesce(F.col("B3.IsExcludefromTransfer").cast("int"), F.lit(0)).alias("IsExcludefromTransfer"),
-            F.coalesce(F.col("B3.TrackingKey"), F.col("I3.TrackingKey"), F.lit("")).alias("TrackingKey"),
-            F.col("I3.Quarter"), F.col("I3.SchID"), F.col("I3.OriginalParentEntityID"),
-        )
-        .distinct()
-    )
+    p3_insert = p3_joined.select(
+        F.col("I3.RunID"),
+        F.col("I3.ClientID"),
+        F.col("I3.EntityID"),
+        F.col("I3.LineTypeID"),
+        F.col("I3.LineID"),
+        F.col("I3.Amount"),
+        F.col("I3.QuicklinkID"),
+        F.col("I3.Amount704b"),
+        F.col("I3.CategoryID"),
+        F.col("I3.PeriodID"),
+        F.col("I3.LineCode"),
+        F.col("I3.ParentEntityID"),
+        F.col("I3.SuperParentEntityID"),
+        _type_id_expr(
+            F.col("B3.AdjustmentAllocationTypeID"),
+            None,
+            None,
+            F.col("I3.LineTypeID"),
+            F.col("pli_desc"),
+            is_at_risk=False,
+        ).alias("TypeID"),
+        ns(F.col("I3.Tag"), F.lit("")).alias("Tag"),
+        F.coalesce(F.col("B3.IsExcludefromTransfer").cast("int"), F.lit(0)).alias(
+            "IsExcludefromTransfer"
+        ),
+        F.coalesce(F.col("B3.TrackingKey"), F.col("I3.TrackingKey"), F.lit("")).alias(
+            "TrackingKey"
+        ),
+        F.col("I3.Quarter"),
+        F.col("I3.SchID"),
+        F.col("I3.OriginalParentEntityID"),
+    ).distinct()
     all_inserts.append(p3_insert)
 
     remaining_input = remaining_input.join(
-        p3_insert.select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
-        .distinct().alias("del3"),
+        p3_insert
+        .select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
+        .distinct()
+        .alias("del3"),
         (remaining_input["EntityID"] == F.col("del3.EntityID"))
         & (remaining_input["LineID"] == F.col("del3.LineID"))
         & (remaining_input["LineTypeID"] == F.col("del3.LineTypeID"))
@@ -572,7 +648,8 @@ def build_allocation_input(
     ).alias("B4")
 
     p4_joined = (
-        remaining_input.alias("I4")
+        remaining_input
+        .alias("I4")
         .join(pfic_li, F.col("I4.LineID") == pfic_li["pli_LineID"], "left")
         .join(
             be_p4,
@@ -585,30 +662,46 @@ def build_allocation_input(
         )
     )
 
-    p4_insert = (
-        p4_joined
-        .select(
-            F.col("I4.RunID"), F.col("I4.ClientID"), F.col("I4.EntityID"),
-            F.col("I4.LineTypeID"), F.col("I4.LineID"), F.col("I4.Amount"),
-            F.col("I4.QuicklinkID"), F.col("I4.Amount704b"), F.col("I4.CategoryID"),
-            F.col("I4.PeriodID"), F.col("I4.LineCode"),
-            F.col("I4.ParentEntityID"), F.col("I4.SuperParentEntityID"),
-            _type_id_expr(
-                F.col("B4.AdjustmentAllocationTypeID"), None, None,
-                F.col("I4.LineTypeID"), F.col("pli_desc"), is_at_risk=False,
-            ).alias("TypeID"),
-            ns(F.col("I4.Tag"), F.lit("")).alias("Tag"),
-            F.coalesce(F.col("B4.IsExcludefromTransfer").cast("int"), F.lit(0)).alias("IsExcludefromTransfer"),
-            F.coalesce(F.col("B4.TrackingKey"), F.col("I4.TrackingKey"), F.lit("")).alias("TrackingKey"),
-            F.col("I4.Quarter"), F.col("I4.SchID"), F.col("I4.OriginalParentEntityID"),
-        )
-        .distinct()
-    )
+    p4_insert = p4_joined.select(
+        F.col("I4.RunID"),
+        F.col("I4.ClientID"),
+        F.col("I4.EntityID"),
+        F.col("I4.LineTypeID"),
+        F.col("I4.LineID"),
+        F.col("I4.Amount"),
+        F.col("I4.QuicklinkID"),
+        F.col("I4.Amount704b"),
+        F.col("I4.CategoryID"),
+        F.col("I4.PeriodID"),
+        F.col("I4.LineCode"),
+        F.col("I4.ParentEntityID"),
+        F.col("I4.SuperParentEntityID"),
+        _type_id_expr(
+            F.col("B4.AdjustmentAllocationTypeID"),
+            None,
+            None,
+            F.col("I4.LineTypeID"),
+            F.col("pli_desc"),
+            is_at_risk=False,
+        ).alias("TypeID"),
+        ns(F.col("I4.Tag"), F.lit("")).alias("Tag"),
+        F.coalesce(F.col("B4.IsExcludefromTransfer").cast("int"), F.lit(0)).alias(
+            "IsExcludefromTransfer"
+        ),
+        F.coalesce(F.col("B4.TrackingKey"), F.col("I4.TrackingKey"), F.lit("")).alias(
+            "TrackingKey"
+        ),
+        F.col("I4.Quarter"),
+        F.col("I4.SchID"),
+        F.col("I4.OriginalParentEntityID"),
+    ).distinct()
     all_inserts.append(p4_insert)
 
     remaining_input = remaining_input.join(
-        p4_insert.select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
-        .distinct().alias("del4"),
+        p4_insert
+        .select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
+        .distinct()
+        .alias("del4"),
         (remaining_input["EntityID"] == F.col("del4.EntityID"))
         & (remaining_input["LineID"] == F.col("del4.LineID"))
         & (remaining_input["LineTypeID"] == F.col("del4.LineTypeID"))
@@ -627,7 +720,8 @@ def build_allocation_input(
     ).alias("B5")
 
     p5_joined = (
-        remaining_input.alias("I5")
+        remaining_input
+        .alias("I5")
         .join(pfic_li, F.col("I5.LineID") == pfic_li["pli_LineID"], "left")
         .join(
             be_p5,
@@ -639,30 +733,46 @@ def build_allocation_input(
         )
     )
 
-    p5_insert = (
-        p5_joined
-        .select(
-            F.col("I5.RunID"), F.col("I5.ClientID"), F.col("I5.EntityID"),
-            F.col("I5.LineTypeID"), F.col("I5.LineID"), F.col("I5.Amount"),
-            F.col("I5.QuicklinkID"), F.col("I5.Amount704b"), F.col("I5.CategoryID"),
-            F.col("I5.PeriodID"), F.col("I5.LineCode"),
-            F.col("I5.ParentEntityID"), F.col("I5.SuperParentEntityID"),
-            _type_id_expr(
-                F.col("B5.AdjustmentAllocationTypeID"), None, None,
-                F.col("I5.LineTypeID"), F.col("pli_desc"), is_at_risk=False,
-            ).alias("TypeID"),
-            ns(F.col("I5.Tag"), F.lit("")).alias("Tag"),
-            F.coalesce(F.col("B5.IsExcludefromTransfer").cast("int"), F.lit(0)).alias("IsExcludefromTransfer"),
-            F.coalesce(F.col("B5.TrackingKey"), F.col("I5.TrackingKey"), F.lit("")).alias("TrackingKey"),
-            F.col("I5.Quarter"), F.col("I5.SchID"), F.col("I5.OriginalParentEntityID"),
-        )
-        .distinct()
-    )
+    p5_insert = p5_joined.select(
+        F.col("I5.RunID"),
+        F.col("I5.ClientID"),
+        F.col("I5.EntityID"),
+        F.col("I5.LineTypeID"),
+        F.col("I5.LineID"),
+        F.col("I5.Amount"),
+        F.col("I5.QuicklinkID"),
+        F.col("I5.Amount704b"),
+        F.col("I5.CategoryID"),
+        F.col("I5.PeriodID"),
+        F.col("I5.LineCode"),
+        F.col("I5.ParentEntityID"),
+        F.col("I5.SuperParentEntityID"),
+        _type_id_expr(
+            F.col("B5.AdjustmentAllocationTypeID"),
+            None,
+            None,
+            F.col("I5.LineTypeID"),
+            F.col("pli_desc"),
+            is_at_risk=False,
+        ).alias("TypeID"),
+        ns(F.col("I5.Tag"), F.lit("")).alias("Tag"),
+        F.coalesce(F.col("B5.IsExcludefromTransfer").cast("int"), F.lit(0)).alias(
+            "IsExcludefromTransfer"
+        ),
+        F.coalesce(F.col("B5.TrackingKey"), F.col("I5.TrackingKey"), F.lit("")).alias(
+            "TrackingKey"
+        ),
+        F.col("I5.Quarter"),
+        F.col("I5.SchID"),
+        F.col("I5.OriginalParentEntityID"),
+    ).distinct()
     all_inserts.append(p5_insert)
 
     remaining_input = remaining_input.join(
-        p5_insert.select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
-        .distinct().alias("del5"),
+        p5_insert
+        .select("EntityID", "LineID", "LineTypeID", "QuicklinkID", "TrackingKey")
+        .distinct()
+        .alias("del5"),
         (remaining_input["EntityID"] == F.col("del5.EntityID"))
         & (remaining_input["LineID"] == F.col("del5.LineID"))
         & (remaining_input["LineTypeID"] == F.col("del5.LineTypeID"))
@@ -674,7 +784,8 @@ def build_allocation_input(
     # ── CATCH-ALL: Remaining unmatched lines ──
     # LEFT JOIN BookEffective (match all criteria) WHERE B.UnderlyingEntityID IS NULL
     catchall = (
-        remaining_input.alias("I6")
+        remaining_input
+        .alias("I6")
         .join(pfic_li, F.col("I6.LineID") == pfic_li["pli_LineID"], "left")
         .join(
             remaining_book.alias("B6"),
@@ -688,19 +799,35 @@ def build_allocation_input(
         )
         .filter(F.col("B6.UnderlyingEntityID").isNull())
         .select(
-            F.col("I6.RunID"), F.col("I6.ClientID"), F.col("I6.EntityID"),
-            F.col("I6.LineTypeID"), F.col("I6.LineID"), F.col("I6.Amount"),
-            F.col("I6.QuicklinkID"), F.col("I6.Amount704b"), F.col("I6.CategoryID"),
-            F.col("I6.PeriodID"), F.col("I6.LineCode"),
-            F.col("I6.ParentEntityID"), F.col("I6.SuperParentEntityID"),
+            F.col("I6.RunID"),
+            F.col("I6.ClientID"),
+            F.col("I6.EntityID"),
+            F.col("I6.LineTypeID"),
+            F.col("I6.LineID"),
+            F.col("I6.Amount"),
+            F.col("I6.QuicklinkID"),
+            F.col("I6.Amount704b"),
+            F.col("I6.CategoryID"),
+            F.col("I6.PeriodID"),
+            F.col("I6.LineCode"),
+            F.col("I6.ParentEntityID"),
+            F.col("I6.SuperParentEntityID"),
             _type_id_expr(
-                F.col("B6.AdjustmentAllocationTypeID"), None, None,
-                F.col("I6.LineTypeID"), F.col("pli_desc"), is_at_risk=False,
+                F.col("B6.AdjustmentAllocationTypeID"),
+                None,
+                None,
+                F.col("I6.LineTypeID"),
+                F.col("pli_desc"),
+                is_at_risk=False,
             ).alias("TypeID"),
             ns(F.col("I6.Tag"), F.lit("")).alias("Tag"),
             F.lit(0).alias("IsExcludefromTransfer"),
-            F.coalesce(F.col("B6.TrackingKey"), F.col("I6.TrackingKey"), F.lit("")).alias("TrackingKey"),
-            F.col("I6.Quarter"), F.col("I6.SchID"), F.col("I6.OriginalParentEntityID"),
+            F.coalesce(F.col("B6.TrackingKey"), F.col("I6.TrackingKey"), F.lit("")).alias(
+                "TrackingKey"
+            ),
+            F.col("I6.Quarter"),
+            F.col("I6.SchID"),
+            F.col("I6.OriginalParentEntityID"),
         )
         .distinct()
     )

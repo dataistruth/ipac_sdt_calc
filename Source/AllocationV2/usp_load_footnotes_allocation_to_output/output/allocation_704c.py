@@ -6,12 +6,14 @@ Handles the conditional 704c block that only executes when:
 - AllocationTypeName = 'PE Book Allocation'
 - AllocationTypeName704c is configured (non-empty)
 """
-from pyspark.sql import SparkSession, DataFrame
-import pyspark.sql.functions as F
+
 import logging
 import time
 
-from Common_V2.core.helpers import read_table, ns, ns0, sql_round
+import pyspark.sql.functions as F
+from pyspark.sql import DataFrame, SparkSession
+
+from Common_V2.core.helpers import ns, ns0, read_table, sql_round
 from Common_V2.core.observability import log_section, log_timing
 
 logger = logging.getLogger(__name__)
@@ -63,9 +65,7 @@ def build_704c_config(spark: SparkSession, cfg: dict) -> dict:
     cfg["gaap_to_tax_line_type_id"] = cfg.get("gaap_to_tax_line_type_id")
 
     # @IsSeparateGainsLoss — from pre-resolved GlobalMenu flag.
-    cfg["is_separate_gains_loss"] = (
-        cfg.get("flag_separate_gains_loss_stuffing") == "C"
-    )
+    cfg["is_separate_gains_loss"] = cfg.get("flag_separate_gains_loss_stuffing") == "C"
 
     # @allocationTypeIDfor704c — from pre-resolved custom allocation ID.
     cfg["allocation_type_id_for_704c"] = cfg.get("custom_allocation_id_704c")
@@ -98,7 +98,8 @@ def build_custom_footnote_line_types(spark: SparkSession, cfg: dict) -> DataFram
     )
     df_elt = read_table(spark, "ENU_LineType", cfg).select("LineTypeID", "LineType")
     df = (
-        df_cid.join(df_elt, df_cid["ImportName"] == df_elt["LineType"], "inner")
+        df_cid
+        .join(df_elt, df_cid["ImportName"] == df_elt["LineType"], "inner")
         .select("LineTypeID")
         .distinct()
     )
@@ -111,7 +112,8 @@ def build_custom_footnote_line_types(spark: SparkSession, cfg: dict) -> DataFram
 # Row count: LEGITIMATELY-EMPTY
 # ---------------------------------------------------------------------------
 def build_allocation_percentage_temp(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
 ) -> DataFrame:
     """Build allocation percentages via PIVOT on FNFinalEffectivePercentages.704cPercentageType.
 
@@ -134,17 +136,19 @@ def build_allocation_percentage_temp(
     #   AND ISNULL([704cPercentageType],'') <> '' AND @rankforrulepickup=2
     fn_eff = (
         read_table(spark, "FNFinalEffectivePercentages", cfg)
-        .filter(
-            (F.col("RunID") == run_id)
-            & (ns(F.col("`704cPercentageType`"), F.lit("")) != "")
-        )
+        .filter((F.col("RunID") == run_id) & (ns(F.col("`704cPercentageType`"), F.lit("")) != ""))
         .select(
-            "RunID", "EntityID", "InvestmentID", "PartnerNumber", "LineID",
+            "RunID",
+            "EntityID",
+            "InvestmentID",
+            "PartnerNumber",
+            "LineID",
             "Quarter",
             F.col("Trackingkey").alias("TrackingKey"),
             F.col("TypeId").alias("TypeID"),
             "LineTypeID",
-            "EffPercentage", "`704cPercentageType`",
+            "EffPercentage",
+            "`704cPercentageType`",
         )
     )
 
@@ -152,27 +156,41 @@ def build_allocation_percentage_temp(
     pivoted = (
         fn_eff
         .groupBy(
-            "RunID", "EntityID", "InvestmentID", "PartnerNumber", "LineID",
-            "Quarter", "TrackingKey", "TypeID", "LineTypeID",
+            "RunID",
+            "EntityID",
+            "InvestmentID",
+            "PartnerNumber",
+            "LineID",
+            "Quarter",
+            "TrackingKey",
+            "TypeID",
+            "LineTypeID",
         )
-        .pivot("`704cPercentageType`", [
-            "OrdinaryPercentage", "CapitalPercentage",
-            "CapitalGainPercentage", "CapitalLossPercentage",
-        ])
+        .pivot(
+            "`704cPercentageType`",
+            [
+                "OrdinaryPercentage",
+                "CapitalPercentage",
+                "CapitalGainPercentage",
+                "CapitalLossPercentage",
+            ],
+        )
         .agg(F.max("EffPercentage"))
     )
 
     # Add ClientID + ShareClass (ShareClass is in the SQL #AllocationPercentageTemp
     # schema but the INSERT omits it, so SQL always reads it as NULL — match that).
-    df = (
-        pivoted
-        .withColumn("ClientID", F.lit(client_id))
-        .withColumn("ShareClass", F.lit(None).cast("string"))
+    df = pivoted.withColumn("ClientID", F.lit(client_id)).withColumn(
+        "ShareClass", F.lit(None).cast("string")
     )
 
     # Rename pivot columns to standard names (in case they differ)
-    for col_name in ["OrdinaryPercentage", "CapitalPercentage",
-                     "CapitalGainPercentage", "CapitalLossPercentage"]:
+    for col_name in [
+        "OrdinaryPercentage",
+        "CapitalPercentage",
+        "CapitalGainPercentage",
+        "CapitalLossPercentage",
+    ]:
         if col_name not in df.columns:
             df = df.withColumn(col_name, F.lit(None).cast("double"))
 
@@ -186,7 +204,8 @@ def build_allocation_percentage_temp(
 # Row count: LEGITIMATELY-EMPTY
 # ---------------------------------------------------------------------------
 def build_704c_allocation_output(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_alloc_input: DataFrame,
     df_alloc_pct: DataFrame,
     df_custom_fn_types: DataFrame,
@@ -262,39 +281,42 @@ def build_704c_allocation_output(
     # ── INSERT 1: PFIC Footnote ──
     pfic_li = (
         cfg["_df_pfic_footnote_line_item"]
-        .filter(
-            (F.col("ClientID") == client_id)
-            & (F.col("TaxPeriodID") == tax_period_id)
-        )
+        .filter((F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id))
         .select(F.col("LineID").alias("k1_lid"), F.col("Classification"))
     )
 
     pfic_join = (
-        ai.filter(F.col("AI.LineTypeID") == pfic_lt)
+        ai
+        .filter(F.col("AI.LineTypeID") == pfic_lt)
         .join(ap, join_cond, "inner")
         .join(pfic_li, F.col("AI.LineID") == pfic_li["k1_lid"], "inner")
     )
 
-    pfic_amount = (
-        F.col("AI.Amount") * F.when(
-            F.lower(F.col("Classification")) == "ordinary",
-            F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0)),
-        ).when(
-            (F.lower(ns(F.col("Classification"), F.lit(""))) != "ordinary") & (F.lit(not is_sep)),
-            F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0)),
-        ).otherwise(
-            F.when(F.col("AI.Amount") > 0, F.col("AP.CapitalGainPercentage"))
-            .otherwise(F.col("AP.CapitalLossPercentage"))
+    pfic_amount = F.col("AI.Amount") * F.when(
+        F.lower(F.col("Classification")) == "ordinary",
+        F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0)),
+    ).when(
+        (F.lower(ns(F.col("Classification"), F.lit(""))) != "ordinary") & (F.lit(not is_sep)),
+        F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0)),
+    ).otherwise(
+        F.when(F.col("AI.Amount") > 0, F.col("AP.CapitalGainPercentage")).otherwise(
+            F.col("AP.CapitalLossPercentage")
         )
     )
 
     insert_pfic = pfic_join.select(
-        F.lit(run_id).cast("long").alias("RunID"), F.lit(client_id).alias("ClientID"),
-        F.col("AI.EntityID"), F.col("AP.ShareClass"), F.col("AP.PartnerNumber"),
-        F.col("AI.LineTypeID"), F.col("AI.QuicklinkID"), F.col("AI.LineID"),
+        F.lit(run_id).cast("long").alias("RunID"),
+        F.lit(client_id).alias("ClientID"),
+        F.col("AI.EntityID"),
+        F.col("AP.ShareClass"),
+        F.col("AP.PartnerNumber"),
+        F.col("AI.LineTypeID"),
+        F.col("AI.QuicklinkID"),
+        F.col("AI.LineID"),
         pfic_amount.alias("Amount"),
         F.lit("704c Footnote").alias("AllocationType"),
-        F.col("AI.ParentEntityID"), F.coalesce(F.col("AI.SuperParentEntityID"), F.lit(0)).alias("SuperParentEntityID"),
+        F.col("AI.ParentEntityID"),
+        F.coalesce(F.col("AI.SuperParentEntityID"), F.lit(0)).alias("SuperParentEntityID"),
         F.col("AP.TypeID").alias("AllocationTypeID"),
         ns(F.col("AI.TrackingKey"), F.lit("")).alias("TrackingKey"),
         F.col("AI.OriginalParentEntityID"),
@@ -303,44 +325,54 @@ def build_704c_allocation_output(
     # ── INSERT 2: Custom Footnote ──
     cfl = (
         read_table(spark, "CustomFootnoteLineItem", cfg)
-        .filter(
-            (F.col("ClientID") == client_id)
-            & (F.col("TaxPeriodID") == tax_period_id)
-        )
+        .filter((F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id))
         .select(
             F.col("LineID").alias("cfl_lid"),
-            F.col("IsOrdinary"), F.col("IsCapitalGain"), F.col("IsCapitalLoss"),
+            F.col("IsOrdinary"),
+            F.col("IsCapitalGain"),
+            F.col("IsCapitalLoss"),
         )
     )
 
     custom_join = (
-        ai.join(ap, join_cond, "inner")
+        ai
+        .join(ap, join_cond, "inner")
         .join(cfl, F.col("AI.LineID") == cfl["cfl_lid"], "inner")
-        .join(df_custom_fn_types.alias("CFT"), F.col("AI.LineTypeID") == F.col("CFT.LineTypeID"), "inner")
-    )
-
-    custom_amount = (
-        F.col("AI.Amount") * F.when(
-            F.coalesce(F.col("IsOrdinary"), F.lit(False)) == F.lit(True),
-            F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0)),
-        ).when(
-            (F.coalesce(F.col("IsOrdinary"), F.lit(False)) != F.lit(True)) & (F.lit(not is_sep)),
-            F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0)),
-        ).otherwise(
-            F.when(
-                F.coalesce(F.col("IsCapitalGain"), F.lit(False)) == F.lit(True),
-                F.col("AP.CapitalGainPercentage"),
-            ).when(
-                F.coalesce(F.col("IsCapitalLoss"), F.lit(False)) == F.lit(True),
-                F.col("AP.CapitalLossPercentage"),
-            ).otherwise(F.lit(0.0))
+        .join(
+            df_custom_fn_types.alias("CFT"),
+            F.col("AI.LineTypeID") == F.col("CFT.LineTypeID"),
+            "inner",
         )
     )
 
+    custom_amount = F.col("AI.Amount") * F.when(
+        F.coalesce(F.col("IsOrdinary"), F.lit(False)) == F.lit(True),
+        F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0)),
+    ).when(
+        (F.coalesce(F.col("IsOrdinary"), F.lit(False)) != F.lit(True)) & (F.lit(not is_sep)),
+        F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0)),
+    ).otherwise(
+        F
+        .when(
+            F.coalesce(F.col("IsCapitalGain"), F.lit(False)) == F.lit(True),
+            F.col("AP.CapitalGainPercentage"),
+        )
+        .when(
+            F.coalesce(F.col("IsCapitalLoss"), F.lit(False)) == F.lit(True),
+            F.col("AP.CapitalLossPercentage"),
+        )
+        .otherwise(F.lit(0.0))
+    )
+
     insert_custom = custom_join.select(
-        F.lit(run_id).cast("long").alias("RunID"), F.lit(client_id).alias("ClientID"),
-        F.col("AI.EntityID"), F.col("AP.ShareClass"), F.col("AP.PartnerNumber"),
-        F.col("AI.LineTypeID"), F.col("AI.QuicklinkID"), F.col("AI.LineID"),
+        F.lit(run_id).cast("long").alias("RunID"),
+        F.lit(client_id).alias("ClientID"),
+        F.col("AI.EntityID"),
+        F.col("AP.ShareClass"),
+        F.col("AP.PartnerNumber"),
+        F.col("AI.LineTypeID"),
+        F.col("AI.QuicklinkID"),
+        F.col("AI.LineID"),
         custom_amount.alias("Amount"),
         F.lit("704c Footnote").alias("AllocationType"),
         # BUG-05 FIX: SQL column order maps AI.CategoryID → ParentEntityID,
@@ -368,13 +400,14 @@ def build_704c_allocation_output(
     )
 
     other_join = (
-        ai.filter(
-            (F.col("AI.LineTypeID").isin(other_lts))
-            & (F.col("AI.Amount") != 0)
-        )
+        ai
+        .filter((F.col("AI.LineTypeID").isin(other_lts)) & (F.col("AI.Amount") != 0))
         .join(ap, join_cond, "inner")
-        .join(k1_item, (F.col("AI.LineID") == k1_item["k1l_lid"])
-              & (F.col("AI.LineTypeID") == at_risk_lt), "left")
+        .join(
+            k1_item,
+            (F.col("AI.LineID") == k1_item["k1l_lid"]) & (F.col("AI.LineTypeID") == at_risk_lt),
+            "left",
+        )
     )
 
     # Complex CASE for Amount calculation
@@ -384,58 +417,84 @@ def build_704c_allocation_output(
     is_sp = _alloc_name_704c_lc == "704(c) - sp"
     is_agg_trading = _alloc_name_704c_lc == "aggregate 704(c) partial netting with trading income"
 
-    other_amount = F.when(
-        ~F.lit(is_sp),
-        # Not SP path
-        F.when(
-            F.lit(is_agg_trading),
+    other_amount = (
+        F
+        .when(
+            ~F.lit(is_sp),
+            # Not SP path
             F.when(
-                (F.col("AI.LineTypeID") == f8886_lt) & (F.col("AI.LineID") == cap_loss_lid),
-                F.col("AI.Amount") * F.coalesce(F.col("AP.CapitalLossPercentage"), F.lit(0.0)),
-            ).otherwise(F.col("AI.Amount") * F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0))),
-        ).otherwise(
+                F.lit(is_agg_trading),
+                F.when(
+                    (F.col("AI.LineTypeID") == f8886_lt) & (F.col("AI.LineID") == cap_loss_lid),
+                    F.col("AI.Amount") * F.coalesce(F.col("AP.CapitalLossPercentage"), F.lit(0.0)),
+                ).otherwise(
+                    F.col("AI.Amount") * F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0))
+                ),
+            ).otherwise(
+                F.when(
+                    (F.col("AI.LineTypeID") == f8886_lt) & (F.col("AI.LineID") == cap_loss_lid),
+                    F.col("AI.Amount") * F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0)),
+                ).otherwise(
+                    F.col("AI.Amount") * F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0))
+                )
+            ),
+        )
+        .when(
+            # SP + Form8886 CapitalLoss
+            (F.col("AI.LineTypeID") == f8886_lt) & (F.col("AI.LineID") == cap_loss_lid),
+            ns0(F.col("AI.Amount"))
+            * F.when(
+                F.lit(is_sep), F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0))
+            ).otherwise(F.col("AP.CapitalLossPercentage")),
+        )
+        .when(
+            # SP + At Risk
+            F.col("AI.LineTypeID") == at_risk_lt,
+            ns0(F.col("AI.Amount"))
+            * F
+            .when(
+                F.col("k1_class") == "ordinary",
+                F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0)),
+            )
+            .when(
+                (F.col("k1_class") != "ordinary") & (F.lit(not is_sep)),
+                F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0)),
+            )
+            .when(
+                (F.col("k1_class") == "capital") & (F.col("k1_cgl") == "capital gain"),
+                F.col("AP.CapitalGainPercentage"),
+            )
+            .when(
+                (F.col("k1_class") == "capital") & (F.col("k1_cgl") == "capital loss"),
+                F.col("AP.CapitalLossPercentage"),
+            )
+            .otherwise(
+                F.when(F.col("AI.Amount") > 0, F.col("AP.CapitalGainPercentage")).otherwise(
+                    F.col("AP.CapitalLossPercentage")
+                )
+            ),
+        )
+        .otherwise(
+            # SP + other: gain/loss split
             F.when(
-                (F.col("AI.LineTypeID") == f8886_lt) & (F.col("AI.LineID") == cap_loss_lid),
-                F.col("AI.Amount") * F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0)),
-            ).otherwise(F.col("AI.Amount") * F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0)))
-        ),
-    ).when(
-        # SP + Form8886 CapitalLoss
-        (F.col("AI.LineTypeID") == f8886_lt) & (F.col("AI.LineID") == cap_loss_lid),
-        ns0(F.col("AI.Amount")) * F.when(
-            F.lit(is_sep), F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0))
-        ).otherwise(F.col("AP.CapitalLossPercentage")),
-    ).when(
-        # SP + At Risk
-        F.col("AI.LineTypeID") == at_risk_lt,
-        ns0(F.col("AI.Amount")) * F.when(
-            F.col("k1_class") == "ordinary", F.coalesce(F.col("AP.OrdinaryPercentage"), F.lit(0.0)),
-        ).when(
-            (F.col("k1_class") != "ordinary") & (F.lit(not is_sep)),
-            F.coalesce(F.col("AP.CapitalPercentage"), F.lit(0.0)),
-        ).when(
-            (F.col("k1_class") == "capital") & (F.col("k1_cgl") == "capital gain"),
-            F.col("AP.CapitalGainPercentage"),
-        ).when(
-            (F.col("k1_class") == "capital") & (F.col("k1_cgl") == "capital loss"),
-            F.col("AP.CapitalLossPercentage"),
-        ).otherwise(
-            F.when(F.col("AI.Amount") > 0, F.col("AP.CapitalGainPercentage"))
-            .otherwise(F.col("AP.CapitalLossPercentage"))
-        ),
-    ).otherwise(
-        # SP + other: gain/loss split
-        F.when(F.col("AI.Amount") > 0, ns0(F.col("AI.Amount")) * F.col("AP.CapitalGainPercentage"))
-        .otherwise(ns0(F.col("AI.Amount")) * F.col("AP.CapitalLossPercentage"))
+                F.col("AI.Amount") > 0, ns0(F.col("AI.Amount")) * F.col("AP.CapitalGainPercentage")
+            ).otherwise(ns0(F.col("AI.Amount")) * F.col("AP.CapitalLossPercentage"))
+        )
     )
 
     insert_other = other_join.select(
-        F.lit(run_id).cast("long").alias("RunID"), F.lit(client_id).alias("ClientID"),
-        F.col("AI.EntityID"), F.col("AP.ShareClass"), F.col("AP.PartnerNumber"),
-        F.col("AI.LineTypeID"), F.col("AI.QuicklinkID"), F.col("AI.LineID"),
+        F.lit(run_id).cast("long").alias("RunID"),
+        F.lit(client_id).alias("ClientID"),
+        F.col("AI.EntityID"),
+        F.col("AP.ShareClass"),
+        F.col("AP.PartnerNumber"),
+        F.col("AI.LineTypeID"),
+        F.col("AI.QuicklinkID"),
+        F.col("AI.LineID"),
         other_amount.alias("Amount"),
         F.lit("704c Footnote").alias("AllocationType"),
-        F.col("AI.ParentEntityID"), F.coalesce(F.col("AI.SuperParentEntityID"), F.lit(0)).alias("SuperParentEntityID"),
+        F.col("AI.ParentEntityID"),
+        F.coalesce(F.col("AI.SuperParentEntityID"), F.lit(0)).alias("SuperParentEntityID"),
         F.col("AI.TypeID").alias("AllocationTypeID"),
         ns(F.col("AI.TrackingKey"), F.lit("")).alias("TrackingKey"),
         F.col("AI.OriginalParentEntityID"),
@@ -444,10 +503,21 @@ def build_704c_allocation_output(
     # ── Combine all 704c inserts ──
     # Normalize column order
     output_cols = [
-        "RunID", "ClientID", "EntityID", "ShareClass", "PartnerNumber",
-        "LineTypeID", "QuicklinkID", "LineID", "Amount", "AllocationType",
-        "ParentEntityID", "SuperParentEntityID", "AllocationTypeID",
-        "TrackingKey", "OriginalParentEntityID",
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "ShareClass",
+        "PartnerNumber",
+        "LineTypeID",
+        "QuicklinkID",
+        "LineID",
+        "Amount",
+        "AllocationType",
+        "ParentEntityID",
+        "SuperParentEntityID",
+        "AllocationTypeID",
+        "TrackingKey",
+        "OriginalParentEntityID",
     ]
 
     # Ensure all DataFrames have same columns in same order
@@ -455,11 +525,7 @@ def build_704c_allocation_output(
     insert_custom_final = insert_custom.select(*output_cols)
     insert_other_final = insert_other.select(*output_cols)
 
-    df_result = (
-        insert_pfic_final
-        .unionByName(insert_custom_final)
-        .unionByName(insert_other_final)
-    )
+    df_result = insert_pfic_final.unionByName(insert_custom_final).unionByName(insert_other_final)
 
     log_timing("build_704c_allocation_output", t0)
     return df_result, df_alloc_input
@@ -471,7 +537,8 @@ def build_704c_allocation_output(
 # Row count: LEGITIMATELY-EMPTY
 # ---------------------------------------------------------------------------
 def apply_704c_deduction(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_alloc_input: DataFrame,
     df_704c_output: DataFrame,
     df_zero_exclude: DataFrame,
@@ -509,9 +576,16 @@ def apply_704c_deduction(
     # it as a real group key (null-safe).
     _agg_with_schid = "SchID" in df_704c_output.columns
     _group_cols = [
-        "RunID", "ClientID", "EntityID", "LineTypeID",
-        "QuicklinkID", "LineID", "ParentEntityID",
-        "SuperParentEntityID", "AllocationTypeID", "TrackingKey",
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "LineTypeID",
+        "QuicklinkID",
+        "LineID",
+        "ParentEntityID",
+        "SuperParentEntityID",
+        "AllocationTypeID",
+        "TrackingKey",
     ]
     if _agg_with_schid:
         _group_cols.append("SchID")
@@ -553,9 +627,7 @@ def apply_704c_deduction(
         & (F.col("L.QuicklinkID") == F.col("AO.QuicklinkID"))
     )
     if _agg_with_schid:
-        deduction_join = deduction_join & (
-            ns0(F.col("L.SchID")) == ns0(F.col("AO.SchID"))
-        )
+        deduction_join = deduction_join & (ns0(F.col("L.SchID")) == ns0(F.col("AO.SchID")))
 
     joined = L.join(AO, deduction_join, "left")
 
@@ -573,20 +645,18 @@ def apply_704c_deduction(
     alloc_exceeds = F.abs(F.col("AllocatedAmount")) > F.abs(F.col("L.Amount"))
     cap_condition = has_rule & alloc_exceeds
 
-    new_amount = F.when(
-        F.col("AllocatedAmount").isNull(), F.col("L.Amount")
-    ).when(
-        cap_condition, F.lit(0)
-    ).otherwise(
-        F.col("L.Amount") - F.col("AllocatedAmount")
+    new_amount = (
+        F
+        .when(F.col("AllocatedAmount").isNull(), F.col("L.Amount"))
+        .when(cap_condition, F.lit(0))
+        .otherwise(F.col("L.Amount") - F.col("AllocatedAmount"))
     )
 
-    new_amount704b = F.when(
-        F.col("AllocatedAmount").isNull(), F.col("L.Amount704b")
-    ).when(
-        cap_condition, sql_round(F.col("AllocatedAmount"), 0)
-    ).otherwise(
-        F.col("L.Amount704b")
+    new_amount704b = (
+        F
+        .when(F.col("AllocatedAmount").isNull(), F.col("L.Amount704b"))
+        .when(cap_condition, sql_round(F.col("AllocatedAmount"), 0))
+        .otherwise(F.col("L.Amount704b"))
     )
 
     # Select original columns + updated Amount/Amount704b
@@ -598,11 +668,7 @@ def apply_704c_deduction(
     )
 
     # Step 3: Track allocated lines
-    df_fn_alloc = (
-        df_aot
-        .select("LineID", "LineTypeID", "RunID")
-        .distinct()
-    )
+    df_fn_alloc = df_aot.select("LineID", "LineTypeID", "RunID").distinct()
 
     # Step 4: Zero-out residuals (Amount BETWEEN -0.99 AND 0.99)
     # Excluding ZeroExcludeLines
@@ -619,15 +685,18 @@ def apply_704c_deduction(
     df_deducted = df_deducted.alias("D")
     zero_candidates = (
         df_deducted
-        .join(fn_match,
-              (F.col("D.LineID") == F.col("fn_lid"))
-              & (F.col("D.LineTypeID") == F.col("fn_ltid"))
-              & (F.col("D.RunID") == F.col("fn_rid")),
-              "inner")
-        .join(ze_match,
-              (F.col("D.LineTypeID") == F.col("ze_ltid"))
-              & (F.col("D.LineID") == F.col("ze_lid")),
-              "left")
+        .join(
+            fn_match,
+            (F.col("D.LineID") == F.col("fn_lid"))
+            & (F.col("D.LineTypeID") == F.col("fn_ltid"))
+            & (F.col("D.RunID") == F.col("fn_rid")),
+            "inner",
+        )
+        .join(
+            ze_match,
+            (F.col("D.LineTypeID") == F.col("ze_ltid")) & (F.col("D.LineID") == F.col("ze_lid")),
+            "left",
+        )
         .filter(
             (F.col("D.RunID") == run_id)
             & (F.coalesce(F.col("D.Amount"), F.lit(0)).between(-0.99, 0.99))
@@ -643,15 +712,18 @@ def apply_704c_deduction(
     # Non-zero rows keep their updated amount
     non_zero = (
         df_deducted
-        .join(fn_match,
-              (F.col("D.LineID") == F.col("fn_lid"))
-              & (F.col("D.LineTypeID") == F.col("fn_ltid"))
-              & (F.col("D.RunID") == F.col("fn_rid")),
-              "inner")
-        .join(ze_match,
-              (F.col("D.LineTypeID") == F.col("ze_ltid"))
-              & (F.col("D.LineID") == F.col("ze_lid")),
-              "left")
+        .join(
+            fn_match,
+            (F.col("D.LineID") == F.col("fn_lid"))
+            & (F.col("D.LineTypeID") == F.col("fn_ltid"))
+            & (F.col("D.RunID") == F.col("fn_rid")),
+            "inner",
+        )
+        .join(
+            ze_match,
+            (F.col("D.LineTypeID") == F.col("ze_ltid")) & (F.col("D.LineID") == F.col("ze_lid")),
+            "left",
+        )
         .filter(
             ~(
                 (F.col("D.RunID") == run_id)
@@ -667,18 +739,16 @@ def apply_704c_deduction(
     )
 
     # Rows not matched to fn_allocated_lines keep their original values
-    unmatched = (
-        df_deducted
-        .join(fn_match,
-              (F.col("D.LineID") == F.col("fn_lid"))
-              & (F.col("D.LineTypeID") == F.col("fn_ltid"))
-              & (F.col("D.RunID") == F.col("fn_rid")),
-              "left_anti")
-        .select(
-            *[F.col(f"D.{c}") for c in alloc_input_cols],
-            F.col("D.Amount").alias("Amount"),
-            F.col("D.Amount704b").alias("Amount704b"),
-        )
+    unmatched = df_deducted.join(
+        fn_match,
+        (F.col("D.LineID") == F.col("fn_lid"))
+        & (F.col("D.LineTypeID") == F.col("fn_ltid"))
+        & (F.col("D.RunID") == F.col("fn_rid")),
+        "left_anti",
+    ).select(
+        *[F.col(f"D.{c}") for c in alloc_input_cols],
+        F.col("D.Amount").alias("Amount"),
+        F.col("D.Amount704b").alias("Amount704b"),
     )
 
     df_alloc_input_final = zero_candidates.unionByName(non_zero).unionByName(unmatched)

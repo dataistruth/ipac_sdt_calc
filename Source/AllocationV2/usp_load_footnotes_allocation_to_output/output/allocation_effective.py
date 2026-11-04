@@ -5,12 +5,14 @@ Applies effective percentages from #TempFinalEffectivePercentage to
 #AllocationInput and generates the main allocation output rows for
 each line type (PFIC, Form926, Form8865, Form1042S, Form8886, Form199A, At Risk, Custom).
 """
-from pyspark.sql import SparkSession, DataFrame
-import pyspark.sql.functions as F
+
 import logging
 import time
 
-from Common_V2.core.helpers import read_table, ns, ns0
+import pyspark.sql.functions as F
+from pyspark.sql import DataFrame, SparkSession
+
+from Common_V2.core.helpers import ns, ns0, read_table
 from Common_V2.core.observability import log_section, log_timing
 
 logger = logging.getLogger(__name__)
@@ -46,10 +48,7 @@ def resolve_min_quarter(spark: SparkSession, cfg: dict) -> str:
     else:
         rows = (
             read_table(spark, "ENU_DF_DataList", cfg)
-            .filter(
-                (F.lower(F.col("Category")) == "quarters")
-                & (F.col("DisplayOrder") == 1)
-            )
+            .filter((F.lower(F.col("Category")) == "quarters") & (F.col("DisplayOrder") == 1))
             .select(F.coalesce(F.col("LookUpData"), F.lit("Q0")).alias("min_q"))
             .collect()
         )
@@ -69,26 +68,37 @@ def _build_allocation_type_expr(include_ti: bool = False):
     Maps AP.AllocationType → 'Footnote-...' display name.
     """
     expr = (
-        F.when(F.lower(F.col("AP.AllocationType")) == "cost",
-               F.concat(F.lit("Footnote-"), F.col("EC.AllocationType")))
-        .when(F.lower(F.col("AP.AllocationType")) == "costadjusteddatedtransfer",
-              F.concat(F.lit("Footnote-"), F.col("EC.AllocationType"), F.lit("AdjustedDatedTransfer")))
-        .when(F.lower(F.col("AP.AllocationType")) == "default",
-              F.lit("Footnote-Cost"))
-        .when(F.lower(F.col("AP.AllocationType")) == "defaultadjusteddatedtransfer",
-              F.lit("Footnote-CostAdjustedDatedTransfer"))
+        F
+        .when(
+            F.lower(F.col("AP.AllocationType")) == "cost",
+            F.concat(F.lit("Footnote-"), F.col("EC.AllocationType")),
+        )
+        .when(
+            F.lower(F.col("AP.AllocationType")) == "costadjusteddatedtransfer",
+            F.concat(
+                F.lit("Footnote-"), F.col("EC.AllocationType"), F.lit("AdjustedDatedTransfer")
+            ),
+        )
+        .when(F.lower(F.col("AP.AllocationType")) == "default", F.lit("Footnote-Cost"))
+        .when(
+            F.lower(F.col("AP.AllocationType")) == "defaultadjusteddatedtransfer",
+            F.lit("Footnote-CostAdjustedDatedTransfer"),
+        )
     )
     if include_ti:
-        expr = expr.when(
-            F.lower(F.col("AP.AllocationType")) == "ti",
-            F.lit("Footnote-TI")
-        )
+        expr = expr.when(F.lower(F.col("AP.AllocationType")) == "ti", F.lit("Footnote-TI"))
     expr = (
         expr
-        .when(F.lower(F.col("AP.AllocationType")) == "cost without transfer adj %",
-              F.concat(F.lit("Footnote-"), F.col("EC.AllocationType"), F.lit(" without Transfer Adj %")))
-        .when(F.lower(F.col("AP.AllocationType")) == "default without transfer adj %",
-              F.lit("Footnote-Cost without Transfer Adj %"))
+        .when(
+            F.lower(F.col("AP.AllocationType")) == "cost without transfer adj %",
+            F.concat(
+                F.lit("Footnote-"), F.col("EC.AllocationType"), F.lit(" without Transfer Adj %")
+            ),
+        )
+        .when(
+            F.lower(F.col("AP.AllocationType")) == "default without transfer adj %",
+            F.lit("Footnote-Cost without Transfer Adj %"),
+        )
         .otherwise(F.lit("Footnote-ProRata"))
     )
     return expr
@@ -98,7 +108,11 @@ def _build_allocation_type_expr(include_ti: bool = False):
 # _build_line_type_insert (internal helper)
 # ---------------------------------------------------------------------------
 def _build_line_type_insert(
-    df_ai, df_ap, df_ep, df_ec, df_el,
+    df_ai,
+    df_ap,
+    df_ep,
+    df_ec,
+    df_el,
     cfg: dict,
     line_type: str,
     include_quarter_join: bool = True,
@@ -124,7 +138,10 @@ def _build_line_type_insert(
         (F.col("AI.EntityID") == F.col("AP.InvestmentID"))
         & (F.col("AI.TypeID") == F.col("AP.TypeID"))
         & (ns0(F.col("AI.LineTypeID")) == ns0(F.col("AP.LineTypeID")))
-        & (F.col("AI.IsExcludefromTransfer").cast("int") == F.col("AP.IsExcludefromTransfer").cast("int"))
+        & (
+            F.col("AI.IsExcludefromTransfer").cast("int")
+            == F.col("AP.IsExcludefromTransfer").cast("int")
+        )
         & (ns(F.col("AI.TrackingKey")) == ns(F.col("AP.TrackingKey")))
     )
 
@@ -134,7 +151,8 @@ def _build_line_type_insert(
     # Form199A TI logic: additional LINEID condition
     if include_ti_logic:
         join_cond = join_cond & (
-            ns0(F.col("AP.LINEID")) == F.when(
+            ns0(F.col("AP.LINEID"))
+            == F.when(
                 (F.lower(F.col("AP.AllocationType")) == "ti") & (F.col("AP.LINEID") != -1),
                 F.col("AI.LineID"),
             ).otherwise(ns0(F.col("AP.LINEID")))
@@ -212,7 +230,8 @@ def _build_line_type_insert(
 # Row count: POSSIBLY-EMPTY
 # ---------------------------------------------------------------------------
 def build_effective_pct_allocation(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_alloc_input: DataFrame,
     df_temp_final_eff_pct: DataFrame,
     df_entity_partners: DataFrame,
@@ -239,7 +258,9 @@ def build_effective_pct_allocation(
 
     # Guard: only runs when rank_for_rule_pickup != 2 (SQL: IF @RankForRulePickup <> 2)
     if df_temp_final_eff_pct is None or cfg.get("rank_for_rule_pickup") == 2:
-        logger.info("[SKIP] TempFinalEffectivePercentage not loaded (rank=2) — skipping effective % allocation")
+        logger.info(
+            "[SKIP] TempFinalEffectivePercentage not loaded (rank=2) — skipping effective % allocation"
+        )
         log_timing("build_effective_pct_allocation", t0)
         return None
 
@@ -248,14 +269,11 @@ def build_effective_pct_allocation(
 
     # Reference tables (broadcast-sized — tiny enum tables)
     df_ec = F.broadcast(
-        read_table(spark, "ENU_CustomAllocations", cfg)
-        .select("AllocationTypeID", "AllocationType")
+        read_table(spark, "ENU_CustomAllocations", cfg).select("AllocationTypeID", "AllocationType")
     )
     df_el = F.broadcast(
         read_table(spark, "ENU_LineType", cfg)
-        .filter(
-            (F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id)
-        )
+        .filter((F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id))
         .select("LineTypeID", "LineType")
     )
 
@@ -263,17 +281,20 @@ def build_effective_pct_allocation(
     # BUG-25 FIX: SQL has no ClientID/TaxPeriodID filter on PFICFootnoteLineItem:
     #   EXISTS (SELECT 1 FROM PFICFootnoteLineItem WHERE LineID = AI.LineID)
     pfic_li = F.broadcast(
-        cfg["_df_pfic_footnote_line_item"]
-        .select(F.col("LineID").alias("pfic_lid"))
-        .distinct()
+        cfg["_df_pfic_footnote_line_item"].select(F.col("LineID").alias("pfic_lid")).distinct()
     )
 
     results = []
 
     # 1. PFIC Footnote
     df_pfic = _build_line_type_insert(
-        df_alloc_input, df_temp_final_eff_pct, df_entity_partners, df_ec, df_el,
-        cfg, line_type="PFIC Footnote",
+        df_alloc_input,
+        df_temp_final_eff_pct,
+        df_entity_partners,
+        df_ec,
+        df_el,
+        cfg,
+        line_type="PFIC Footnote",
         include_quarter_join=True,
         pfic_join_df=pfic_li,
     )
@@ -281,16 +302,26 @@ def build_effective_pct_allocation(
 
     # 2. Form926
     df_f926 = _build_line_type_insert(
-        df_alloc_input, df_temp_final_eff_pct, df_entity_partners, df_ec, df_el,
-        cfg, line_type="Form926",
+        df_alloc_input,
+        df_temp_final_eff_pct,
+        df_entity_partners,
+        df_ec,
+        df_el,
+        cfg,
+        line_type="Form926",
         include_quarter_join=True,
     )
     results.append(df_f926)
 
     # 3. Form8865 SchID=0
     df_f8865_0 = _build_line_type_insert(
-        df_alloc_input, df_temp_final_eff_pct, df_entity_partners, df_ec, df_el,
-        cfg, line_type="Form8865",
+        df_alloc_input,
+        df_temp_final_eff_pct,
+        df_entity_partners,
+        df_ec,
+        df_el,
+        cfg,
+        line_type="Form8865",
         include_quarter_join=True,
         include_schid=True,
         schid_filter=(ns0(F.col("AI.SchID")) == 0),
@@ -299,8 +330,13 @@ def build_effective_pct_allocation(
 
     # 4. Form8865 SchID<>0
     df_f8865_n = _build_line_type_insert(
-        df_alloc_input, df_temp_final_eff_pct, df_entity_partners, df_ec, df_el,
-        cfg, line_type="Form8865",
+        df_alloc_input,
+        df_temp_final_eff_pct,
+        df_entity_partners,
+        df_ec,
+        df_el,
+        cfg,
+        line_type="Form8865",
         include_quarter_join=True,
         include_schid=True,
         schid_filter=(ns0(F.col("AI.SchID")) != 0),
@@ -309,24 +345,39 @@ def build_effective_pct_allocation(
 
     # 5. Form1042S (no quarter join)
     df_f1042s = _build_line_type_insert(
-        df_alloc_input, df_temp_final_eff_pct, df_entity_partners, df_ec, df_el,
-        cfg, line_type="Form1042S",
+        df_alloc_input,
+        df_temp_final_eff_pct,
+        df_entity_partners,
+        df_ec,
+        df_el,
+        cfg,
+        line_type="Form1042S",
         include_quarter_join=False,
     )
     results.append(df_f1042s)
 
     # 6. Form8886
     df_f8886 = _build_line_type_insert(
-        df_alloc_input, df_temp_final_eff_pct, df_entity_partners, df_ec, df_el,
-        cfg, line_type="Form8886",
+        df_alloc_input,
+        df_temp_final_eff_pct,
+        df_entity_partners,
+        df_ec,
+        df_el,
+        cfg,
+        line_type="Form8886",
         include_quarter_join=True,
     )
     results.append(df_f8886)
 
     # 7. Form199A (with TI allocation logic)
     df_f199a = _build_line_type_insert(
-        df_alloc_input, df_temp_final_eff_pct, df_entity_partners, df_ec, df_el,
-        cfg, line_type="Form199A",
+        df_alloc_input,
+        df_temp_final_eff_pct,
+        df_entity_partners,
+        df_ec,
+        df_el,
+        cfg,
+        line_type="Form199A",
         include_quarter_join=True,
         include_ti_logic=True,
     )
@@ -334,8 +385,13 @@ def build_effective_pct_allocation(
 
     # 8. At Risk
     df_at_risk = _build_line_type_insert(
-        df_alloc_input, df_temp_final_eff_pct, df_entity_partners, df_ec, df_el,
-        cfg, line_type="At Risk",
+        df_alloc_input,
+        df_temp_final_eff_pct,
+        df_entity_partners,
+        df_ec,
+        df_el,
+        cfg,
+        line_type="At Risk",
         include_quarter_join=True,
     )
     results.append(df_at_risk)
@@ -343,8 +399,13 @@ def build_effective_pct_allocation(
     # 9. Custom footnote (JOIN to tmpCustomFootnoteLineTypes)
     cf_alias = df_custom_fn_types.alias("CF")
     df_custom = _build_line_type_insert(
-        df_alloc_input, df_temp_final_eff_pct, df_entity_partners, df_ec, df_el,
-        cfg, line_type=None,  # not filtered by EL.LineType; uses custom join instead
+        df_alloc_input,
+        df_temp_final_eff_pct,
+        df_entity_partners,
+        df_ec,
+        df_el,
+        cfg,
+        line_type=None,  # not filtered by EL.LineType; uses custom join instead
         include_quarter_join=True,
         extra_join_df=cf_alias,
         extra_join_cond=(ns0(F.col("CF.LineTypeID")) == ns0(F.col("EL.LineTypeID"))),
@@ -354,10 +415,22 @@ def build_effective_pct_allocation(
     # Combine all results with unionByName (handle SchID difference)
     # SchID is only present in Form8865 inserts; add NULL for others
     output_cols = [
-        "RunID", "ClientID", "EntityID", "ShareClass", "PartnerNumber",
-        "LineTypeID", "QuicklinkID", "LineID", "Amount", "AllocationType",
-        "ParentEntityID", "SuperParentEntityID", "AllocationTypeID",
-        "TrackingKey", "OriginalParentEntityID", "SchID",
+        "RunID",
+        "ClientID",
+        "EntityID",
+        "ShareClass",
+        "PartnerNumber",
+        "LineTypeID",
+        "QuicklinkID",
+        "LineID",
+        "Amount",
+        "AllocationType",
+        "ParentEntityID",
+        "SuperParentEntityID",
+        "AllocationTypeID",
+        "TrackingKey",
+        "OriginalParentEntityID",
+        "SchID",
     ]
 
     normalized = []

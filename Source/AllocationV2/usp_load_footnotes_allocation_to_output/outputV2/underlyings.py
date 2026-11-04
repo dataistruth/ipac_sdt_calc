@@ -4,13 +4,15 @@ Entity hierarchy and underlying type resolution for uspLoadFootnotesAllocationTo
 Handles cost percentage UDF inlining, recursive entity hierarchy CTE,
 asset class filtering, and DAR-based underlyings ranking.
 """
-from pyspark.sql import SparkSession, DataFrame, Window
-import pyspark.sql.functions as F
+
 import logging
 import time
 
+import pyspark.sql.functions as F
+from pyspark.sql import DataFrame, SparkSession, Window
+
 from Common_V2.core.checkpoint import checkpoint as common_checkpoint
-from Common_V2.core.helpers import read_table, ns, ns0
+from Common_V2.core.helpers import ns, read_table
 from Common_V2.core.observability import log_section, log_timing
 
 logger = logging.getLogger(__name__)
@@ -26,7 +28,8 @@ def _seam(spark, df, name, cfg):
 def derive_cost_underlying_types(df_cost_snapshot):
     """Mirror sdt_d TempCostUnderlyingTypes derivation from a snapshot."""
     return (
-        df_cost_snapshot.filter(
+        df_cost_snapshot
+        .filter(
             (F.lower(F.col("EntityUnderlyingtype")) != "k-1 only")
             | (
                 (F.lower(F.col("EntityUnderlyingtype")) == "k-1 only")
@@ -52,7 +55,8 @@ def derive_cost_underlying_types(df_cost_snapshot):
 # Row count: POSSIBLY-EMPTY
 # ---------------------------------------------------------------------------
 def build_cost_percentage_data(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
 ) -> tuple:
     """Load cost percentage details (UDF inline), join underlying types, build TempCostUnderlyingTypes.
 
@@ -92,36 +96,42 @@ def build_cost_percentage_data(
         read_table(spark, "CostPercentage_Snapshot", cfg)
         .filter(F.col("WorkFlowID") == cost_wf_id)
         .select(
-            "WorkFlowID", "TransactionID", "ClientID", "TaxPeriodID",
-            "EntityId", "InvestmentID", "PartnerNumber", "Quarter",
-            "CommitmentPercent", "AllocationTypeId",
+            "WorkFlowID",
+            "TransactionID",
+            "ClientID",
+            "TaxPeriodID",
+            "EntityId",
+            "InvestmentID",
+            "PartnerNumber",
+            "Quarter",
+            "CommitmentPercent",
+            "AllocationTypeId",
             ns(F.col("Tag"), F.lit("")).alias("Tag"),
             ns(F.col("TrackingKey"), F.lit("")).alias("TrackingKey"),
             F.col("Underlyingtype").alias("UnderlyingTypeID_val"),
-            "AllocatedAmount", "CostPercentageId", "DealID",
+            "AllocatedAmount",
+            "CostPercentageId",
+            "DealID",
         )
     )
 
     # ── Read reference tables (cached — read once per SP execution) ──
     enu_ut = F.broadcast(
-        read_table(spark, "Enu_Underlyingtype", cfg)
-        .select(
+        read_table(spark, "Enu_Underlyingtype", cfg).select(
             F.col("UnderlyingTypeID"),
             F.col("UnderlyingType").alias("UnderlyingTypeName"),
         )
     )
 
-    entity = (
-        cfg["_df_entity"]
-        .select(F.col("EntityID").alias("ve_EntityID"))
-        .distinct()
-    )
+    entity = cfg["_df_entity"].select(F.col("EntityID").alias("ve_EntityID")).distinct()
 
-    enu_asset_class = F.broadcast(
-        read_table(spark, "Enu_AssetClass", cfg)
-        .select(F.col("AssetClassID"))
-        .distinct()
-    ) if _table_exists(spark, "Enu_AssetClass", cfg) else None
+    enu_asset_class = (
+        F.broadcast(
+            read_table(spark, "Enu_AssetClass", cfg).select(F.col("AssetClassID")).distinct()
+        )
+        if _table_exists(spark, "Enu_AssetClass", cfg)
+        else None
+    )
 
     # ── UDF logic: build the 4 union components ──
     # Component 1: InvestmentID = -1, UnderlyingType <> 'ASSET CLASS'
@@ -131,10 +141,21 @@ def build_cost_percentage_data(
         .join(enu_ut, cost_snap["UnderlyingTypeID_val"] == enu_ut["UnderlyingTypeID"], "inner")
         .filter(F.lower(enu_ut["UnderlyingTypeName"]) != "asset class")
         .select(
-            cost_snap["WorkFlowID"], cost_snap["TransactionID"], cost_snap["ClientID"], cost_snap["TaxPeriodID"],
-            cost_snap["EntityId"], cost_snap["InvestmentID"], cost_snap["PartnerNumber"], cost_snap["Quarter"],
-            cost_snap["CommitmentPercent"], cost_snap["AllocationTypeId"], cost_snap["Tag"], cost_snap["TrackingKey"],
-            cost_snap["UnderlyingTypeID_val"], cost_snap["AllocatedAmount"], cost_snap["CostPercentageId"],
+            cost_snap["WorkFlowID"],
+            cost_snap["TransactionID"],
+            cost_snap["ClientID"],
+            cost_snap["TaxPeriodID"],
+            cost_snap["EntityId"],
+            cost_snap["InvestmentID"],
+            cost_snap["PartnerNumber"],
+            cost_snap["Quarter"],
+            cost_snap["CommitmentPercent"],
+            cost_snap["AllocationTypeId"],
+            cost_snap["Tag"],
+            cost_snap["TrackingKey"],
+            cost_snap["UnderlyingTypeID_val"],
+            cost_snap["AllocatedAmount"],
+            cost_snap["CostPercentageId"],
         )
     )
 
@@ -146,10 +167,21 @@ def build_cost_percentage_data(
         .join(enu_ut, cost_snap["UnderlyingTypeID_val"] == enu_ut["UnderlyingTypeID"], "inner")
         .filter(F.lower(enu_ut["UnderlyingTypeName"]) != "asset class")
         .select(
-            cost_snap["WorkFlowID"], cost_snap["TransactionID"], cost_snap["ClientID"], cost_snap["TaxPeriodID"],
-            cost_snap["EntityId"], cost_snap["InvestmentID"], cost_snap["PartnerNumber"], cost_snap["Quarter"],
-            cost_snap["CommitmentPercent"], cost_snap["AllocationTypeId"], cost_snap["Tag"], cost_snap["TrackingKey"],
-            cost_snap["UnderlyingTypeID_val"], cost_snap["AllocatedAmount"], cost_snap["CostPercentageId"],
+            cost_snap["WorkFlowID"],
+            cost_snap["TransactionID"],
+            cost_snap["ClientID"],
+            cost_snap["TaxPeriodID"],
+            cost_snap["EntityId"],
+            cost_snap["InvestmentID"],
+            cost_snap["PartnerNumber"],
+            cost_snap["Quarter"],
+            cost_snap["CommitmentPercent"],
+            cost_snap["AllocationTypeId"],
+            cost_snap["Tag"],
+            cost_snap["TrackingKey"],
+            cost_snap["UnderlyingTypeID_val"],
+            cost_snap["AllocatedAmount"],
+            cost_snap["CostPercentageId"],
         )
     )
 
@@ -159,12 +191,27 @@ def build_cost_percentage_data(
             cost_snap
             .join(enu_ut, cost_snap["UnderlyingTypeID_val"] == enu_ut["UnderlyingTypeID"], "inner")
             .filter(F.lower(enu_ut["UnderlyingTypeName"]) == "asset class")
-            .join(enu_asset_class, cost_snap["InvestmentID"] == enu_asset_class["AssetClassID"], "inner")
+            .join(
+                enu_asset_class,
+                cost_snap["InvestmentID"] == enu_asset_class["AssetClassID"],
+                "inner",
+            )
             .select(
-                cost_snap["WorkFlowID"], cost_snap["TransactionID"], cost_snap["ClientID"], cost_snap["TaxPeriodID"],
-                cost_snap["EntityId"], cost_snap["InvestmentID"], cost_snap["PartnerNumber"], cost_snap["Quarter"],
-                cost_snap["CommitmentPercent"], cost_snap["AllocationTypeId"], cost_snap["Tag"], cost_snap["TrackingKey"],
-                cost_snap["UnderlyingTypeID_val"], cost_snap["AllocatedAmount"], cost_snap["CostPercentageId"],
+                cost_snap["WorkFlowID"],
+                cost_snap["TransactionID"],
+                cost_snap["ClientID"],
+                cost_snap["TaxPeriodID"],
+                cost_snap["EntityId"],
+                cost_snap["InvestmentID"],
+                cost_snap["PartnerNumber"],
+                cost_snap["Quarter"],
+                cost_snap["CommitmentPercent"],
+                cost_snap["AllocationTypeId"],
+                cost_snap["Tag"],
+                cost_snap["TrackingKey"],
+                cost_snap["UnderlyingTypeID_val"],
+                cost_snap["AllocatedAmount"],
+                cost_snap["CostPercentageId"],
             )
         )
     else:
@@ -180,10 +227,22 @@ def build_cost_percentage_data(
         .join(enu_ut, cost_snap["UnderlyingTypeID_val"] == enu_ut["UnderlyingTypeID"], "inner")
         .filter(F.lower(enu_ut["UnderlyingTypeName"]) != "asset class")
         .select(
-            cost_snap["WorkFlowID"], cost_snap["TransactionID"], cost_snap["ClientID"], cost_snap["TaxPeriodID"],
-            cost_snap["EntityId"], cost_snap["InvestmentID"], cost_snap["PartnerNumber"], cost_snap["Quarter"],
-            cost_snap["CommitmentPercent"], cost_snap["AllocationTypeId"], cost_snap["Tag"], cost_snap["TrackingKey"],
-            cost_snap["UnderlyingTypeID_val"], cost_snap["AllocatedAmount"], cost_snap["CostPercentageId"], cost_snap["DealID"],
+            cost_snap["WorkFlowID"],
+            cost_snap["TransactionID"],
+            cost_snap["ClientID"],
+            cost_snap["TaxPeriodID"],
+            cost_snap["EntityId"],
+            cost_snap["InvestmentID"],
+            cost_snap["PartnerNumber"],
+            cost_snap["Quarter"],
+            cost_snap["CommitmentPercent"],
+            cost_snap["AllocationTypeId"],
+            cost_snap["Tag"],
+            cost_snap["TrackingKey"],
+            cost_snap["UnderlyingTypeID_val"],
+            cost_snap["AllocatedAmount"],
+            cost_snap["CostPercentageId"],
+            cost_snap["DealID"],
         )
     )
 
@@ -192,8 +251,7 @@ def build_cost_percentage_data(
     entity_rel = F.broadcast(
         read_table(spark, "EntityRelationship", cfg)
         .filter(
-            (F.col("ClientID") == cfg["client_id"])
-            & (F.col("TaxPeriodID") == cfg["tax_period_id"])
+            (F.col("ClientID") == cfg["client_id"]) & (F.col("TaxPeriodID") == cfg["tax_period_id"])
         )
         .select("UpperTierEntityID", "LowerTierEntityID")
     )
@@ -202,18 +260,14 @@ def build_cost_percentage_data(
 
     # Build hierarchy: start from deal entities, traverse down
     # Level 0: direct relationships from deal entities
-    hierarchy = (
-        deal_entities
-        .join(
-            entity_rel,
-            (deal_entities["EntityId"] == entity_rel["UpperTierEntityID"]),
-            "inner",
-        )
-        .select(
-            deal_entities["EntityId"].alias("RootEntityID"),
-            entity_rel["UpperTierEntityID"],
-            entity_rel["LowerTierEntityID"],
-        )
+    hierarchy = deal_entities.join(
+        entity_rel,
+        (deal_entities["EntityId"] == entity_rel["UpperTierEntityID"]),
+        "inner",
+    ).select(
+        deal_entities["EntityId"].alias("RootEntityID"),
+        entity_rel["UpperTierEntityID"],
+        entity_rel["LowerTierEntityID"],
     )
 
     # Iterative expansion (max 5 levels — practical entity depth limit)
@@ -221,32 +275,24 @@ def build_cost_percentage_data(
     current_level = hierarchy
     for i in range(5):
         er = entity_rel.alias(f"er_{i}")
-        next_level = (
-            current_level
-            .join(
-                er,
-                current_level["LowerTierEntityID"] == F.col(f"er_{i}.UpperTierEntityID"),
-                "inner",
-            )
-            .select(
-                current_level["RootEntityID"],
-                F.col(f"er_{i}.UpperTierEntityID").alias("UpperTierEntityID"),
-                F.col(f"er_{i}.LowerTierEntityID").alias("LowerTierEntityID"),
-            )
+        next_level = current_level.join(
+            er,
+            current_level["LowerTierEntityID"] == F.col(f"er_{i}.UpperTierEntityID"),
+            "inner",
+        ).select(
+            current_level["RootEntityID"],
+            F.col(f"er_{i}.UpperTierEntityID").alias("UpperTierEntityID"),
+            F.col(f"er_{i}.LowerTierEntityID").alias("LowerTierEntityID"),
         )
         # Break if no more expansion
         all_hierarchy = all_hierarchy.unionByName(next_level)
         current_level = next_level
 
     # Include self-reference for root entities
-    self_ref = (
-        deal_entities
-        .filter(F.col("EntityId") != -1)
-        .select(
-            F.col("EntityId").alias("RootEntityID"),
-            F.col("EntityId").alias("UpperTierEntityID"),
-            F.col("EntityId").alias("LowerTierEntityID"),
-        )
+    self_ref = deal_entities.filter(F.col("EntityId") != -1).select(
+        F.col("EntityId").alias("RootEntityID"),
+        F.col("EntityId").alias("UpperTierEntityID"),
+        F.col("EntityId").alias("LowerTierEntityID"),
     )
     all_hierarchy = all_hierarchy.unionByName(self_ref)
 
@@ -257,32 +303,35 @@ def build_cost_percentage_data(
         .select(F.col("EntityID").alias("c10_eid"), F.col("Custom10"))
     )
 
-    entity_deals = (
-        all_hierarchy
-        .join(entity_c10, all_hierarchy["LowerTierEntityID"] == entity_c10["c10_eid"], "inner")
-        .select(
-            all_hierarchy["RootEntityID"].alias("ed_EntityID"),
-            all_hierarchy["UpperTierEntityID"].alias("ed_Upper"),
-            all_hierarchy["LowerTierEntityID"].alias("ed_Lower"),
-            entity_c10["Custom10"],
-        )
+    entity_deals = all_hierarchy.join(
+        entity_c10, all_hierarchy["LowerTierEntityID"] == entity_c10["c10_eid"], "inner"
+    ).select(
+        all_hierarchy["RootEntityID"].alias("ed_EntityID"),
+        all_hierarchy["UpperTierEntityID"].alias("ed_Upper"),
+        all_hierarchy["LowerTierEntityID"].alias("ed_Lower"),
+        entity_c10["Custom10"],
     )
 
     # Match pre-filtered rows by DealID = Custom10 AND EntityId
     # Distinct subset for left-anti-join exclusion
     cost_distinct = (
         cost_snap
-        .filter(
-            (ns(F.col("DealID"), F.lit("")) == "")
-            & F.col("InvestmentID").isNull()
+        .filter((ns(F.col("DealID"), F.lit("")) == "") & F.col("InvestmentID").isNull())
+        .select(
+            "EntityId",
+            "InvestmentID",
+            "Quarter",
+            "AllocationTypeId",
+            "Tag",
+            "TrackingKey",
+            "UnderlyingTypeID_val",
         )
-        .select("EntityId", "InvestmentID", "Quarter", "AllocationTypeId",
-                "Tag", "TrackingKey", "UnderlyingTypeID_val")
         .distinct()
     )
 
     comp_deal = (
-        pre_filtered.alias("C")
+        pre_filtered
+        .alias("C")
         .join(
             entity_deals,
             (F.col("C.DealID") == entity_deals["Custom10"])
@@ -310,8 +359,15 @@ def build_cost_percentage_data(
 
     # BUG-26 FIX: SQL excludes rows from comp_deal that already exist in cost_distinct
     # (anti-join on EntityId, InvestmentID, Quarter, AllocationTypeId, Tag, TrackingKey, UnderlyingTypeID_val)
-    anti_keys = ["EntityId", "InvestmentID", "Quarter", "AllocationTypeId",
-                 "Tag", "TrackingKey", "UnderlyingTypeID_val"]
+    anti_keys = [
+        "EntityId",
+        "InvestmentID",
+        "Quarter",
+        "AllocationTypeId",
+        "Tag",
+        "TrackingKey",
+        "UnderlyingTypeID_val",
+    ]
     comp_deal = comp_deal.join(cost_distinct, anti_keys, "left_anti")
 
     # ── Assemble final UDF output ──
@@ -326,27 +382,25 @@ def build_cost_percentage_data(
     df_cost_func = df_cost_func.distinct()
 
     # ── SP logic: JOIN with Enu_Underlyingtype to get EntityUnderlyingtype ──
-    df_cost_snapshot = (
-        df_cost_func
-        .join(enu_ut, df_cost_func["UnderlyingTypeID_val"] == enu_ut["UnderlyingTypeID"], "inner")
-        .select(
-            df_cost_func["WorkFlowID"],
-            df_cost_func["TransactionID"],
-            df_cost_func["ClientID"],
-            df_cost_func["TaxPeriodID"],
-            df_cost_func["EntityId"],
-            df_cost_func["InvestmentID"],
-            df_cost_func["PartnerNumber"],
-            df_cost_func["Quarter"],
-            df_cost_func["CommitmentPercent"],
-            df_cost_func["AllocationTypeId"],
-            df_cost_func["Tag"],
-            df_cost_func["TrackingKey"],
-            df_cost_func["UnderlyingTypeID_val"].alias("Underlyingtype"),
-            df_cost_func["AllocatedAmount"],
-            df_cost_func["CostPercentageId"],
-            enu_ut["UnderlyingTypeName"].alias("EntityUnderlyingtype"),
-        )
+    df_cost_snapshot = df_cost_func.join(
+        enu_ut, df_cost_func["UnderlyingTypeID_val"] == enu_ut["UnderlyingTypeID"], "inner"
+    ).select(
+        df_cost_func["WorkFlowID"],
+        df_cost_func["TransactionID"],
+        df_cost_func["ClientID"],
+        df_cost_func["TaxPeriodID"],
+        df_cost_func["EntityId"],
+        df_cost_func["InvestmentID"],
+        df_cost_func["PartnerNumber"],
+        df_cost_func["Quarter"],
+        df_cost_func["CommitmentPercent"],
+        df_cost_func["AllocationTypeId"],
+        df_cost_func["Tag"],
+        df_cost_func["TrackingKey"],
+        df_cost_func["UnderlyingTypeID_val"].alias("Underlyingtype"),
+        df_cost_func["AllocatedAmount"],
+        df_cost_func["CostPercentageId"],
+        enu_ut["UnderlyingTypeName"].alias("EntityUnderlyingtype"),
     )
 
     # ── SP logic: Build #TempCostUnderlyingTypes ──
@@ -359,12 +413,19 @@ def build_cost_percentage_data(
         df_cost_snapshot
         .filter(
             (F.lower(F.col("EntityUnderlyingtype")) != "k-1 only")
-            | ((F.lower(F.col("EntityUnderlyingtype")) == "k-1 only")
-               & (F.col("InvestmentID") == -1))
+            | (
+                (F.lower(F.col("EntityUnderlyingtype")) == "k-1 only")
+                & (F.col("InvestmentID") == -1)
+            )
         )
         .select(
-            "EntityId", "InvestmentID", "Quarter", "AllocationTypeId",
-            "TrackingKey", "Underlyingtype", "EntityUnderlyingtype",
+            "EntityId",
+            "InvestmentID",
+            "Quarter",
+            "AllocationTypeId",
+            "TrackingKey",
+            "Underlyingtype",
+            "EntityUnderlyingtype",
         )
         .distinct()
     )
@@ -391,7 +452,8 @@ def _table_exists(spark: SparkSession, table_name: str, cfg: dict) -> bool:
 # Row count: POSSIBLY-EMPTY
 # ---------------------------------------------------------------------------
 def build_entity_hierarchy(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_cost_pct_snapshot: DataFrame,
     df_temp_cost_underlying_types: DataFrame,
 ) -> tuple:
@@ -425,10 +487,7 @@ def build_entity_hierarchy(
     # ── Load EntityRelationship (cached — shared with build_cost_percentage_data) ──
     entity_rel = F.broadcast(
         read_table(spark, "EntityRelationship", cfg)
-        .filter(
-            (F.col("ClientID") == client_id)
-            & (F.col("TaxPeriodID") == tax_period_id)
-        )
+        .filter((F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id))
         .select("UpperTierEntityID", "LowerTierEntityID")
     )
 
@@ -445,42 +504,38 @@ def build_entity_hierarchy(
     tc = df_temp_cost_underlying_types.alias("TC")
 
     # Build the join entity for the anchor
-    anchor_entity = (
-        tc.withColumn(
-            "_join_entity",
-            F.when(
-                F.lower(F.col("EntityUnderlyingtype")) == "asset class",
-                F.col("EntityId"),
-            ).otherwise(F.col("InvestmentID")),
-        )
+    anchor_entity = tc.withColumn(
+        "_join_entity",
+        F.when(
+            F.lower(F.col("EntityUnderlyingtype")) == "asset class",
+            F.col("EntityId"),
+        ).otherwise(F.col("InvestmentID")),
     )
 
     # Anchor level (HLevel=2)
-    anchor = (
-        anchor_entity
-        .join(entity_rel, anchor_entity["_join_entity"] == entity_rel["UpperTierEntityID"], "inner")
-        .select(
-            entity_rel["LowerTierEntityID"],
-            entity_rel["UpperTierEntityID"].alias("ParentEntityID"),
-            entity_rel["UpperTierEntityID"].alias("CurrentEntityId"),
-            F.lit(2).alias("HLevel"),
-            anchor_entity["AllocationTypeId"],
-            # TrackingKey: '~' + CASE logic
-            F.concat(
-                F.lit("~"),
+    anchor = anchor_entity.join(
+        entity_rel, anchor_entity["_join_entity"] == entity_rel["UpperTierEntityID"], "inner"
+    ).select(
+        entity_rel["LowerTierEntityID"],
+        entity_rel["UpperTierEntityID"].alias("ParentEntityID"),
+        entity_rel["UpperTierEntityID"].alias("CurrentEntityId"),
+        F.lit(2).alias("HLevel"),
+        anchor_entity["AllocationTypeId"],
+        # TrackingKey: '~' + CASE logic
+        F.concat(
+            F.lit("~"),
+            F.when(
+                F.lower(anchor_entity["EntityUnderlyingtype"]) == "asset class",
+                F.concat(entity_rel["LowerTierEntityID"].cast("string"), F.lit("~")),
+            ).otherwise(
                 F.when(
-                    F.lower(anchor_entity["EntityUnderlyingtype"]) == "asset class",
-                    F.concat(entity_rel["LowerTierEntityID"].cast("string"), F.lit("~")),
-                ).otherwise(
-                    F.when(
-                        ns(anchor_entity["TrackingKey"], F.lit("")) == "",
-                        F.concat(anchor_entity["InvestmentID"].cast("string"), F.lit("~")),
-                    ).otherwise(F.concat(anchor_entity["TrackingKey"], F.lit("~")))
-                ),
-            ).alias("TrackingKey"),
-            anchor_entity["InvestmentID"].alias("AssetClassId"),
-            entity_rel["LowerTierEntityID"].alias("ImmediateLowerTierEntityID"),
-        )
+                    ns(anchor_entity["TrackingKey"], F.lit("")) == "",
+                    F.concat(anchor_entity["InvestmentID"].cast("string"), F.lit("~")),
+                ).otherwise(F.concat(anchor_entity["TrackingKey"], F.lit("~")))
+            ),
+        ).alias("TrackingKey"),
+        anchor_entity["InvestmentID"].alias("AssetClassId"),
+        entity_rel["LowerTierEntityID"].alias("ImmediateLowerTierEntityID"),
     )
 
     # Iterative expansion (fixed depth — no take(1) round-trips).
@@ -492,23 +547,19 @@ def build_entity_hierarchy(
     MAX_DEPTH = 8
     for depth in range(MAX_DEPTH):
         er = entity_rel.alias(f"er_cte_{depth}")
-        next_level = (
-            current_level
-            .join(
-                er,
-                current_level["LowerTierEntityID"] == F.col(f"er_cte_{depth}.UpperTierEntityID"),
-                "inner",
-            )
-            .select(
-                F.col(f"er_cte_{depth}.LowerTierEntityID").alias("LowerTierEntityID"),
-                F.col(f"er_cte_{depth}.UpperTierEntityID").alias("ParentEntityID"),
-                current_level["CurrentEntityId"],
-                (current_level["HLevel"] + 1).alias("HLevel"),
-                current_level["AllocationTypeId"],
-                current_level["TrackingKey"],
-                current_level["AssetClassId"],
-                current_level["ImmediateLowerTierEntityID"],
-            )
+        next_level = current_level.join(
+            er,
+            current_level["LowerTierEntityID"] == F.col(f"er_cte_{depth}.UpperTierEntityID"),
+            "inner",
+        ).select(
+            F.col(f"er_cte_{depth}.LowerTierEntityID").alias("LowerTierEntityID"),
+            F.col(f"er_cte_{depth}.UpperTierEntityID").alias("ParentEntityID"),
+            current_level["CurrentEntityId"],
+            (current_level["HLevel"] + 1).alias("HLevel"),
+            current_level["AllocationTypeId"],
+            current_level["TrackingKey"],
+            current_level["AssetClassId"],
+            current_level["ImmediateLowerTierEntityID"],
         )
         all_levels = all_levels.unionByName(next_level)
         current_level = next_level
@@ -519,7 +570,8 @@ def build_entity_hierarchy(
     # JOIN EntityHierarchy EH ON EH.CurrentEntityId = CASE WHEN ... END
     #   AND TC.AllocationTypeId=EH.AllocationTypeId AND TC.InvestmentID=EH.AssetClassId
     cte_result = (
-        all_levels.alias("EH")
+        all_levels
+        .alias("EH")
         .join(
             anchor_entity.alias("TC2"),
             (F.col("EH.CurrentEntityId") == F.col("TC2._join_entity"))
@@ -550,10 +602,13 @@ def build_entity_hierarchy(
             F.lit(1).alias("HLevel"),
             F.col("Underlyingtype"),
             F.col("AllocationTypeId"),
-            F.when(
+            F
+            .when(
                 ns(F.col("TrackingKey"), F.lit("")) == "",
                 F.concat(F.lit("~"), F.col("InvestmentID").cast("string"), F.lit("~")),
-            ).otherwise(F.col("TrackingKey")).alias("TrackingKey"),
+            )
+            .otherwise(F.col("TrackingKey"))
+            .alias("TrackingKey"),
             F.col("InvestmentID").alias("AssetClassId"),
             F.lit(0).alias("ImmediateLowerTierEntityID"),
         )
@@ -564,8 +619,7 @@ def build_entity_hierarchy(
     k1_self = (
         df_cost_pct_snapshot
         .filter(
-            (F.lower(F.col("EntityUnderlyingtype")) == "k-1 only")
-            & (F.col("InvestmentID") == -1)
+            (F.lower(F.col("EntityUnderlyingtype")) == "k-1 only") & (F.col("InvestmentID") == -1)
         )
         .select(
             F.lit(entity_id).alias("UnderlyingEntityId"),
@@ -581,38 +635,37 @@ def build_entity_hierarchy(
     )
 
     # ── UNION 4: Asset Class (from TempCostUnderlyingTypes) ──
-    asset_class_union = (
-        df_temp_cost_underlying_types
-        .filter(F.lower(F.col("EntityUnderlyingtype")) == "asset class")
-        .select(
-            F.col("EntityId").alias("UnderlyingEntityId"),
-            F.col("InvestmentID").alias("EntityId"),
-            F.lit(1).alias("HLevel"),
-            F.col("Underlyingtype"),
-            F.col("AllocationTypeId"),
-            F.concat(F.lit("~"), F.col("EntityId").cast("string"), F.lit("~")).alias("TrackingKey"),
-            F.col("InvestmentID").alias("AssetClassId"),
-            F.col("EntityId").alias("ImmediateLowerTierEntityID"),
-        )
+    asset_class_union = df_temp_cost_underlying_types.filter(
+        F.lower(F.col("EntityUnderlyingtype")) == "asset class"
+    ).select(
+        F.col("EntityId").alias("UnderlyingEntityId"),
+        F.col("InvestmentID").alias("EntityId"),
+        F.lit(1).alias("HLevel"),
+        F.col("Underlyingtype"),
+        F.col("AllocationTypeId"),
+        F.concat(F.lit("~"), F.col("EntityId").cast("string"), F.lit("~")).alias("TrackingKey"),
+        F.col("InvestmentID").alias("AssetClassId"),
+        F.col("EntityId").alias("ImmediateLowerTierEntityID"),
     )
 
     # ── UNION 5: Entity Total (from TempCostUnderlyingTypes) ──
-    entity_total_union = (
-        df_temp_cost_underlying_types
-        .filter(F.lower(F.col("EntityUnderlyingtype")) == "entity total")
-        .select(
-            F.col("InvestmentID").alias("UnderlyingEntityId"),
-            F.col("InvestmentID").alias("EntityId"),
-            F.lit(1).alias("HLevel"),
-            F.col("Underlyingtype"),
-            F.col("AllocationTypeId"),
-            F.when(
-                ns(F.col("TrackingKey"), F.lit("")) == "",
-                F.concat(F.lit("~"), F.col("InvestmentID").cast("string"), F.lit("~")),
-            ).otherwise(F.col("TrackingKey")).alias("TrackingKey"),
-            F.col("InvestmentID").alias("AssetClassId"),
-            F.lit(0).alias("ImmediateLowerTierEntityID"),
+    entity_total_union = df_temp_cost_underlying_types.filter(
+        F.lower(F.col("EntityUnderlyingtype")) == "entity total"
+    ).select(
+        F.col("InvestmentID").alias("UnderlyingEntityId"),
+        F.col("InvestmentID").alias("EntityId"),
+        F.lit(1).alias("HLevel"),
+        F.col("Underlyingtype"),
+        F.col("AllocationTypeId"),
+        F
+        .when(
+            ns(F.col("TrackingKey"), F.lit("")) == "",
+            F.concat(F.lit("~"), F.col("InvestmentID").cast("string"), F.lit("~")),
         )
+        .otherwise(F.col("TrackingKey"))
+        .alias("TrackingKey"),
+        F.col("InvestmentID").alias("AssetClassId"),
+        F.lit(0).alias("ImmediateLowerTierEntityID"),
     )
 
     # ── Final assembly ──
@@ -667,7 +720,7 @@ def _build_asset_class_relationship(spark: SparkSession, cfg: dict) -> DataFrame
     basis_entities = basis_override.select("LowerTierEntityID").distinct()
 
     # Step 2: Check if Asset Class Override Import is enabled (pre-resolved cfg flag).
-    ac_override_enabled = (cfg.get("flag_asset_class_override_import") == "C")
+    ac_override_enabled = cfg.get("flag_asset_class_override_import") == "C"
 
     if ac_override_enabled:
         # Get AssetClassOverride EventTypeID from cfg.
@@ -679,10 +732,7 @@ def _build_asset_class_relationship(spark: SparkSession, cfg: dict) -> DataFrame
             # @UseEntityID = 1 → LEFT JOIN with VW_Entity to validate entity exists
             entity_valid = (
                 cfg["_df_entity"]
-                .filter(
-                    (F.col("ClientID") == client_id)
-                    & (F.col("TaxPeriodID") == tax_period_id)
-                )
+                .filter((F.col("ClientID") == client_id) & (F.col("TaxPeriodID") == tax_period_id))
                 .select(F.col("EntityID").alias("_ve_EntityID"))
             )
             latest_tx = (
@@ -713,26 +763,28 @@ def _build_asset_class_relationship(spark: SparkSession, cfg: dict) -> DataFrame
                     )
                     .select(
                         F.col("UnderlyingID").alias("LowerTierEntityID"),
-                        F.when(
-                            F.coalesce(F.col("OverrideAssetClassID").cast("string"), F.lit("")) != "",
+                        F
+                        .when(
+                            F.coalesce(F.col("OverrideAssetClassID").cast("string"), F.lit(""))
+                            != "",
                             F.col("OverrideAssetClassID").cast("int"),
-                        ).otherwise(
+                        )
+                        .otherwise(
                             F.when(
                                 F.coalesce(F.col("E.AssetClassID").cast("string"), F.lit("")) != "",
                                 F.col("E.AssetClassID"),
                             ).otherwise(F.lit(-1))
-                        ).alias("AssetClassID"),
+                        )
+                        .alias("AssetClassID"),
                         F.col("TrackingKey"),
                     )
                     .join(basis_entities, "LowerTierEntityID", "left_anti")
                 )
 
                 # Combine: BasisOverride (no TrackingKey) + AssetClassOverride (with TrackingKey)
-                result = (
-                    basis_override
-                    .withColumn("TrackingKey", F.lit(None).cast("string"))
-                    .unionByName(ac_override)
-                )
+                result = basis_override.withColumn(
+                    "TrackingKey", F.lit(None).cast("string")
+                ).unionByName(ac_override)
                 return result
 
     # No override or override not enabled — just return BasisOverride rows
@@ -745,7 +797,8 @@ def _build_asset_class_relationship(spark: SparkSession, cfg: dict) -> DataFrame
 # Row count: LEGITIMATELY-EMPTY
 # ---------------------------------------------------------------------------
 def filter_asset_class(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_all_underlyings: DataFrame,
     df_asset_class_rel: DataFrame,
 ) -> DataFrame:
@@ -774,14 +827,14 @@ def filter_asset_class(
     entity_id = cfg["entity_id"]
 
     enu_ut = F.broadcast(
-        read_table(spark, "Enu_Underlyingtype", cfg)
-        .select(F.col("UnderlyingTypeID"), F.lower(F.col("UnderlyingType")).alias("ut_lower"))
+        read_table(spark, "Enu_Underlyingtype", cfg).select(
+            F.col("UnderlyingTypeID"), F.lower(F.col("UnderlyingType")).alias("ut_lower")
+        )
     )
 
     # Tag each row with underlying type name
-    df = (
-        df_all_underlyings.alias("AI")
-        .join(enu_ut, F.col("AI.Underlyingtype") == enu_ut["UnderlyingTypeID"], "left")
+    df = df_all_underlyings.alias("AI").join(
+        enu_ut, F.col("AI.Underlyingtype") == enu_ut["UnderlyingTypeID"], "left"
     )
 
     # Separate Asset Class rows from non-Asset-Class rows
@@ -808,18 +861,27 @@ def filter_asset_class(
         # Match for NULL TrackingKey
         match_null = (
             ac_rows
-            .join(ear_null_tk, F.col("AI.UnderlyingEntityId") == ear_null_tk["LowerTierEntityID"], "inner")
+            .join(
+                ear_null_tk,
+                F.col("AI.UnderlyingEntityId") == ear_null_tk["LowerTierEntityID"],
+                "inner",
+            )
             .join(entity_tbl, F.col("AI.UnderlyingEntityId") == entity_tbl["e_eid"], "inner")
             .filter(
                 F.when(
                     F.coalesce(ear_null_tk["AssetClassID"], F.lit(0)) == 0,
                     F.col("e_acid"),
-                ).otherwise(ear_null_tk["AssetClassID"]) == F.col("AI.AssetClassId")
+                ).otherwise(ear_null_tk["AssetClassID"])
+                == F.col("AI.AssetClassId")
             )
             .select(
-                F.col("AI.UnderlyingEntityId"), F.col("AI.EntityId"), F.col("AI.HLevel"),
-                F.col("AI.Underlyingtype"), F.col("AI.AllocationTypeId"),
-                F.col("AI.TrackingKey"), F.col("AI.AssetClassId"),
+                F.col("AI.UnderlyingEntityId"),
+                F.col("AI.EntityId"),
+                F.col("AI.HLevel"),
+                F.col("AI.Underlyingtype"),
+                F.col("AI.AllocationTypeId"),
+                F.col("AI.TrackingKey"),
+                F.col("AI.AssetClassId"),
                 F.col("AI.ImmediateLowerTierEntityID"),
             )
         )
@@ -830,8 +892,11 @@ def filter_asset_class(
             .join(
                 ear_nonnull_tk,
                 (F.col("AI.UnderlyingEntityId") == ear_nonnull_tk["LowerTierEntityID"])
-                & (F.concat(F.lit("~"), ear_nonnull_tk["TrackingKey"], F.lit("~"))
-                   .contains(F.col("AI.TrackingKey"))),
+                & (
+                    F.concat(F.lit("~"), ear_nonnull_tk["TrackingKey"], F.lit("~")).contains(
+                        F.col("AI.TrackingKey")
+                    )
+                ),
                 "inner",
             )
             .join(entity_tbl, F.col("AI.UnderlyingEntityId") == entity_tbl["e_eid"], "inner")
@@ -839,27 +904,36 @@ def filter_asset_class(
                 F.when(
                     F.coalesce(ear_nonnull_tk["AssetClassID"], F.lit(0)) == 0,
                     F.col("e_acid"),
-                ).otherwise(ear_nonnull_tk["AssetClassID"]) == F.col("AI.AssetClassId")
+                ).otherwise(ear_nonnull_tk["AssetClassID"])
+                == F.col("AI.AssetClassId")
             )
             .select(
-                F.col("AI.UnderlyingEntityId"), F.col("AI.EntityId"), F.col("AI.HLevel"),
-                F.col("AI.Underlyingtype"), F.col("AI.AllocationTypeId"),
-                F.col("AI.TrackingKey"), F.col("AI.AssetClassId"),
+                F.col("AI.UnderlyingEntityId"),
+                F.col("AI.EntityId"),
+                F.col("AI.HLevel"),
+                F.col("AI.Underlyingtype"),
+                F.col("AI.AllocationTypeId"),
+                F.col("AI.TrackingKey"),
+                F.col("AI.AssetClassId"),
                 F.col("AI.ImmediateLowerTierEntityID"),
             )
         )
 
         # Also match via Entity (fallback for unmatched)
-        match_vw = (
-            ac_rows
-            .join(vw_entity, (F.col("AI.UnderlyingEntityId") == vw_entity["vw_eid"])
-                  & (F.col("AI.AssetClassId") == vw_entity["vw_acid"]), "inner")
-            .select(
-                F.col("AI.UnderlyingEntityId"), F.col("AI.EntityId"), F.col("AI.HLevel"),
-                F.col("AI.Underlyingtype"), F.col("AI.AllocationTypeId"),
-                F.col("AI.TrackingKey"), F.col("AI.AssetClassId"),
-                F.col("AI.ImmediateLowerTierEntityID"),
-            )
+        match_vw = ac_rows.join(
+            vw_entity,
+            (F.col("AI.UnderlyingEntityId") == vw_entity["vw_eid"])
+            & (F.col("AI.AssetClassId") == vw_entity["vw_acid"]),
+            "inner",
+        ).select(
+            F.col("AI.UnderlyingEntityId"),
+            F.col("AI.EntityId"),
+            F.col("AI.HLevel"),
+            F.col("AI.Underlyingtype"),
+            F.col("AI.AllocationTypeId"),
+            F.col("AI.TrackingKey"),
+            F.col("AI.AssetClassId"),
+            F.col("AI.ImmediateLowerTierEntityID"),
         )
 
         # Combine all matching asset class rows
@@ -868,31 +942,45 @@ def filter_asset_class(
         # BUG-03 FIX: SQL uses IF EXISTS(SELECT TOP 1 1 FROM #EntityAssetClassRelationShip)
         # When EAR is empty, SQL skips the DELETE entirely — keeps ALL AC rows.
         # Only apply the filter when EAR has rows.
-        ear_has_rows = df_asset_class_rel.head(1) is not None and len(df_asset_class_rel.head(1)) > 0
+        ear_has_rows = (
+            df_asset_class_rel.head(1) is not None and len(df_asset_class_rel.head(1)) > 0
+        )
         if not ear_has_rows:
             # EAR empty → keep all AC rows (SQL: IF EXISTS fails → skip DELETE)
             ac_kept = ac_rows.select(
-                F.col("AI.UnderlyingEntityId"), F.col("AI.EntityId"), F.col("AI.HLevel"),
-                F.col("AI.Underlyingtype"), F.col("AI.AllocationTypeId"),
-                F.col("AI.TrackingKey"), F.col("AI.AssetClassId"),
+                F.col("AI.UnderlyingEntityId"),
+                F.col("AI.EntityId"),
+                F.col("AI.HLevel"),
+                F.col("AI.Underlyingtype"),
+                F.col("AI.AllocationTypeId"),
+                F.col("AI.TrackingKey"),
+                F.col("AI.AssetClassId"),
                 F.col("AI.ImmediateLowerTierEntityID"),
             )
         else:
             # EAR has rows → apply the matching filter (DELETE those NOT in matching)
             ac_kept = (
-                ac_rows.alias("AC2")
+                ac_rows
+                .alias("AC2")
                 .join(
                     matching_ac.alias("M"),
                     (F.col("AC2.UnderlyingEntityId") == F.col("M.UnderlyingEntityId"))
                     & (F.col("AC2.TrackingKey") == F.col("M.TrackingKey"))
                     & (F.col("AC2.AssetClassId") == F.col("M.AssetClassId"))
-                    & (F.col("AC2.ImmediateLowerTierEntityID") == F.col("M.ImmediateLowerTierEntityID")),
+                    & (
+                        F.col("AC2.ImmediateLowerTierEntityID")
+                        == F.col("M.ImmediateLowerTierEntityID")
+                    ),
                     "left_semi",
                 )
                 .select(
-                    F.col("AC2.UnderlyingEntityId"), F.col("AC2.EntityId"), F.col("AC2.HLevel"),
-                    F.col("AC2.Underlyingtype"), F.col("AC2.AllocationTypeId"),
-                    F.col("AC2.TrackingKey"), F.col("AC2.AssetClassId"),
+                    F.col("AC2.UnderlyingEntityId"),
+                    F.col("AC2.EntityId"),
+                    F.col("AC2.HLevel"),
+                    F.col("AC2.Underlyingtype"),
+                    F.col("AC2.AllocationTypeId"),
+                    F.col("AC2.TrackingKey"),
+                    F.col("AC2.AssetClassId"),
                     F.col("AC2.ImmediateLowerTierEntityID"),
                 )
             )
@@ -907,23 +995,31 @@ def filter_asset_class(
         )
 
         ac_kept = (
-            ac_rows.alias("AC3")
+            ac_rows
+            .alias("AC3")
             .join(
                 df_asset_class_rel.alias("EAR2"),
                 F.col("AC3.ImmediateLowerTierEntityID") == F.col("EAR2.LowerTierEntityID"),
                 "left",
             )
-            .join(vw_entity, F.col("AC3.ImmediateLowerTierEntityID") == vw_entity["vw_eid"], "inner")
+            .join(
+                vw_entity, F.col("AC3.ImmediateLowerTierEntityID") == vw_entity["vw_eid"], "inner"
+            )
             .filter(
                 F.when(
                     F.coalesce(F.col("EAR2.AssetClassID"), F.lit(0)) == 0,
                     F.col("vw_acid"),
-                ).otherwise(F.col("EAR2.AssetClassID")) == F.col("AC3.AssetClassId")
+                ).otherwise(F.col("EAR2.AssetClassID"))
+                == F.col("AC3.AssetClassId")
             )
             .select(
-                F.col("AC3.UnderlyingEntityId"), F.col("AC3.EntityId"), F.col("AC3.HLevel"),
-                F.col("AC3.Underlyingtype"), F.col("AC3.AllocationTypeId"),
-                F.col("AC3.TrackingKey"), F.col("AC3.AssetClassId"),
+                F.col("AC3.UnderlyingEntityId"),
+                F.col("AC3.EntityId"),
+                F.col("AC3.HLevel"),
+                F.col("AC3.Underlyingtype"),
+                F.col("AC3.AllocationTypeId"),
+                F.col("AC3.TrackingKey"),
+                F.col("AC3.AssetClassId"),
                 F.col("AC3.ImmediateLowerTierEntityID"),
             )
         )
@@ -953,7 +1049,8 @@ def filter_asset_class(
 # Row count: POSSIBLY-EMPTY
 # ---------------------------------------------------------------------------
 def build_underlyings_footnotes_ordered(
-    spark: SparkSession, cfg: dict,
+    spark: SparkSession,
+    cfg: dict,
     df_all_underlyings: DataFrame,
     df_alloc_input: DataFrame,
 ) -> DataFrame:
@@ -991,7 +1088,8 @@ def build_underlyings_footnotes_ordered(
     valid_tids = [t for t in [dar_tid, global_dar_tid] if t is not None]
     if not valid_tids:
         logger.warning("[SKIP] No DAR transaction IDs — underlyings footnotes will be empty")
-        from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+        from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
         schema = StructType([
             StructField("Underlyingtype", IntegerType()),
             StructField("UnderlyingEntityId", IntegerType()),
@@ -1009,8 +1107,7 @@ def build_underlyings_footnotes_ordered(
 
     # ── Load reference tables (all broadcast — small lookup tables, cached) ──
     enu_ut = F.broadcast(
-        read_table(spark, "Enu_Underlyingtype", cfg)
-        .select(
+        read_table(spark, "Enu_Underlyingtype", cfg).select(
             F.col("UnderlyingTypeID").alias("ut_id"),
             F.lower(F.col("UnderlyingType")).alias("ut_lower"),
             F.col("DisplayOrder").alias("ut_display_order"),
@@ -1030,8 +1127,9 @@ def build_underlyings_footnotes_ordered(
     )
 
     enu_rule = F.broadcast(
-        read_table(spark, "ENU_RuleType", cfg)
-        .select(F.col("RuleTypeID"), F.col("DisplayOrder").alias("rule_display_order"))
+        read_table(spark, "ENU_RuleType", cfg).select(
+            F.col("RuleTypeID"), F.col("DisplayOrder").alias("rule_display_order")
+        )
     )
 
     # ── Build main ordered set ──
@@ -1060,51 +1158,42 @@ def build_underlyings_footnotes_ordered(
     )
 
     # Join AI → TempAllocationInput on EntityID = UnderlyingEntityId + TrackingKey logic
-    ai_li = (
-        ai_typed
-        .join(
-            li,
-            (F.col("L.EntityID") == F.col("AI.UnderlyingEntityId"))
-            & (
-                bypass_cond
-                | F.concat(F.lit("~"), F.col("L.TrackingKey"), F.lit("~"))
-                .contains(F.col("AI.TrackingKey"))
-            ),
-            "inner",
-        )
+    ai_li = ai_typed.join(
+        li,
+        (F.col("L.EntityID") == F.col("AI.UnderlyingEntityId"))
+        & (
+            bypass_cond
+            | F.concat(F.lit("~"), F.col("L.TrackingKey"), F.lit("~")).contains(
+                F.col("AI.TrackingKey")
+            )
+        ),
+        "inner",
     )
 
     # Join → MapDefaultAllocRuleToLineItem
     # ON CASE WHEN M.SelectedMappingID=-1 THEN 1 ELSE L.LineID END
     #  = CASE WHEN M.SelectedMappingID=-1 THEN 1 ELSE M.SelectedMappingID END
     # AND M.RuleID=AI.AllocationTypeId AND M.SourceID=L.LineTypeID
-    ai_li_m = (
-        ai_li
-        .join(
-            map_dar.alias("M"),
-            (F.col("M.RuleID") == F.col("AI.AllocationTypeId"))
-            & (F.col("M.SourceID") == F.col("L.LineTypeID"))
-            & (
-                F.when(F.col("M.SelectedMappingID") == -1, F.lit(1))
-                .otherwise(F.col("L.LineID"))
-                ==
-                F.when(F.col("M.SelectedMappingID") == -1, F.lit(1))
-                .otherwise(F.col("M.SelectedMappingID"))
-            ),
-            "inner",
-        )
+    ai_li_m = ai_li.join(
+        map_dar.alias("M"),
+        (F.col("M.RuleID") == F.col("AI.AllocationTypeId"))
+        & (F.col("M.SourceID") == F.col("L.LineTypeID"))
+        & (
+            F.when(F.col("M.SelectedMappingID") == -1, F.lit(1)).otherwise(F.col("L.LineID"))
+            == F.when(F.col("M.SelectedMappingID") == -1, F.lit(1)).otherwise(
+                F.col("M.SelectedMappingID")
+            )
+        ),
+        "inner",
     )
 
     # Join → DefaultAllocationRuleSetup
     # ON D.RuleID=AI.AllocationTypeId AND AI.Underlyingtype=D.UnderlyingTypeID
-    ai_li_m_d = (
-        ai_li_m
-        .join(
-            dar_setup.alias("D"),
-            (F.col("D.RuleID") == F.col("AI.AllocationTypeId"))
-            & (F.col("AI.Underlyingtype") == F.col("D.UnderlyingTypeID")),
-            "inner",
-        )
+    ai_li_m_d = ai_li_m.join(
+        dar_setup.alias("D"),
+        (F.col("D.RuleID") == F.col("AI.AllocationTypeId"))
+        & (F.col("AI.Underlyingtype") == F.col("D.UnderlyingTypeID")),
+        "inner",
     )
 
     # Join → ENU_RuleType
@@ -1112,8 +1201,10 @@ def build_underlyings_footnotes_ordered(
 
     # ROW_NUMBER
     w = Window.partitionBy(
-        F.col("AI.UnderlyingEntityId"), F.col("L.TrackingKey"),
-        F.col("L.LineID"), F.col("L.LineTypeID"),
+        F.col("AI.UnderlyingEntityId"),
+        F.col("L.TrackingKey"),
+        F.col("L.LineID"),
+        F.col("L.LineTypeID"),
     ).orderBy(
         F.col("AI.HLevel").asc(),
         F.col("rule_display_order").desc(),
@@ -1121,21 +1212,17 @@ def build_underlyings_footnotes_ordered(
         F.col("M.SelectedMappingID").desc(),
     )
 
-    ordered = (
-        ai_full
-        .withColumn("RankForUnderlyingPickup", F.row_number().over(w))
-        .select(
-            F.col("AI.Underlyingtype"),
-            F.col("AI.UnderlyingEntityId"),
-            F.col("AI.EntityId"),
-            F.col("L.TrackingKey"),
-            F.col("AI.TrackingKey").alias("TrackingMatch"),
-            F.col("AI.AllocationTypeId"),
-            F.col("L.LineID"),
-            F.col("M.ExcludeFromTransfers"),
-            F.col("RankForUnderlyingPickup"),
-            F.col("L.LineTypeID").alias("LineTypeId"),
-        )
+    ordered = ai_full.withColumn("RankForUnderlyingPickup", F.row_number().over(w)).select(
+        F.col("AI.Underlyingtype"),
+        F.col("AI.UnderlyingEntityId"),
+        F.col("AI.EntityId"),
+        F.col("L.TrackingKey"),
+        F.col("AI.TrackingKey").alias("TrackingMatch"),
+        F.col("AI.AllocationTypeId"),
+        F.col("L.LineID"),
+        F.col("M.ExcludeFromTransfers"),
+        F.col("RankForUnderlyingPickup"),
+        F.col("L.LineTypeID").alias("LineTypeId"),
     )
 
     # ── At Risk fallback INSERT ──
@@ -1151,8 +1238,9 @@ def build_underlyings_footnotes_ordered(
             (F.col("L.EntityID") == F.col("AI.UnderlyingEntityId"))
             & (
                 bypass_cond
-                | F.concat(F.lit("~"), F.col("L.TrackingKey"), F.lit("~"))
-                .contains(F.col("AI.TrackingKey"))
+                | F.concat(F.lit("~"), F.col("L.TrackingKey"), F.lit("~")).contains(
+                    F.col("AI.TrackingKey")
+                )
             ),
             "inner",
         )
@@ -1161,11 +1249,10 @@ def build_underlyings_footnotes_ordered(
             (F.col("M2.RuleID") == F.col("AI.AllocationTypeId"))
             & (F.col("M2.SourceID") == k1_lt)
             & (
-                F.when(F.col("M2.SelectedMappingID") == -1, F.lit(1))
-                .otherwise(F.col("L.LineID"))
-                ==
-                F.when(F.col("M2.SelectedMappingID") == -1, F.lit(1))
-                .otherwise(F.col("M2.SelectedMappingID"))
+                F.when(F.col("M2.SelectedMappingID") == -1, F.lit(1)).otherwise(F.col("L.LineID"))
+                == F.when(F.col("M2.SelectedMappingID") == -1, F.lit(1)).otherwise(
+                    F.col("M2.SelectedMappingID")
+                )
             ),
             "inner",
         )
@@ -1179,21 +1266,20 @@ def build_underlyings_footnotes_ordered(
     )
 
     # Anti-join: exclude lines already in ordered set with At Risk line type
-    at_risk_new = (
-        at_risk_joined
-        .join(
-            ordered.filter(F.col("LineTypeId") == at_risk_lt).alias("TFO"),
-            (F.col("AI.UnderlyingEntityId") == F.col("TFO.UnderlyingEntityId"))
-            & (F.col("AI.EntityId") == F.col("TFO.EntityId"))
-            & (F.col("L.LineID") == F.col("TFO.LineID"))
-            & (F.col("L.LineTypeID") == F.col("TFO.LineTypeId")),
-            "left_anti",
-        )
+    at_risk_new = at_risk_joined.join(
+        ordered.filter(F.col("LineTypeId") == at_risk_lt).alias("TFO"),
+        (F.col("AI.UnderlyingEntityId") == F.col("TFO.UnderlyingEntityId"))
+        & (F.col("AI.EntityId") == F.col("TFO.EntityId"))
+        & (F.col("L.LineID") == F.col("TFO.LineID"))
+        & (F.col("L.LineTypeID") == F.col("TFO.LineTypeId")),
+        "left_anti",
     )
 
     w2 = Window.partitionBy(
-        F.col("AI.UnderlyingEntityId"), F.col("L.TrackingKey"),
-        F.col("L.LineID"), F.col("L.LineTypeID"),
+        F.col("AI.UnderlyingEntityId"),
+        F.col("L.TrackingKey"),
+        F.col("L.LineID"),
+        F.col("L.LineTypeID"),
     ).orderBy(
         F.col("AI.HLevel").asc(),
         F.col("R2.rule_display_order").desc(),
@@ -1201,21 +1287,19 @@ def build_underlyings_footnotes_ordered(
         F.col("M2.SelectedMappingID").desc(),
     )
 
-    at_risk_ordered = (
-        at_risk_new
-        .withColumn("RankForUnderlyingPickup", F.row_number().over(w2))
-        .select(
-            F.col("AI.Underlyingtype"),
-            F.col("AI.UnderlyingEntityId"),
-            F.col("AI.EntityId"),
-            F.col("L.TrackingKey"),
-            F.col("AI.TrackingKey").alias("TrackingMatch"),
-            F.col("AI.AllocationTypeId"),
-            F.col("L.LineID"),
-            F.col("M2.ExcludeFromTransfers"),
-            F.col("RankForUnderlyingPickup"),
-            F.col("L.LineTypeID").alias("LineTypeId"),
-        )
+    at_risk_ordered = at_risk_new.withColumn(
+        "RankForUnderlyingPickup", F.row_number().over(w2)
+    ).select(
+        F.col("AI.Underlyingtype"),
+        F.col("AI.UnderlyingEntityId"),
+        F.col("AI.EntityId"),
+        F.col("L.TrackingKey"),
+        F.col("AI.TrackingKey").alias("TrackingMatch"),
+        F.col("AI.AllocationTypeId"),
+        F.col("L.LineID"),
+        F.col("M2.ExcludeFromTransfers"),
+        F.col("RankForUnderlyingPickup"),
+        F.col("L.LineTypeID").alias("LineTypeId"),
     )
 
     # ── Combine and filter to Rank=1 ──
