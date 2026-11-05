@@ -1645,24 +1645,31 @@ def run_modes(
                 # materialize dated-after-min-quarter and min-quarter data
                 # concurrently before effective calculation.
                 cfg["_current_mode"] = 0
+                dated_post_checkpointed = fused_dated_post
                 _, fused_cost_pct_min_quarter, fused_dated_post = compute_minimum_quarter(
                     spark, cfg, fused_final_cost_pct, fused_dated_post,
                 )
+                # The PE Book dated branch returns dated entities unchanged;
+                # re-checkpointing de_post_miss_fused would be a no-op.
+                minq_tasks = []
+                if fused_dated_post is not dated_post_checkpointed:
+                    minq_tasks.append(
+                        (
+                            "dated_after_min_quarter",
+                            _checkpoint,
+                            (
+                                spark,
+                                fused_dated_post,
+                                "de_post_minq_fused",
+                                cfg,
+                            ),
+                            {},
+                        )
+                    )
                 minq = dict(
                     run_phase(
                         "effective_inputs",
-                        [
-                            (
-                                "dated_after_min_quarter",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_dated_post,
-                                    "de_post_minq_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
+                        minq_tasks + [
                             (
                                 "minimum_quarter",
                                 _checkpoint,
@@ -1679,7 +1686,7 @@ def run_modes(
                         enabled_groups,
                     )
                 )
-                fused_dated_post = minq["dated_after_min_quarter"]
+                fused_dated_post = minq.get("dated_after_min_quarter", fused_dated_post)
                 fused_cost_pct_min_quarter = minq["minimum_quarter"]
 
             # --- Pass C: ONE fused call to effective_calc + plugging chain,
