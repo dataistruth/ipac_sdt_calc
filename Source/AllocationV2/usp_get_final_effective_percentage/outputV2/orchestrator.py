@@ -1100,10 +1100,41 @@ def run_modes(
             per_mode_data = {}    # mode -> input-prep dict (only for modes that survived fast-exit)
             mode_t0 = {}          # mode -> wall-clock start
 
+            def _pre_cpbt_boundaries(mode, local_cfg, non_dated, dated):
+                """Checkpoint dated / non-dated entities in parallel for one mode."""
+                _ckpt_t0 = time.time()
+                boundary = dict(
+                    run_phase(
+                        "mode_prep_boundaries",
+                        [
+                            (
+                                f"non_dated_m{mode}",
+                                _checkpoint,
+                                (spark, non_dated, f"nde_pre_cpbt_m{mode}", local_cfg),
+                                {},
+                            ),
+                            (
+                                f"dated_m{mode}",
+                                _checkpoint,
+                                (spark, dated, f"de_pre_cpbt_m{mode}", local_cfg),
+                                {},
+                            ),
+                        ],
+                        workers,
+                        enabled_groups,
+                    )
+                )
+                logger.info(
+                    f"[TIMING] pre_cpbt_checkpoints_m{mode}: "
+                    f"{time.time() - _ckpt_t0:.1f}s"
+                )
+                return boundary[f"non_dated_m{mode}"], boundary[f"dated_m{mode}"]
+
             # -- Pass A: concurrent per-mode input prep (locked 54s path) --
             def _prep_one_mode(mode):
-                """Build mode-specific prep frames; leave pre-CPBT barriers for
-                the next parallel wave so nde/de/txfr can overlap."""
+                """Build mode-specific prep frames and run that mode's pre-CPBT
+                barriers in the same thread, so a fast mode does not wait on a
+                slow one before checkpointing."""
                 mt0 = time.time()
                 local_cfg = isolated_cfg(cfg, fresh_results=False)
                 local_cfg["mode"] = mode
@@ -1315,6 +1346,11 @@ def run_modes(
 
                     is_footnote_path = mode == 2
                     is_state_path = _sm_has_data
+                    needs_pre_cpbt = is_footnote_path or is_state_path
+                    if needs_pre_cpbt:
+                        mode_non_dated, mode_dated = _pre_cpbt_boundaries(
+                            mode, local_cfg, mode_non_dated, mode_dated
+                        )
                     return {
                         "mode": mode,
                         "mt0": mt0,
@@ -1329,9 +1365,6 @@ def run_modes(
                             "transfers_adj": None,
                             "input_lines": mode_input_lines,
                             "final_amounts": mode_final_amounts,
-                            "needs_pre_cpbt": (
-                                is_footnote_path or is_state_path
-                            ),
                             "local_cfg": local_cfg,
                         },
                     }
@@ -1355,7 +1388,6 @@ def run_modes(
                 )
             )
 
-            # Pre-CPBT barriers: dated / non-dated overlap per mode.
             for mode in modes_123:
                 prep = prep_by_mode[f"mode_{mode}"]
                 mode_t0[mode] = prep["mt0"]
@@ -1364,63 +1396,13 @@ def run_modes(
                     continue
 
                 d = prep["data"]
-                local_cfg = d["local_cfg"]
-                mode_non_dated = d["non_dated_entities"]
-                mode_dated = d["dated_entities"]
-
-                boundary_tasks = []
-                if d["needs_pre_cpbt"]:
-                    boundary_tasks.append(
-                        (
-                            f"non_dated_m{mode}",
-                            _checkpoint,
-                            (
-                                spark,
-                                mode_non_dated,
-                                f"nde_pre_cpbt_m{mode}",
-                                local_cfg,
-                            ),
-                            {},
-                        )
-                    )
-                    boundary_tasks.append(
-                        (
-                            f"dated_m{mode}",
-                            _checkpoint,
-                            (
-                                spark,
-                                mode_dated,
-                                f"de_pre_cpbt_m{mode}",
-                                local_cfg,
-                            ),
-                            {},
-                        )
-                    )
-
-                if d["needs_pre_cpbt"]:
-                    _ckpt_t0 = time.time()
-                    boundary = dict(
-                        run_phase(
-                            "mode_prep_boundaries",
-                            boundary_tasks,
-                            workers,
-                            enabled_groups,
-                        )
-                    )
-                    mode_non_dated = boundary[f"non_dated_m{mode}"]
-                    mode_dated = boundary[f"dated_m{mode}"]
-                    logger.info(
-                        f"[TIMING] pre_cpbt_checkpoints_m{mode}: "
-                        f"{time.time() - _ckpt_t0:.1f}s"
-                    )
-
                 per_mode_data[mode] = {
                     "temp_cost_pct": d["temp_cost_pct"],
                     "all_underlyings": d["all_underlyings"],
                     "entity_input_lines": d["entity_input_lines"],
                     "entity_underlyings": None,
-                    "non_dated_entities": mode_non_dated,
-                    "dated_entities": mode_dated,
+                    "non_dated_entities": d["non_dated_entities"],
+                    "dated_entities": d["dated_entities"],
                     "transfers_adj": None,
                     "input_lines": d["input_lines"],
                     "final_amounts": d["final_amounts"],
