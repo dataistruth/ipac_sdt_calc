@@ -71,6 +71,7 @@ import time
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import read_table, ns, ns0
 from Common_V2.core.checkpoint import (
+    DELTA_CHECKPOINT_MODE,
     checkpoint as common_checkpoint,
     drop_checkpoints,
 )
@@ -143,6 +144,7 @@ from AllocationV2.usp_get_final_effective_percentage.outputV2.state_allocation i
 )
 from AllocationV2.usp_get_final_effective_percentage.outputV2.cost_pct_loader import (
     build_entity_underlyings,
+    warn_if_entity_underlyings_empty,
     load_transfers_adj_cost,
     build_cost_percentage_by_type,
     compute_missing_entities,
@@ -397,11 +399,16 @@ def _apply_promoted_flags(cfg):
     return cfg
 
 
-def _checkpoint(spark, df, name, cfg):
+def _checkpoint(spark, df, name, cfg, durable=False):
+    """``durable=True`` forces Delta: frames read by several mode threads must
+    survive executor loss, which a localCheckpoint block does not."""
     from .plan_profiler import track_checkpoint_plan, track_checkpoint_result
 
     track_checkpoint_plan(name, df, cfg)
-    result = common_checkpoint(spark, df, f"fep_{name}", cfg)
+    result = common_checkpoint(
+        spark, df, f"fep_{name}", cfg,
+        checkpoint_mode=DELTA_CHECKPOINT_MODE if durable else None,
+    )
     track_checkpoint_result(name, result, cfg)
     return result
 
@@ -672,13 +679,17 @@ def run_modes(
                 cfg["has_704c_mappings"] = False
 
             cost_pct_snapshot_123 = _checkpoint(
-                spark, cost_pct_snapshot_123, "cost_pct_m123", cfg,
+                spark, cost_pct_snapshot_123, "cost_pct_m123", cfg, durable=True,
             )
+            if cost_pct_snapshot_123.isEmpty():
+                logger.warning("build_cost_percentage_snapshot_modes123 produced 0 rows")
         if has_mode4:
             cost_pct_snapshot_4 = build_cost_percentage_snapshot_mode4(spark, cfg)
             cost_pct_snapshot_4 = _checkpoint(
                 spark, cost_pct_snapshot_4, "cost_pct_m4", cfg,
             )
+            if cost_pct_snapshot_4.isEmpty():
+                logger.warning("build_cost_percentage_snapshot_mode4 produced 0 rows")
 
         # --- Common Phase: Entity hierarchy (mode-independent) ---
         entity_partners = build_entity_partners(spark, cfg)
@@ -729,7 +740,7 @@ def run_modes(
         )
         underlyings_ordered = build_underlyings_hlevel_ordered(underlyings_filtered)
         underlyings_ordered = _checkpoint(
-            spark, underlyings_ordered, "uc_ordered_common", cfg,
+            spark, underlyings_ordered, "uc_ordered_common", cfg, durable=True,
         )
 
         # --- Common Phase: LT input, footnote lines, book effective enrichment ---
@@ -825,13 +836,19 @@ def run_modes(
                 spark, cfg, common_underlying_mod, lt_in, book_effective,
                 entity_alloc_rule, dar_setup, map_dar, cost_pct_snapshot_123,
             )
-            all_und = _checkpoint(spark, all_und, f"all_und_common_{label}", cfg)
+            # The no-lt chain is shared by the mode 2 and mode 3 prep threads.
+            shared = label == "nolt"
+            all_und = _checkpoint(
+                spark, all_und, f"all_und_common_{label}", cfg, durable=shared,
+            )
 
             in_lines, _, _ = build_input_lines(
                 spark, cfg, lt_in, line_items, book_effective,
                 entity_alloc_rule, all_und,
             )
-            in_lines = _checkpoint(spark, in_lines, f"input_lines_{label}", cfg)
+            in_lines = _checkpoint(
+                spark, in_lines, f"input_lines_{label}", cfg, durable=shared,
+            )
 
             fin_amts, all_und = compute_amount_based_allocation(
                 spark, cfg, all_und, cost_pct_snapshot_123, lt_in, map_dar,
@@ -867,6 +884,7 @@ def run_modes(
                 common_temp_cost_pct_base = common_temp_cost_pct_base.unionByName(_yearly_cost_rows)
                 common_temp_cost_pct_base = _checkpoint(
                     spark, common_temp_cost_pct_base, "tcp_with_yearly_common", cfg,
+                    durable=True,
                 )
 
             # underlying_mod (no equivalent named SP table -- inline join,
@@ -1004,6 +1022,7 @@ def run_modes(
                         spark, cfg, input_lines, underlyings_ordered, asset_class_rel,
                     )
                     entity_underlyings = _checkpoint(spark, entity_underlyings, "entity_und_m4", cfg)
+                    warn_if_entity_underlyings_empty(entity_underlyings, input_lines)
                     all_underlyings = _checkpoint(spark, all_underlyings, "all_und_final_m4", cfg)
 
                     transfers_adj = None  # mode 4 skips per SQL.
@@ -1429,6 +1448,10 @@ def run_modes(
                 )
                 fused_entity_underlyings = _checkpoint(
                     spark, fused_entity_underlyings, "entity_und_fused", cfg,
+                    durable=True,
+                )
+                warn_if_entity_underlyings_empty(
+                    fused_entity_underlyings, tagged_entity_input_lines
                 )
 
                 # Fused load_transfers_adj_cost — single call replaces the

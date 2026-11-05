@@ -15,6 +15,8 @@ import pyspark.sql.functions as F
 import logging
 import time
 
+from Common_V2.core.checkpoint import checkpoint
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,11 +28,9 @@ def _log_timing(name, start):
     logger.info(f"[TIMING] {name}: {time.time() - start:.1f}s")
 
 
-def _local_cp(df: DataFrame, name: str) -> DataFrame:
-    """Eager localCheckpoint used only by the outputV2 hierarchy path."""
-    logger.info(f"[CHECKPOINT] {name} (localCheckpoint)")
-    cp = df.localCheckpoint(eager=True)
-    return cp.toDF(*cp.columns)
+def _hierarchy_cp(spark: SparkSession, df: DataFrame, name: str, cfg: dict) -> DataFrame:
+    """Checkpoint per cfg["checkpoint_mode"]: local under ``small``, Delta under ``large``."""
+    return checkpoint(spark, df, f"fep_{name}", cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +252,9 @@ def build_entity_hierarchy(
         # One filtered relationship scan is reused by the seed and every
         # expansion pass. Broadcast it after the break so later joins do
         # not rescan EntityRelationship.
-        entity_rel = F.broadcast(_local_cp(entity_rel, "entity_rel_hierarchy"))
+        entity_rel = F.broadcast(
+            _hierarchy_cp(spark, entity_rel, "entity_rel_hierarchy", cfg)
+        )
 
     # Seed: SQL lines 2372-2392
     hierarchy = (
@@ -293,7 +295,7 @@ def build_entity_hierarchy(
         .distinct()
     )
     if materialize:
-        hierarchy = _local_cp(hierarchy, "entity_hierarchy_seed")
+        hierarchy = _hierarchy_cp(spark, hierarchy, "entity_hierarchy_seed", cfg)
 
     # Iterative expansion — exact equivalent of SQL WHILE (1=1) ... IF
     # @@ROWCOUNT = 0 BREAK at SQL lines 2402-2430. No depth cap (SQL has
@@ -348,8 +350,8 @@ def build_entity_hierarchy(
 
         hierarchy = hierarchy.unionByName(new_rows)
         if materialize:
-            hierarchy = _local_cp(
-                hierarchy, f"entity_hierarchy_d{depth + 1}"
+            hierarchy = _hierarchy_cp(
+                spark, hierarchy, f"entity_hierarchy_d{depth + 1}", cfg
             )
         depth += 1
         if depth % 50 == 0:

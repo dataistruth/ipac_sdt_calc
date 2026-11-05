@@ -280,9 +280,6 @@ def build_cost_percentage_snapshot_modes123(
         )
     )
 
-    if result.isEmpty():
-        logger.warning("build_cost_percentage_snapshot_modes123 produced 0 rows")
-
     _log_timing("build_cost_percentage_snapshot_modes123", t0)
     return result
 
@@ -934,9 +931,6 @@ def build_cost_percentage_snapshot_mode4(
             F.col("CP.GPPartnerReceivingCarry"),
         )
     )
-
-    if result.isEmpty():
-        logger.warning("build_cost_percentage_snapshot_mode4 produced 0 rows")
 
     _log_timing("build_cost_percentage_snapshot_mode4", t0)
     return result

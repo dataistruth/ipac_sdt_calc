@@ -153,6 +153,12 @@ def build_entity_underlyings(
             .distinct()
         )
 
+    _log_timing("build_entity_underlyings", t0)
+    return result
+
+
+def warn_if_entity_underlyings_empty(result: DataFrame, input_lines: DataFrame) -> None:
+    """Warning-only probe; call it on the checkpointed entity underlyings."""
     # Note: legitimate emptiness after Path A.
     # The orchestrator builds this chain twice in Common Phase 2 — once with
     # populated lt_input (mode 1) and once with empty lt_input (modes 2/3,
@@ -172,9 +178,6 @@ def build_entity_underlyings(
                 "build_entity_underlyings returned 0 rows but input_lines is "
                 "non-empty — investigate join with asset_class_rel / Entity."
             )
-
-    _log_timing("build_entity_underlyings", t0)
-    return result
 
 
 # ---------------------------------------------------------------------------
