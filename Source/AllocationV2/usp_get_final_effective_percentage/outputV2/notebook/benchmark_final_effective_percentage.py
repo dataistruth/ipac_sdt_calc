@@ -73,6 +73,8 @@ INPUT_TABLES = []
 # Overrides for the updated run's _PROMOTED_EXPERIMENT_DEFAULTS (bisecting a
 # mismatch), e.g. {"cpbt_priority_pick": False, "cpbt_parent_rank_first": False}.
 FLAG_OVERRIDES = {}
+# Extra kwargs for the updated run only, e.g. {"ParallelGroups": "none"}.
+UPDATED_EXTRA = {}
 DIFF_ROW_LIMIT = 50
 EXTRA = {
     "Mode": 0,
@@ -204,6 +206,9 @@ def call_variant(module_name, updated):
     )
     if updated:
         kwargs["ExecutionProfile"] = execution_profile
+        if UPDATED_EXTRA:
+            kwargs.update(UPDATED_EXTRA)
+            print(f"[benchmark] updated extra kwargs: {UPDATED_EXTRA}")
         if globals().get("profile_plan"):
             kwargs["profile_plan"] = True
             kwargs["ProfilePlan"] = True
