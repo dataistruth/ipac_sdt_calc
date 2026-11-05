@@ -70,6 +70,10 @@ TABLES = (
     ("SM_FinalEffectivePercentages", "RunID"),
 )
 INPUT_TABLES = []
+# Overrides for the updated run's _PROMOTED_EXPERIMENT_DEFAULTS (bisecting a
+# mismatch), e.g. {"cpbt_priority_pick": False, "cpbt_parent_rank_first": False}.
+FLAG_OVERRIDES = {}
+DIFF_ROW_LIMIT = 50
 EXTRA = {
     "Mode": 0,
     "ResultType": 'deltalake',
@@ -156,8 +160,38 @@ def reported_seconds(result):
         return None
 
 
+def capture_outputs():
+    """Driver-side copy of this run's output rows, so they survive purge_run."""
+    copies = {}
+    for table, run_col in TABLES:
+        df = spark.table(f"{catalog}.{schema}.{table}").filter(F.col(run_col) == run_id)
+        copies[table] = spark.createDataFrame(df.collect(), df.schema)
+    return copies
+
+
+def print_diff(table, orig_df, upd_df):
+    only_orig = orig_df.exceptAll(upd_df)
+    only_upd = upd_df.exceptAll(orig_df)
+    print(
+        f"[diff] table={table} only_original={only_orig.count()} "
+        f"only_updated={only_upd.count()}"
+    )
+    for label, df in (("only_original", only_orig), ("only_updated", only_upd)):
+        rows = df.limit(DIFF_ROW_LIMIT).collect()
+        if rows:
+            print(f"[diff] {table} {label} (first {len(rows)}):")
+            for row in rows:
+                print(f"    {row.asDict()}")
+
+
 def call_variant(module_name, updated):
     runner = load_runner(module_name)
+    if updated and FLAG_OVERRIDES:
+        unknown = set(FLAG_OVERRIDES) - set(runner._PROMOTED_EXPERIMENT_DEFAULTS)
+        if unknown:
+            raise KeyError(f"unknown FLAG_OVERRIDES keys: {sorted(unknown)}")
+        runner._PROMOTED_EXPERIMENT_DEFAULTS.update(FLAG_OVERRIDES)
+        print(f"[benchmark] updated flag overrides: {FLAG_OVERRIDES}")
     fn = getattr(runner, ENTRY)
     kwargs = dict(
         EntityID=entity_id,
@@ -195,6 +229,7 @@ for pass_no in range(1, number_of_runs + 1):
             f"[benchmark] original: wall={orig_wall} reported={orig_reported} "
             f"rows={orig_rows}"
         )
+        orig_copies = capture_outputs()
         reconcile.purge_run(spark, catalog, schema, TABLES, run_id)
         upd_result, upd_wall, upd_reported, upd_hash, upd_rows = call_variant(
             UPDATED, True
@@ -211,6 +246,10 @@ for pass_no in range(1, number_of_runs + 1):
             )
             parity_rows.append({"pass": pass_no, **row})
         if not ok:
+            upd_copies = capture_outputs()
+            for row in report:
+                if row["exact_match"] == "FAIL":
+                    print_diff(row["table"], orig_copies[row["table"]], upd_copies[row["table"]])
             failed = next(r["table"] for r in report if r["exact_match"] == "FAIL")
             raise RuntimeError(f"fingerprint mismatch on {failed}")
         print(f"[reconcile] PASS {pass_no}: all output fingerprints match")
