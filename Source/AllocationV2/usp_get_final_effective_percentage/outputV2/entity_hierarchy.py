@@ -252,12 +252,7 @@ def build_entity_hierarchy(
     )
     materialize = bool(cfg.get("_output_v3_hierarchy_materialize", False))
     if materialize:
-        # One filtered relationship scan is reused by the seed and every
-        # expansion pass. Broadcast it after the break so later joins do
-        # not rescan EntityRelationship.
-        entity_rel = F.broadcast(
-            _hierarchy_cp(spark, entity_rel, "entity_rel_hierarchy", cfg)
-        )
+        entity_rel = F.broadcast(entity_rel)
 
     # Seed: SQL lines 2372-2392
     hierarchy = (
@@ -297,8 +292,6 @@ def build_entity_hierarchy(
         )
         .distinct()
     )
-    if materialize:
-        hierarchy = _hierarchy_cp(spark, hierarchy, "entity_hierarchy_seed", cfg)
 
     # Iterative expansion — exact equivalent of SQL WHILE (1=1) ... IF
     # @@ROWCOUNT = 0 BREAK at SQL lines 2402-2430. No depth cap (SQL has
@@ -352,7 +345,9 @@ def build_entity_hierarchy(
             break
 
         hierarchy = hierarchy.unionByName(new_rows)
-        if materialize:
+        # Each pass reads the hierarchy twice, so the plan doubles per level;
+        # level 1 is still small enough to stay lazy.
+        if materialize and depth >= 1:
             hierarchy = _hierarchy_cp(
                 spark, hierarchy, f"entity_hierarchy_d{depth + 1}", cfg
             )

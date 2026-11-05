@@ -542,14 +542,6 @@ def compute_effective_percentage_dated(
     else:
         transfer_dates = None
 
-    # Checkpoint eff_pct_dated after transfer steps — Steps 3-7 reference
-    # eff_pct_dated repeatedly (groupBy, anti-joins, unions). Without this,
-    # each downstream use re-evaluates the full Steps 1-2 transfer lineage.
-    # Critical for entities with substantial transfer data (e.g. 5940).
-    if checkpoint_fn is not None:
-        mode_val = cfg.get("_current_mode", cfg.get("mode", 0))
-        eff_pct_dated = checkpoint_fn(spark, eff_pct_dated, f"eff_pct_dated_post_transfer", cfg)
-
     # ── Step 3: Pickup order selection ──
     # Phase 3a-2: include _mode in groupBy.
     pickup_order_dated = (
@@ -977,12 +969,6 @@ def compute_effective_percentage_dated(
             F.col("P._mode"),
         )
     )
-
-    # Checkpoint eff_pct_dated to break DAG lineage before yearly check
-    if checkpoint_fn is not None:
-        mode_val = cfg.get("_current_mode", cfg.get("mode", 0))
-        eff_pct_dated = checkpoint_fn(spark, eff_pct_dated, f"eff_dated_s6_m{mode_val}", cfg)
-        logger.info("[CHECKPOINT] eff_pct_dated after missing partners")
 
     # Check if yearly data exists — if not, validate error
     # SQL gate: IF NOT EXISTS(#TempYearly) AND @LocalIsPEModel = 0
