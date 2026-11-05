@@ -60,7 +60,8 @@ def _profile_rows(records, threshold, kind):
                 None if rec.get("reads") is None else int(rec["reads"]),
                 candidate,
                 recommendation,
-                _format_ops(rec.get("ops")),
+                ("passthrough · " if rec.get("passthrough") else "")
+                + _format_ops(rec.get("ops")),
             )
         )
     return rows

@@ -29,10 +29,16 @@ cp("E_consumer", f"Join Inner\n:- {A_leaf}\n+- Join Inner\n   :- LogicalRDD [a#2
 cp("F_consumer", f"Union\n:- {D_leaf}\n+- Project [x#9]\n   +- {D_leaf}", "LogicalRDD [f#31], false")
 cp("G_big_never_read", big, "LogicalRDD [g#32], false")
 P.track_checkpoint_plan("H_no_result_tracked", DF("Project [h]\n+- Scan z"), cfg)
+B2_leaf = "LogicalRDD [m#40], false"
+cp("B2_read_once", "Project [m]\n+- Filter m\n   +- Scan q", B2_leaf)
+cp("I_recheckpoint_of_B2", B2_leaf, "LogicalRDD [m#41], false")
+cp("J_empty_local", "LocalRelation <empty>, [k#50]", "LogicalRDD [k#51], false")
+cp("K_filtered_table", "Filter (x#60 > 0)\n+- Relation spark_catalog.qa7.s.src[x#60] parquet", "LogicalRDD [x#61], false")
 rows = P.plan_profile_report(ck, 30, label="CHECKPOINT")
 got = {r["func"]: (r.get("reads"), r["recommendation"]) for r in rows}
 exp = {"A_small_read_twice": (2, "keep"), "B_small_read_once": (1, "remove"), "D_delta_read_twice": (2, "keep"),
-       "E_consumer": (0, "measure"), "F_consumer": (0, "measure"), "G_big_never_read": (0, "keep"), "H_no_result_tracked": (None, "measure")}
+       "E_consumer": (0, "measure"), "F_consumer": (0, "remove"), "G_big_never_read": (0, "keep"), "H_no_result_tracked": (None, "measure"),
+       "B2_read_once": (1, "remove"), "I_recheckpoint_of_B2": (0, "remove"), "J_empty_local": (0, "remove"), "K_filtered_table": (0, "measure")}
 bad = 0
 for k, v in exp.items():
     ok = got[k] == v; bad += not ok

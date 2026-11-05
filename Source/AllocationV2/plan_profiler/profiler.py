@@ -390,6 +390,24 @@ _EXPR_ID = re.compile(r"#\d+L?")
 _LOCAL_LEAF = re.compile(r"LogicalRDD \[[^\]]*\]")
 _DELTA_LEAF = re.compile(r"_tmp_[A-Za-z0-9_]+")
 _CHECKPOINT_LEAVES: list = []
+_HEAVY_OPS = ("Join", "Aggregate", "Window", "Generate", "Sort", "Deduplicate", "Expand")
+
+
+def _is_passthrough(text: str | None) -> bool:
+    """True when the plan only re-reads checkpoints / empty relations.
+
+    Its leaves are all ``LogicalRDD`` / ``LocalRelation`` / ``_tmp_`` tables and
+    it has no join, aggregate or window, so checkpointing it saves nothing.
+    """
+    if not text:
+        return False
+    leaves = [ln for ln in text.splitlines() if any(m in ln for m in _SCAN_MARKERS)]
+    if not leaves:
+        return False
+    for line in leaves:
+        if not any(m in line for m in ("LogicalRDD", "LocalRelation", "_tmp_")):
+            return False
+    return not any(op in text for op in _HEAVY_OPS)
 
 
 def _clear_checkpoint_leaves() -> None:
@@ -636,7 +654,13 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
     try:
         metrics, text = _measure_with_text(df, cfg)
         if not metrics:
-            return
+            # A bare-leaf plan (re-checkpoint, empty LocalRelation) is not
+            # Catalyst-looking but must still be recorded and read-counted.
+            local = _local_connect_plan_text(df)
+            text = None if local and _looks_unresolved(local) else _server_explain_text(df)
+            metrics = _metrics_from_plan_text(text) if text else None
+            if not metrics:
+                return
         _count_reads(text)
         record = {
             "func": name,
@@ -645,6 +669,8 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
             "delta": metrics["nodes"],
             "ops": metrics["ops"],
         }
+        if _is_passthrough(text):
+            record["passthrough"] = True
         target = _sink_list("checkpoint", cfg)
         if target is not None:
             with _LOCK:
@@ -750,7 +776,8 @@ def classify_plan_recommendation(
       * measure  — mid-size, or reads unknown / only read by writes and
                    actions the profiler does not see
       * remove   — small and read exactly once; dropping it only folds the
-                   plan into that one consumer
+                   plan into that one consumer. Also any passthrough: the
+                   incoming plan only re-reads checkpoints / empty relations
 
     ACTION (where Spark materializes a plan):
       * add      — oversized plan or repeated action name
@@ -765,6 +792,8 @@ def classify_plan_recommendation(
             return "add"
         return "measure"
     if kind == "checkpoint":
+        if record.get("passthrough"):
+            return "remove"
         size = max(nodes, delta)
         reads = record.get("reads")
         if size >= limit or (reads is not None and int(reads) >= 2):
@@ -861,7 +890,8 @@ def plan_profile_report(
         )
         legend = (
             f"[PLAN REPORT{tag}] keep=nodes>={threshold} or reads>=2  "
-            f"measure=mid or reads unknown/0  remove=small and reads=1"
+            f"measure=mid or reads unknown/0  "
+            f"remove=small and reads=1, or passthrough (re-reads a checkpoint)"
         )
     else:
         header = (
@@ -897,6 +927,8 @@ def plan_profile_report(
         elif kind == "checkpoint":
             reads = rec.get("reads")
             action_detail = f"  reads={'?' if reads is None else reads}"
+            if rec.get("passthrough"):
+                action_detail += " passthrough"
         flag = f"  <-- {rec['recommendation']}"
         line = (
             f"  {rec['func']:<34} nodes={rec['nodes']:>4} depth={rec['depth']:>3} "
