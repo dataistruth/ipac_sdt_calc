@@ -97,6 +97,17 @@ sys.path[:] = [entry for entry in sys.path if entry != source_path]
 sys.path.insert(0, source_path)
 clear_modules(PACKAGE)
 importlib.import_module("Common_V2.core.checkpoint")
+
+# Print one line per checkpoint: "(local)" or the _tmp_ Delta table it wrote.
+import logging
+_ckpt_logger = logging.getLogger("Common_V2.core.checkpoint")
+_ckpt_logger.setLevel(logging.INFO)
+_ckpt_logger.propagate = False
+if not any(getattr(h, "_benchmark_ckpt", False) for h in _ckpt_logger.handlers):
+    _ckpt_handler = logging.StreamHandler(sys.stdout)
+    _ckpt_handler._benchmark_ckpt = True
+    _ckpt_logger.addHandler(_ckpt_handler)
+
 reconcile = importlib.import_module(f"{PACKAGE}.outputV2.output_reconcile")
 
 required = (
