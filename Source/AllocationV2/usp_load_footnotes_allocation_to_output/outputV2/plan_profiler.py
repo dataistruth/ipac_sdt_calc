@@ -135,7 +135,6 @@ try:
         start_plan_profile,
         track_action_plan,
         track_checkpoint_plan,
-        track_checkpoint_result,
         track_plan,
     )
 except Exception:
@@ -149,8 +148,12 @@ except Exception:
     start_plan_profile = _empty_start
     track_action_plan = _noop
     track_checkpoint_plan = _noop
-    track_checkpoint_result = _noop
     track_plan = _identity_track
+
+try:
+    from AllocationV2.plan_profiler import track_checkpoint_result
+except Exception:
+    track_checkpoint_result = _noop
 
 __all__ = [
     "LAST_PLAN_PROFILE",

@@ -49,6 +49,7 @@ from .profiler import (
     store_last_plan_profile,
     track_action_plan,
     track_checkpoint_plan,
+    track_checkpoint_result,
     track_plan,
 )
 
@@ -71,6 +72,7 @@ __all__ = [
     "start_action_profile",
     "finish_action_profile",
     "track_checkpoint_plan",
+    "track_checkpoint_result",
     "build_plan_profile_display",
     "build_combined_plan_profile_display",
 ]
