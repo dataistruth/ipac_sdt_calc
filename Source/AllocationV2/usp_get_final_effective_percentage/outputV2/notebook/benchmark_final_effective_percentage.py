@@ -76,6 +76,30 @@ FLAG_OVERRIDES = {}
 # Extra kwargs for the updated run only, e.g. {"ParallelGroups": "none"}.
 UPDATED_EXTRA = {}
 DIFF_ROW_LIMIT = 50
+# BISECT runs the original once, then every variant below against that same
+# baseline, and prints one parity line per variant instead of the benchmark.
+BISECT = False
+_STATE_FLAGS = {"collapse_state_passes": False, "batch_state_workflow_lookup": False}
+_FIX_AB_FLAGS = {"cpbt_priority_pick": False, "cpbt_parent_rank_first": False}
+_CPBT_FLAGS = {
+    **_FIX_AB_FLAGS,
+    "missing_entity_identity": False,
+    "compact_all_entities": False,
+    "cpbt_narrow_anti_keys": False,
+    "cpbt_transfer_prefilter": False,
+    "cpbt_drop_tracking_match": False,
+    "broadcast_cpbt_remaining": False,
+    "parallel_cpbt_post_tag": False,
+    "parallel_cpbt_validate": False,
+}
+BISECT_VARIANTS = [
+    ("default", {}, {}),
+    ("sequential", {}, {"ParallelGroups": "none"}),
+    ("no_fix_ab", _FIX_AB_FLAGS, {}),
+    ("no_state_flags", _STATE_FLAGS, {}),
+    ("no_cpbt_flags", _CPBT_FLAGS, {}),
+    ("all_off_sequential", {**_CPBT_FLAGS, **_STATE_FLAGS}, {"ParallelGroups": "none"}),
+]
 EXTRA = {
     "Mode": 0,
     "ResultType": 'deltalake',
@@ -186,14 +210,16 @@ def print_diff(table, orig_df, upd_df):
                 print(f"    {row.asDict()}")
 
 
-def call_variant(module_name, updated):
+def call_variant(module_name, updated, flags=None, extra=None):
+    flags = FLAG_OVERRIDES if flags is None else flags
+    extra = UPDATED_EXTRA if extra is None else extra
     runner = load_runner(module_name)
-    if updated and FLAG_OVERRIDES:
-        unknown = set(FLAG_OVERRIDES) - set(runner._PROMOTED_EXPERIMENT_DEFAULTS)
+    if updated and flags:
+        unknown = set(flags) - set(runner._PROMOTED_EXPERIMENT_DEFAULTS)
         if unknown:
-            raise KeyError(f"unknown FLAG_OVERRIDES keys: {sorted(unknown)}")
-        runner._PROMOTED_EXPERIMENT_DEFAULTS.update(FLAG_OVERRIDES)
-        print(f"[benchmark] updated flag overrides: {FLAG_OVERRIDES}")
+            raise KeyError(f"unknown flag override keys: {sorted(unknown)}")
+        runner._PROMOTED_EXPERIMENT_DEFAULTS.update(flags)
+        print(f"[benchmark] updated flag overrides: {flags}")
     fn = getattr(runner, ENTRY)
     kwargs = dict(
         EntityID=entity_id,
@@ -206,9 +232,9 @@ def call_variant(module_name, updated):
     )
     if updated:
         kwargs["ExecutionProfile"] = execution_profile
-        if UPDATED_EXTRA:
-            kwargs.update(UPDATED_EXTRA)
-            print(f"[benchmark] updated extra kwargs: {UPDATED_EXTRA}")
+        if extra:
+            kwargs.update(extra)
+            print(f"[benchmark] updated extra kwargs: {extra}")
         if globals().get("profile_plan"):
             kwargs["profile_plan"] = True
             kwargs["ProfilePlan"] = True
@@ -219,6 +245,42 @@ def call_variant(module_name, updated):
     rows = sum((row["rows"] or 0) for row in hashes.values() if row["present"])
     return result, wall, reported_seconds(result), hashes, rows
 
+
+def run_bisect():
+    snaps = reconcile.snapshot_tables(spark, catalog, schema, TABLES, run_id)
+    summary = []
+    try:
+        reconcile.purge_run(spark, catalog, schema, TABLES, run_id)
+        _, orig_wall, _, orig_hash, orig_rows = call_variant(ORIGINAL, False)
+        print(f"[bisect] original: wall={orig_wall} rows={orig_rows}")
+        orig_copies = capture_outputs()
+        for name, flags, extra in BISECT_VARIANTS:
+            reconcile.purge_run(spark, catalog, schema, TABLES, run_id)
+            print(f"[bisect] ===== variant={name} =====")
+            _, wall, _, upd_hash, rows = call_variant(UPDATED, True, flags, extra)
+            ok, report = reconcile.compare_hashes(orig_hash, upd_hash)
+            failed = [r["table"] for r in report if r["exact_match"] == "FAIL"]
+            detail = []
+            if failed:
+                upd_copies = capture_outputs()
+                for table in failed:
+                    only_orig = orig_copies[table].exceptAll(upd_copies[table]).count()
+                    only_upd = upd_copies[table].exceptAll(orig_copies[table]).count()
+                    detail.append(f"{table}(-{only_orig}/+{only_upd})")
+            summary.append((name, "PASS" if ok else "FAIL", wall, rows, " ".join(detail)))
+    finally:
+        reconcile.restore_tables(
+            spark, catalog, schema, TABLES, run_id, snaps, INPUT_TABLES
+        )
+        reconcile.unpersist_snaps(snaps)
+    print(f"[bisect] original rows={orig_rows}")
+    for name, status, wall, rows, detail in summary:
+        print(f"[bisect] {name:<20} {status} wall={wall} rows={rows} {detail}")
+
+
+if BISECT:
+    run_bisect()
+    dbutils.notebook.exit("bisect done")
 
 runtime_rows = []
 parity_rows = []
