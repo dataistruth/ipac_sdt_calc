@@ -331,6 +331,8 @@ _PROMOTED_EXPERIMENT_DEFAULTS = {
     "cpbt_narrow_anti_keys": True,
     "cpbt_transfer_prefilter": True,
     "cpbt_drop_tracking_match": True,
+    "cpbt_priority_pick": True,
+    "cpbt_parent_rank_first": True,
     "batch_footnote_line_ids": True,
     "footnote_shared_lineage": False,
     "footnote_checkpoint_partitions": 4,
@@ -371,6 +373,8 @@ def _apply_promoted_flags(cfg):
     cfg["_output_v3_cpbt_narrow_anti_keys"] = defaults["cpbt_narrow_anti_keys"]
     cfg["_output_v3_cpbt_transfer_prefilter"] = defaults["cpbt_transfer_prefilter"]
     cfg["_output_v3_cpbt_drop_tracking_match"] = defaults["cpbt_drop_tracking_match"]
+    cfg["_output_v3_cpbt_priority_pick"] = defaults["cpbt_priority_pick"]
+    cfg["_output_v3_cpbt_parent_rank_first"] = defaults["cpbt_parent_rank_first"]
     cfg["_output_v3_batch_footnote_line_ids"] = defaults["batch_footnote_line_ids"]
     cfg["_output_v3_footnote_shared_lineage"] = defaults["footnote_shared_lineage"]
     cfg["_output_v3_footnote_checkpoint_partitions"] = defaults[
