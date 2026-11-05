@@ -22,6 +22,7 @@ import contextlib
 import functools
 import io
 import logging
+import re
 import threading
 import time
 from collections import Counter
@@ -30,7 +31,7 @@ from contextvars import ContextVar
 logger = logging.getLogger(__name__)
 
 # Printed at start so a Databricks import can be confirmed.
-PROFILER_VERSION = "v6-catalyst-explain"
+PROFILER_VERSION = "v7-checkpoint-reads"
 
 # Builders may run inside a ThreadPoolExecutor, so guard the shared sink.
 _LOCK = threading.Lock()
@@ -133,6 +134,7 @@ def disable_plan_profile() -> None:
     _CHECKPOINT_SINK.set(None)
     _ACTION_SINK.set(None)
     _clear_active_sinks()
+    _clear_checkpoint_leaves()
     with _EXPLAIN_SKIP_LOCK:
         _EXPLAIN_SKIP = False
 
@@ -351,6 +353,20 @@ def _metrics_from_plan_text(text: str) -> dict | None:
     }
 
 
+def _measure_with_text(df, cfg: dict | None = None):
+    """``(metrics, plan_text)``; ``(None, None)`` when not inspectable."""
+    if not profiling_enabled(cfg):
+        return None, None
+    try:
+        text = _optimized_plan_text(df)
+        if not text or not _looks_like_catalyst(text):
+            return None, None
+        return _metrics_from_plan_text(text), text
+    except Exception as exc:
+        print(f"[plan-profile] measure skipped: {type(exc).__name__}: {exc}")
+        return None, None
+
+
 def measure_plan(df, cfg: dict | None = None) -> dict | None:
     """Measure logical-plan size for ``df``.
 
@@ -358,16 +374,99 @@ def measure_plan(df, cfg: dict | None = None) -> dict | None:
     could not be inspected. Never raises. Uses analyze-only APIs (no Spark job).
     Does **not** call ``explain`` unless ProfilePlan armed this run.
     """
+    return _measure_with_text(df, cfg)[0]
+
+
+# --------------------------------------------------------------------------- #
+# Checkpoint read counting
+#
+# A checkpoint's result plan is a single leaf: ``LogicalRDD [cols#ids]`` for a
+# local checkpoint, or ``Relation ..._tmp_<name>_...`` for a Delta one. Every
+# later checkpoint's incoming plan (the work that actually executes) that
+# contains that leaf is a read. A small break that is read several times is
+# not removable: dropping it recomputes its whole upstream plan once per read.
+# --------------------------------------------------------------------------- #
+_EXPR_ID = re.compile(r"#\d+L?")
+_LOCAL_LEAF = re.compile(r"LogicalRDD \[[^\]]*\]")
+_DELTA_LEAF = re.compile(r"_tmp_[A-Za-z0-9_]+")
+_CHECKPOINT_LEAVES: list = []
+
+
+def _clear_checkpoint_leaves() -> None:
+    with _LOCK:
+        _CHECKPOINT_LEAVES.clear()
+
+
+def _leaf_signature(text: str):
+    """``(exact, names_only)`` for the result leaf, or ``None``."""
+    delta = _DELTA_LEAF.search(text)
+    if delta:
+        return delta.group(0), None
+    local = _LOCAL_LEAF.search(text)
+    if local:
+        exact = local.group(0)
+        return exact, _EXPR_ID.sub("", exact)
+    return None
+
+
+def _count_reads(text: str) -> None:
+    """Credit every registered checkpoint leaf that ``text`` reads.
+
+    Spark gives a relation that appears twice in one plan fresh expression
+    ids on the second side, so those copies only match by column names. They
+    are credited only when the exact leaf is also present, which can
+    over-count two same-schema checkpoints read together — the safe side.
+    """
+    if not text:
+        return
+    names_text = None
+    with _LOCK:
+        leaves = list(_CHECKPOINT_LEAVES)
+    for leaf in leaves:
+        exact = text.count(leaf["exact"])
+        renewed = 0
+        if exact and leaf["names"]:
+            if names_text is None:
+                names_text = _EXPR_ID.sub("", text)
+            renewed = max(0, names_text.count(leaf["names"]) - exact)
+        hits = exact + renewed
+        if hits:
+            with _LOCK:
+                leaf["record"]["reads"] = int(leaf["record"].get("reads") or 0) + hits
+
+
+def track_checkpoint_result(name: str, result, cfg=None) -> None:
+    """Register a checkpoint's output leaf so later plans can count its reads.
+
+    Call right after the checkpoint returns, with the same ``name`` passed to
+    :func:`track_checkpoint_plan`. Never raises.
+    """
     if not profiling_enabled(cfg):
-        return None
+        return
     try:
-        text = _optimized_plan_text(df)
-        if not text or not _looks_like_catalyst(text):
-            return None
-        return _metrics_from_plan_text(text)
-    except Exception as exc:
-        print(f"[plan-profile] measure skipped: {type(exc).__name__}: {exc}")
-        return None
+        target = _sink_list("checkpoint", cfg)
+        if not target:
+            return
+        with _LOCK:
+            record = next(
+                (r for r in reversed(target) if r.get("func") == name and "reads" not in r),
+                None,
+            )
+        if record is None:
+            return
+        # A checkpoint result is often a bare leaf, which _optimized_plan_text
+        # rejects as non-Catalyst, so read the explain text directly.
+        text = _server_explain_text(result)
+        signature = _leaf_signature(text) if text else None
+        if signature is None:
+            return
+        with _LOCK:
+            record["reads"] = 0
+            _CHECKPOINT_LEAVES.append(
+                {"exact": signature[0], "names": signature[1], "record": record}
+            )
+    except Exception:
+        logger.debug("[PLAN] track_checkpoint_result failed", exc_info=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -535,9 +634,10 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
     if not profiling_enabled(cfg):
         return
     try:
-        metrics = measure_plan(df, cfg)
+        metrics, text = _measure_with_text(df, cfg)
         if not metrics:
             return
+        _count_reads(text)
         record = {
             "func": name,
             "nodes": metrics["nodes"],
@@ -549,7 +649,9 @@ def track_checkpoint_plan(name: str, df, cfg=None) -> None:
         if target is not None:
             with _LOCK:
                 target.append(record)
-        _remember("checkpoint", record)
+        # Shared, not copied: track_checkpoint_result and later reads update it.
+        with _LOCK:
+            LAST_PLAN_PROFILE["checkpoint"].append(record)
         ops = " ".join(f"{k}={v}" for k, v in sorted(record["ops"].items()))
         logger.info(
             "[PLAN-CKPT] %s: nodes=%d depth=%d%s",
@@ -641,10 +743,14 @@ def classify_plan_recommendation(
       * measure  — plan already large/deep but this step added little
       * collapse — small growth; do not add a checkpoint here
 
-    CHECKPOINT (what an existing break truncates; ``delta`` is incoming nodes):
-      * keep     — truncates a large plan
-      * measure  — mid-size; need wall time / fan-out
-      * remove   — low-value seam; consider dropping the break
+    CHECKPOINT (what an existing break truncates; ``delta`` is incoming nodes;
+    ``reads`` is how many later checkpoint plans read its output):
+      * keep     — truncates a large plan, or is read 2+ times (dropping it
+                   recomputes the upstream plan once per read)
+      * measure  — mid-size, or reads unknown / only read by writes and
+                   actions the profiler does not see
+      * remove   — small and read exactly once; dropping it only folds the
+                   plan into that one consumer
 
     ACTION (where Spark materializes a plan):
       * add      — oversized plan or repeated action name
@@ -660,9 +766,10 @@ def classify_plan_recommendation(
         return "measure"
     if kind == "checkpoint":
         size = max(nodes, delta)
-        if size >= limit:
+        reads = record.get("reads")
+        if size >= limit or (reads is not None and int(reads) >= 2):
             return "keep"
-        if size >= max(8, limit // 2):
+        if reads is None or int(reads) == 0 or size >= max(8, limit // 2):
             return "measure"
         return "remove"
     if delta >= limit:
@@ -753,8 +860,8 @@ def plan_profile_report(
             "(delta=incoming nodes); keep / measure / remove"
         )
         legend = (
-            f"[PLAN REPORT{tag}] keep=nodes>={threshold}  "
-            f"measure=mid  remove=low-value existing break"
+            f"[PLAN REPORT{tag}] keep=nodes>={threshold} or reads>=2  "
+            f"measure=mid or reads unknown/0  remove=small and reads=1"
         )
     else:
         header = (
@@ -787,6 +894,9 @@ def plan_profile_report(
             action_detail = (
                 f"  action={elapsed_text} calls={rec['action_count']}"
             )
+        elif kind == "checkpoint":
+            reads = rec.get("reads")
+            action_detail = f"  reads={'?' if reads is None else reads}"
         flag = f"  <-- {rec['recommendation']}"
         line = (
             f"  {rec['func']:<34} nodes={rec['nodes']:>4} depth={rec['depth']:>3} "

@@ -135,6 +135,7 @@ try:
         start_plan_profile,
         track_action_plan,
         track_checkpoint_plan,
+        track_checkpoint_result,
         track_plan,
     )
 except Exception:
@@ -148,6 +149,7 @@ except Exception:
     start_plan_profile = _empty_start
     track_action_plan = _noop
     track_checkpoint_plan = _noop
+    track_checkpoint_result = _noop
     track_plan = _identity_track
 
 __all__ = [
@@ -168,5 +170,6 @@ __all__ = [
     "store_last_plan_profile",
     "track_action_plan",
     "track_checkpoint_plan",
+    "track_checkpoint_result",
     "track_plan",
 ]

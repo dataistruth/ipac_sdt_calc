@@ -740,8 +740,14 @@ def build_cost_percentage_by_type(
         "UnderlyingEntityId", "TypeID", "TrackingKey", "Tag", "EntityId", "Underlyingtype", "_mode",
     ).distinct()
 
-    # parent_ordered stays lazy: its window runs over the checkpointed
-    # all_entities, so the incoming plan is ~14 nodes.
+    # Checkpoint parent_ordered — it's used 4 times (TK/no-TK × temp_cost_pct/transfers_adj).
+    # Without this, the expensive DENSE_RANK window over all_entities × all_underlyings
+    # is recomputed for each use. For mode 2, all_entities includes footnote entities
+    # making this O(N²) recomputation the primary bottleneck.
+    if checkpoint_fn is not None:
+        mode = cfg.get("_current_mode", 1)
+        parent_ordered = checkpoint_fn(spark, parent_ordered, f"parent_ord_m{mode}", cfg)
+        logger.info("[CHECKPOINT] parent_ordered (hierarchy rank=1)")
 
     # ── Match through parent WITH TrackingKeyMatch ──
     # Phase 2a: both C (temp_cost_pct) and E (parent_ordered) carry _mode.

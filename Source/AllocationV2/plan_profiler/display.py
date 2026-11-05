@@ -57,6 +57,7 @@ def _profile_rows(records, threshold, kind):
                 int(rec.get("nodes", 0) or 0),
                 int(rec.get("depth", 0) or 0),
                 int(rec.get("delta", 0) or 0),
+                None if rec.get("reads") is None else int(rec["reads"]),
                 candidate,
                 recommendation,
                 _format_ops(rec.get("ops")),
@@ -73,7 +74,8 @@ def build_plan_profile_display(
 ):
     """Build a Spark DataFrame from plan-profile records, ranked by delta desc.
 
-    Columns: ``func``, ``nodes``, ``depth``, ``delta``, ``checkpoint_candidate``,
+    Columns: ``func``, ``nodes``, ``depth``, ``delta``, ``reads`` (checkpoints
+    only: later checkpoint plans that read this one), ``checkpoint_candidate``,
     ``recommendation``, ``ops``. ``kind`` is ``builder`` (add/measure/collapse),
     ``checkpoint`` (keep/measure/remove), or ``action`` (add/measure).
     Returns an empty-schema DataFrame when there are no records.
@@ -91,6 +93,7 @@ def build_plan_profile_display(
             StructField("nodes", LongType(), True),
             StructField("depth", LongType(), True),
             StructField("delta", LongType(), True),
+            StructField("reads", LongType(), True),
             StructField("checkpoint_candidate", StringType(), True),
             StructField("recommendation", StringType(), True),
             StructField("ops", StringType(), True),
@@ -125,6 +128,7 @@ def build_combined_plan_profile_display(
             StructField("nodes", LongType(), True),
             StructField("depth", LongType(), True),
             StructField("delta", LongType(), True),
+            StructField("reads", LongType(), True),
             StructField("checkpoint_candidate", StringType(), True),
             StructField("recommendation", StringType(), True),
             StructField("ops", StringType(), True),

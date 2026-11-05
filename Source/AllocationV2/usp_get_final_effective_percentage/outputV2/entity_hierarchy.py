@@ -30,10 +30,12 @@ def _log_timing(name, start):
 
 def _hierarchy_cp(spark: SparkSession, df: DataFrame, name: str, cfg: dict) -> DataFrame:
     """Profile checkpoint: local under ``small``, Delta under ``large``."""
-    from .plan_profiler import track_checkpoint_plan
+    from .plan_profiler import track_checkpoint_plan, track_checkpoint_result
 
     track_checkpoint_plan(name, df, cfg)
-    return common_checkpoint(spark, df, f"fep_{name}", cfg)
+    result = common_checkpoint(spark, df, f"fep_{name}", cfg)
+    track_checkpoint_result(name, result, cfg)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +254,12 @@ def build_entity_hierarchy(
     )
     materialize = bool(cfg.get("_output_v3_hierarchy_materialize", False))
     if materialize:
-        entity_rel = F.broadcast(entity_rel)
+        # One filtered relationship scan is reused by the seed and every
+        # expansion pass. Broadcast it after the break so later joins do
+        # not rescan EntityRelationship.
+        entity_rel = F.broadcast(
+            _hierarchy_cp(spark, entity_rel, "entity_rel_hierarchy", cfg)
+        )
 
     # Seed: SQL lines 2372-2392
     hierarchy = (
@@ -292,6 +299,8 @@ def build_entity_hierarchy(
         )
         .distinct()
     )
+    if materialize:
+        hierarchy = _hierarchy_cp(spark, hierarchy, "entity_hierarchy_seed", cfg)
 
     # Iterative expansion — exact equivalent of SQL WHILE (1=1) ... IF
     # @@ROWCOUNT = 0 BREAK at SQL lines 2402-2430. No depth cap (SQL has
@@ -345,9 +354,7 @@ def build_entity_hierarchy(
             break
 
         hierarchy = hierarchy.unionByName(new_rows)
-        # Each pass reads the hierarchy twice, so the plan doubles per level;
-        # level 1 is still small enough to stay lazy.
-        if materialize and depth >= 1:
+        if materialize:
             hierarchy = _hierarchy_cp(
                 spark, hierarchy, f"entity_hierarchy_d{depth + 1}", cfg
             )

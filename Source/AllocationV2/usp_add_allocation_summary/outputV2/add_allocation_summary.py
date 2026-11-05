@@ -153,10 +153,12 @@ def _checkpoint_frame(spark, df, name, cfg):
         return None
     if not hasattr(df, "columns"):
         return df
-    from .plan_profiler import track_checkpoint_plan
+    from .plan_profiler import track_checkpoint_plan, track_checkpoint_result
 
     track_checkpoint_plan(name, df, cfg)
-    return common_checkpoint(spark, df, name, cfg)
+    result = common_checkpoint(spark, df, name, cfg)
+    track_checkpoint_result(name, result, cfg)
+    return result
 
 
 def _apply_execution_profile(

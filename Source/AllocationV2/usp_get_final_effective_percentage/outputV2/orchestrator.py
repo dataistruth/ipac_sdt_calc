@@ -394,10 +394,12 @@ def _apply_promoted_flags(cfg):
 
 
 def _checkpoint(spark, df, name, cfg):
-    from .plan_profiler import track_checkpoint_plan
+    from .plan_profiler import track_checkpoint_plan, track_checkpoint_result
 
     track_checkpoint_plan(name, df, cfg)
-    return common_checkpoint(spark, df, f"fep_{name}", cfg)
+    result = common_checkpoint(spark, df, f"fep_{name}", cfg)
+    track_checkpoint_result(name, result, cfg)
+    return result
 
 
 def _drop_checkpoints(spark, cfg):
@@ -1510,13 +1512,43 @@ def run_modes(
                     checkpoint_group_fn=_checkpoint_group,
                 )
 
-                # txfr_adj_fused is REQUIRED because localCheckpoint strips
-                # alias metadata used later by compute_effective_percentage_dated
-                # (.alias("T")). tcp_by_type is a ~20-node suffix over the
-                # tcp_post_tag checkpoint, so it stays lazy.
-                fused_transfers_adj = _checkpoint(
-                    spark, fused_transfers_adj, "txfr_adj_fused", cfg,
+                # Checkpoint fused outputs concurrently -- tcp_by_type has 3+
+                # downstream consumers; txfr_adj_fused is REQUIRED because
+                # localCheckpoint strips alias metadata used later by
+                # compute_effective_percentage_dated (.alias("T")).
+                fused_out = dict(
+                    run_phase(
+                        "independent_builders",
+                        [
+                            (
+                                "temp_output",
+                                _checkpoint,
+                                (
+                                    spark,
+                                    fused_temp_cost_pct,
+                                    "tcp_by_type_fused",
+                                    cfg,
+                                ),
+                                {},
+                            ),
+                            (
+                                "transfer_output",
+                                _checkpoint,
+                                (
+                                    spark,
+                                    fused_transfers_adj,
+                                    "txfr_adj_fused",
+                                    cfg,
+                                ),
+                                {},
+                            ),
+                        ],
+                        workers,
+                        enabled_groups,
+                    )
                 )
+                fused_temp_cost_pct = fused_out["temp_output"]
+                fused_transfers_adj = fused_out["transfer_output"]
 
             # --- Pass B+: ONE call each to compute_missing_entities,
             #            build_final_cost_percentage, compute_minimum_quarter
@@ -1609,13 +1641,46 @@ def run_modes(
                             "mode 1: Cost percentage does not sum to 100%"
                         )
 
-                # compute_minimum_quarter -- runs once on fused inputs. Both
-                # outputs are shallow joins over the post-miss / final-cost
-                # checkpoints, so they stay lazy into effective calculation.
+                # compute_minimum_quarter -- runs once on fused inputs, then
+                # materialize dated-after-min-quarter and min-quarter data
+                # concurrently before effective calculation.
                 cfg["_current_mode"] = 0
                 _, fused_cost_pct_min_quarter, fused_dated_post = compute_minimum_quarter(
                     spark, cfg, fused_final_cost_pct, fused_dated_post,
                 )
+                minq = dict(
+                    run_phase(
+                        "effective_inputs",
+                        [
+                            (
+                                "dated_after_min_quarter",
+                                _checkpoint,
+                                (
+                                    spark,
+                                    fused_dated_post,
+                                    "de_post_minq_fused",
+                                    cfg,
+                                ),
+                                {},
+                            ),
+                            (
+                                "minimum_quarter",
+                                _checkpoint,
+                                (
+                                    spark,
+                                    fused_cost_pct_min_quarter,
+                                    "cost_pct_min_q_fused",
+                                    cfg,
+                                ),
+                                {},
+                            ),
+                        ],
+                        workers,
+                        enabled_groups,
+                    )
+                )
+                fused_dated_post = minq["dated_after_min_quarter"]
+                fused_cost_pct_min_quarter = minq["minimum_quarter"]
 
             # --- Pass C: ONE fused call to effective_calc + plugging chain,
             #            then per-mode loop for build_final_output only.

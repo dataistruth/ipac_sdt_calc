@@ -159,10 +159,11 @@ def _checkpoint(spark, df, name, cfg):
     if df is None:
         print(f"[CHECKPOINT] checkpoint {name}: skipped (df=None)", flush=True)
         return None
-    from .plan_profiler import track_checkpoint_plan
+    from .plan_profiler import track_checkpoint_plan, track_checkpoint_result
 
     track_checkpoint_plan(name, df, cfg)
     result = common_checkpoint(spark, df, name, cfg)
+    track_checkpoint_result(name, result, cfg)
     print(f"[CHECKPOINT] checkpoint {name}: done", flush=True)
     return result
 

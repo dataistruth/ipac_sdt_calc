@@ -20,10 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 def _seam(spark, df, name, cfg):
-    from .plan_profiler import track_checkpoint_plan
+    from .plan_profiler import track_checkpoint_plan, track_checkpoint_result
 
     track_checkpoint_plan(name, df, cfg)
-    return common_checkpoint(spark, df, name, cfg)
+    result = common_checkpoint(spark, df, name, cfg)
+    track_checkpoint_result(name, result, cfg)
+    return result
 
 
 # ---------------------------------------------------------------------------
