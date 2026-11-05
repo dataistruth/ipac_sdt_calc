@@ -978,8 +978,9 @@ def compute_effective_percentage_dated(
         )
     )
 
-    # Checkpoint eff_pct_dated to break DAG lineage before yearly check
-    if checkpoint_fn is not None:
+    # Checkpoint eff_pct_dated to break DAG lineage before yearly check.
+    # Without Step 6 it is still the Step-5 checkpoint, so a second one is a no-op.
+    if checkpoint_fn is not None and transfer_dates is not None:
         mode_val = cfg.get("_current_mode", cfg.get("mode", 0))
         eff_pct_dated = checkpoint_fn(spark, eff_pct_dated, f"eff_dated_s6_m{mode_val}", cfg)
         logger.info("[CHECKPOINT] eff_pct_dated after missing partners")

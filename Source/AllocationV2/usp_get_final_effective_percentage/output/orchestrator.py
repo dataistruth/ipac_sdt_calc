@@ -71,6 +71,7 @@ import time
 from Common_V2.core.config import load_common_config
 from Common_V2.core.helpers import read_table, ns, ns0
 from Common_V2.core.checkpoint import (
+    DELTA_CHECKPOINT_MODE,
     checkpoint as common_checkpoint,
     drop_checkpoints,
 )
@@ -143,6 +144,7 @@ from AllocationV2.usp_get_final_effective_percentage.output.state_allocation imp
 )
 from AllocationV2.usp_get_final_effective_percentage.output.cost_pct_loader import (
     build_entity_underlyings,
+    warn_if_entity_underlyings_empty,
     load_transfers_adj_cost,
     build_cost_percentage_by_type,
     compute_missing_entities,
@@ -203,6 +205,8 @@ _PROMOTED_EXPERIMENT_DEFAULTS = {
     "cpbt_narrow_anti_keys": True,
     "cpbt_transfer_prefilter": True,
     "cpbt_drop_tracking_match": True,
+    "cpbt_priority_pick": True,
+    "cpbt_parent_rank_first": True,
     "batch_footnote_line_ids": True,
     "footnote_shared_lineage": False,
     "footnote_checkpoint_partitions": 4,
@@ -243,6 +247,8 @@ def _apply_promoted_flags(cfg):
     cfg["_output_v3_cpbt_narrow_anti_keys"] = defaults["cpbt_narrow_anti_keys"]
     cfg["_output_v3_cpbt_transfer_prefilter"] = defaults["cpbt_transfer_prefilter"]
     cfg["_output_v3_cpbt_drop_tracking_match"] = defaults["cpbt_drop_tracking_match"]
+    cfg["_output_v3_cpbt_priority_pick"] = defaults["cpbt_priority_pick"]
+    cfg["_output_v3_cpbt_parent_rank_first"] = defaults["cpbt_parent_rank_first"]
     cfg["_output_v3_batch_footnote_line_ids"] = defaults["batch_footnote_line_ids"]
     cfg["_output_v3_footnote_shared_lineage"] = defaults["footnote_shared_lineage"]
     cfg["_output_v3_footnote_checkpoint_partitions"] = defaults[
@@ -265,8 +271,13 @@ def _apply_promoted_flags(cfg):
     return cfg
 
 
-def _checkpoint(spark, df, name, cfg):
-    return common_checkpoint(spark, df, f"fep_{name}", cfg)
+def _checkpoint(spark, df, name, cfg, durable=False):
+    """``durable=True`` forces Delta: frames read by several mode threads must
+    survive executor loss, which a localCheckpoint block does not."""
+    return common_checkpoint(
+        spark, df, f"fep_{name}", cfg,
+        checkpoint_mode=DELTA_CHECKPOINT_MODE if durable else None,
+    )
 
 
 def _drop_checkpoints(spark, cfg):
@@ -530,13 +541,17 @@ def run_modes(
                 cfg["has_704c_mappings"] = False
 
             cost_pct_snapshot_123 = _checkpoint(
-                spark, cost_pct_snapshot_123, "cost_pct_m123", cfg,
+                spark, cost_pct_snapshot_123, "cost_pct_m123", cfg, durable=True,
             )
+            if cost_pct_snapshot_123.isEmpty():
+                logger.warning("build_cost_percentage_snapshot_modes123 produced 0 rows")
         if has_mode4:
             cost_pct_snapshot_4 = build_cost_percentage_snapshot_mode4(spark, cfg)
             cost_pct_snapshot_4 = _checkpoint(
                 spark, cost_pct_snapshot_4, "cost_pct_m4", cfg,
             )
+            if cost_pct_snapshot_4.isEmpty():
+                logger.warning("build_cost_percentage_snapshot_mode4 produced 0 rows")
 
         # --- Common Phase: Entity hierarchy (mode-independent) ---
         entity_partners = build_entity_partners(spark, cfg)
@@ -587,7 +602,7 @@ def run_modes(
         )
         underlyings_ordered = build_underlyings_hlevel_ordered(underlyings_filtered)
         underlyings_ordered = _checkpoint(
-            spark, underlyings_ordered, "uc_ordered_common", cfg,
+            spark, underlyings_ordered, "uc_ordered_common", cfg, durable=True,
         )
 
         # --- Common Phase: LT input, footnote lines, book effective enrichment ---
@@ -683,13 +698,19 @@ def run_modes(
                 spark, cfg, common_underlying_mod, lt_in, book_effective,
                 entity_alloc_rule, dar_setup, map_dar, cost_pct_snapshot_123,
             )
-            all_und = _checkpoint(spark, all_und, f"all_und_common_{label}", cfg)
+            # The no-lt chain is shared by the mode 2 and mode 3 prep threads.
+            shared = label == "nolt"
+            all_und = _checkpoint(
+                spark, all_und, f"all_und_common_{label}", cfg, durable=shared,
+            )
 
             in_lines, _, _ = build_input_lines(
                 spark, cfg, lt_in, line_items, book_effective,
                 entity_alloc_rule, all_und,
             )
-            in_lines = _checkpoint(spark, in_lines, f"input_lines_{label}", cfg)
+            in_lines = _checkpoint(
+                spark, in_lines, f"input_lines_{label}", cfg, durable=shared,
+            )
 
             fin_amts, all_und = compute_amount_based_allocation(
                 spark, cfg, all_und, cost_pct_snapshot_123, lt_in, map_dar,
@@ -725,6 +746,7 @@ def run_modes(
                 common_temp_cost_pct_base = common_temp_cost_pct_base.unionByName(_yearly_cost_rows)
                 common_temp_cost_pct_base = _checkpoint(
                     spark, common_temp_cost_pct_base, "tcp_with_yearly_common", cfg,
+                    durable=True,
                 )
 
             # underlying_mod (no equivalent named SP table -- inline join,
@@ -862,6 +884,7 @@ def run_modes(
                         spark, cfg, input_lines, underlyings_ordered, asset_class_rel,
                     )
                     entity_underlyings = _checkpoint(spark, entity_underlyings, "entity_und_m4", cfg)
+                    warn_if_entity_underlyings_empty(entity_underlyings, input_lines)
                     all_underlyings = _checkpoint(spark, all_underlyings, "all_und_final_m4", cfg)
 
                     transfers_adj = None  # mode 4 skips per SQL.
@@ -958,10 +981,41 @@ def run_modes(
             per_mode_data = {}    # mode -> input-prep dict (only for modes that survived fast-exit)
             mode_t0 = {}          # mode -> wall-clock start
 
+            def _pre_cpbt_boundaries(mode, local_cfg, non_dated, dated):
+                """Checkpoint dated / non-dated entities in parallel for one mode."""
+                _ckpt_t0 = time.time()
+                boundary = dict(
+                    run_phase(
+                        "mode_prep_boundaries",
+                        [
+                            (
+                                f"non_dated_m{mode}",
+                                _checkpoint,
+                                (spark, non_dated, f"nde_pre_cpbt_m{mode}", local_cfg),
+                                {},
+                            ),
+                            (
+                                f"dated_m{mode}",
+                                _checkpoint,
+                                (spark, dated, f"de_pre_cpbt_m{mode}", local_cfg),
+                                {},
+                            ),
+                        ],
+                        workers,
+                        enabled_groups,
+                    )
+                )
+                logger.info(
+                    f"[TIMING] pre_cpbt_checkpoints_m{mode}: "
+                    f"{time.time() - _ckpt_t0:.1f}s"
+                )
+                return boundary[f"non_dated_m{mode}"], boundary[f"dated_m{mode}"]
+
             # -- Pass A: concurrent per-mode input prep (locked 54s path) --
             def _prep_one_mode(mode):
-                """Build mode-specific prep frames; leave pre-CPBT barriers for
-                the next parallel wave so nde/de/txfr can overlap."""
+                """Build mode-specific prep frames and run that mode's pre-CPBT
+                barriers in the same thread, so a fast mode does not wait on a
+                slow one before checkpointing."""
                 mt0 = time.time()
                 local_cfg = isolated_cfg(cfg, fresh_results=False)
                 local_cfg["mode"] = mode
@@ -1173,6 +1227,11 @@ def run_modes(
 
                     is_footnote_path = mode == 2
                     is_state_path = _sm_has_data
+                    needs_pre_cpbt = is_footnote_path or is_state_path
+                    if needs_pre_cpbt:
+                        mode_non_dated, mode_dated = _pre_cpbt_boundaries(
+                            mode, local_cfg, mode_non_dated, mode_dated
+                        )
                     return {
                         "mode": mode,
                         "mt0": mt0,
@@ -1187,9 +1246,6 @@ def run_modes(
                             "transfers_adj": None,
                             "input_lines": mode_input_lines,
                             "final_amounts": mode_final_amounts,
-                            "needs_pre_cpbt": (
-                                is_footnote_path or is_state_path
-                            ),
                             "local_cfg": local_cfg,
                         },
                     }
@@ -1213,7 +1269,6 @@ def run_modes(
                 )
             )
 
-            # Pre-CPBT barriers: dated / non-dated overlap per mode.
             for mode in modes_123:
                 prep = prep_by_mode[f"mode_{mode}"]
                 mode_t0[mode] = prep["mt0"]
@@ -1222,63 +1277,13 @@ def run_modes(
                     continue
 
                 d = prep["data"]
-                local_cfg = d["local_cfg"]
-                mode_non_dated = d["non_dated_entities"]
-                mode_dated = d["dated_entities"]
-
-                boundary_tasks = []
-                if d["needs_pre_cpbt"]:
-                    boundary_tasks.append(
-                        (
-                            f"non_dated_m{mode}",
-                            _checkpoint,
-                            (
-                                spark,
-                                mode_non_dated,
-                                f"nde_pre_cpbt_m{mode}",
-                                local_cfg,
-                            ),
-                            {},
-                        )
-                    )
-                    boundary_tasks.append(
-                        (
-                            f"dated_m{mode}",
-                            _checkpoint,
-                            (
-                                spark,
-                                mode_dated,
-                                f"de_pre_cpbt_m{mode}",
-                                local_cfg,
-                            ),
-                            {},
-                        )
-                    )
-
-                if d["needs_pre_cpbt"]:
-                    _ckpt_t0 = time.time()
-                    boundary = dict(
-                        run_phase(
-                            "mode_prep_boundaries",
-                            boundary_tasks,
-                            workers,
-                            enabled_groups,
-                        )
-                    )
-                    mode_non_dated = boundary[f"non_dated_m{mode}"]
-                    mode_dated = boundary[f"dated_m{mode}"]
-                    logger.info(
-                        f"[TIMING] pre_cpbt_checkpoints_m{mode}: "
-                        f"{time.time() - _ckpt_t0:.1f}s"
-                    )
-
                 per_mode_data[mode] = {
                     "temp_cost_pct": d["temp_cost_pct"],
                     "all_underlyings": d["all_underlyings"],
                     "entity_input_lines": d["entity_input_lines"],
                     "entity_underlyings": None,
-                    "non_dated_entities": mode_non_dated,
-                    "dated_entities": mode_dated,
+                    "non_dated_entities": d["non_dated_entities"],
+                    "dated_entities": d["dated_entities"],
                     "transfers_adj": None,
                     "input_lines": d["input_lines"],
                     "final_amounts": d["final_amounts"],
@@ -1305,6 +1310,10 @@ def run_modes(
                 )
                 fused_entity_underlyings = _checkpoint(
                     spark, fused_entity_underlyings, "entity_und_fused", cfg,
+                    durable=True,
+                )
+                warn_if_entity_underlyings_empty(
+                    fused_entity_underlyings, tagged_entity_input_lines
                 )
 
                 # Fused load_transfers_adj_cost — single call replaces the
@@ -1507,24 +1516,31 @@ def run_modes(
                 # materialize dated-after-min-quarter and min-quarter data
                 # concurrently before effective calculation.
                 cfg["_current_mode"] = 0
+                dated_post_checkpointed = fused_dated_post
                 _, fused_cost_pct_min_quarter, fused_dated_post = compute_minimum_quarter(
                     spark, cfg, fused_final_cost_pct, fused_dated_post,
                 )
+                # The PE Book dated branch returns dated entities unchanged;
+                # re-checkpointing de_post_miss_fused would be a no-op.
+                minq_tasks = []
+                if fused_dated_post is not dated_post_checkpointed:
+                    minq_tasks.append(
+                        (
+                            "dated_after_min_quarter",
+                            _checkpoint,
+                            (
+                                spark,
+                                fused_dated_post,
+                                "de_post_minq_fused",
+                                cfg,
+                            ),
+                            {},
+                        )
+                    )
                 minq = dict(
                     run_phase(
                         "effective_inputs",
-                        [
-                            (
-                                "dated_after_min_quarter",
-                                _checkpoint,
-                                (
-                                    spark,
-                                    fused_dated_post,
-                                    "de_post_minq_fused",
-                                    cfg,
-                                ),
-                                {},
-                            ),
+                        minq_tasks + [
                             (
                                 "minimum_quarter",
                                 _checkpoint,
@@ -1541,7 +1557,7 @@ def run_modes(
                         enabled_groups,
                     )
                 )
-                fused_dated_post = minq["dated_after_min_quarter"]
+                fused_dated_post = minq.get("dated_after_min_quarter", fused_dated_post)
                 fused_cost_pct_min_quarter = minq["minimum_quarter"]
 
             # --- Pass C: ONE fused call to effective_calc + plugging chain,

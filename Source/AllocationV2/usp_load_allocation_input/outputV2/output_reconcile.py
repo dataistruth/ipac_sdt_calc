@@ -55,14 +55,20 @@ def _key_frame(spark, catalog, schema, table, key, run_id):
 
 
 def snapshot_tables(spark, catalog, schema, tables, run_id):
+    """Driver-side copy of each table's RunID rows.
+
+    A cached view of the live table is not a copy: if the cache is missing
+    (Spark Connect / shared clusters), restore re-scans files that purge_run
+    already deleted and fails with DELTA_CONCURRENT_DELETE_READ. Keyless
+    tables are never restored, so they are not snapshotted.
+    """
     snaps = {}
     for table, key in tables:
         df, cols, keyed = _key_frame(spark, catalog, schema, table, key, run_id)
-        if df is None:
+        if df is None or not keyed:
             snaps[table] = None
             continue
-        snaps[table] = df.cache()
-        snaps[table].count()
+        snaps[table] = spark.createDataFrame(df.collect(), df.schema)
     return snaps
 
 

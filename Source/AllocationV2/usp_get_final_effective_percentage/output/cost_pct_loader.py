@@ -153,6 +153,12 @@ def build_entity_underlyings(
             .distinct()
         )
 
+    _log_timing("build_entity_underlyings", t0)
+    return result
+
+
+def warn_if_entity_underlyings_empty(result: DataFrame, input_lines: DataFrame) -> None:
+    """Warning-only probe; call it on the checkpointed entity underlyings."""
     # Note: legitimate emptiness after Path A.
     # The orchestrator builds this chain twice in Common Phase 2 — once with
     # populated lt_input (mode 1) and once with empty lt_input (modes 2/3,
@@ -172,9 +178,6 @@ def build_entity_underlyings(
                 "build_entity_underlyings returned 0 rows but input_lines is "
                 "non-empty — investigate join with asset_class_rel / Entity."
             )
-
-    _log_timing("build_entity_underlyings", t0)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -483,8 +486,46 @@ def build_cost_percentage_by_type(
             )
         )
 
+    def _priority_pick(base, steps):
+        """Rows of ``base`` plus each step's rows whose key no earlier step had.
+
+        Same rows as chaining ``_anti_dedup`` + union step by step: a key is in
+        an earlier step's output iff it is in an earlier step's candidates (if
+        that candidate was dropped, a still-earlier row with the key was kept).
+        One window replaces the chain, so the plan no longer nests every
+        earlier step inside each later one. Equality anti-joins never match
+        null keys, so null-key base rows block nothing and null-key candidates
+        are always kept.
+        """
+        key_cols = ["DealId", "Tag", "TypeId", "TrackingKey", "_mode"]
+        pool = base.select(*key_cols).dropna(subset=key_cols).withColumn("_prio", F.lit(0))
+        for prio, step in enumerate(steps, start=1):
+            pool = pool.unionByName(
+                step.withColumn("_prio", F.lit(prio)), allowMissingColumns=True
+            )
+        first_prio = F.min("_prio").over(
+            Window.partitionBy(
+                F.col("DealId"),
+                F.coalesce(F.col("Tag"), F.lit("")),
+                F.col("TypeId"),
+                F.coalesce(F.col("TrackingKey"), F.lit("")),
+                F.col("_mode"),
+            )
+        )
+        null_key = (
+            F.col("DealId").isNull() | F.col("TypeId").isNull() | F.col("_mode").isNull()
+        )
+        picked = (
+            pool.withColumn("_first_prio", first_prio)
+            .filter(
+                (F.col("_prio") > 0)
+                & (null_key | (F.col("_prio") == F.col("_first_prio")))
+            )
+            .drop("_prio", "_first_prio")
+        )
+        return base.unionByName(picked, allowMissingColumns=True)
+
     # ── Underlying Only: Priority 1 (tracking key match) ──
-    existing1 = _existing_deals(temp_cost_pct)
     uo_p1 = _select_cost_pct(
         cps.alias("C")
         .join(
@@ -497,11 +538,8 @@ def build_cost_percentage_by_type(
         F.col("E.UnderlyingEntityId"),
         F.coalesce(F.col("E.TrackingKey"), F.lit("")),
     )
-    uo_p1 = _anti_dedup(uo_p1, existing1)
-    temp_cost_pct = temp_cost_pct.unionByName(uo_p1, allowMissingColumns=True)
 
     # ── Underlying Only: Priority 2 (tracking match) ──
-    existing2 = _existing_deals(temp_cost_pct)
     uo_p2 = _select_cost_pct(
         cps.alias("C")
         .join(
@@ -515,11 +553,8 @@ def build_cost_percentage_by_type(
         F.col("E.UnderlyingEntityId"),
         F.coalesce(F.col("E.TrackingKey"), F.lit("")),
     )
-    uo_p2 = _anti_dedup(uo_p2, existing2)
-    temp_cost_pct = temp_cost_pct.unionByName(uo_p2, allowMissingColumns=True)
 
     # ── Entity Total: Priority 1 (tracking key match) ──
-    existing_et1 = _existing_deals(temp_cost_pct)
     et_p1 = _select_cost_pct(
         cps.alias("C")
         .join(
@@ -532,11 +567,8 @@ def build_cost_percentage_by_type(
         F.col("E.UnderlyingEntityId"),
         F.coalesce(F.col("C.TrackingKey"), F.lit("")),
     )
-    et_p1 = _anti_dedup(et_p1, existing_et1)
-    temp_cost_pct = temp_cost_pct.unionByName(et_p1, allowMissingColumns=True)
 
     # ── Entity Total: Priority 2 (tracking match, with TrackingKeyMatch) ──
-    existing_et2 = _existing_deals(temp_cost_pct)
     et_p2 = (
         cps.alias("C")
         .join(
@@ -571,21 +603,8 @@ def build_cost_percentage_by_type(
         )
         .distinct()
     )
-    et_p2 = _anti_dedup(et_p2, existing_et2)
-
-    temp_cost_pct = temp_cost_pct.unionByName(et_p2, allowMissingColumns=True)
-
-    # ── Intermediate checkpoint: break DAG after UO+ET steps (4 joins) ──
-    # Steps 1-4 each join cps × all_underlyings with anti-dedup chains.
-    # Without this, the Asset Class steps must optimize through the full
-    # nested 4-union plan to evaluate _existing_deals(temp_cost_pct).
-    if checkpoint_fn is not None:
-        mode = cfg.get("_current_mode", 1)
-        temp_cost_pct = checkpoint_fn(spark, temp_cost_pct, f"tcp_post_et_m{mode}", cfg)
-        logger.info("[CHECKPOINT] temp_cost_pct after UO+ET (4 steps)")
 
     # ── Asset Class: by AssetClassId ──
-    existing_ac1 = _existing_deals(temp_cost_pct)
     ac_p1 = _select_cost_pct(
         cps.alias("C")
         .join(
@@ -600,11 +619,8 @@ def build_cost_percentage_by_type(
         F.coalesce(F.col("E.TrackingKey"), F.lit("")),
         F.col("C.UnderlyingType"),
     )
-    ac_p1 = _anti_dedup(ac_p1, existing_ac1)
-    temp_cost_pct = temp_cost_pct.unionByName(ac_p1, allowMissingColumns=True)
 
     # ── Asset Class: InvestmentID = -1 cross join ──
-    existing_ac2 = _existing_deals(temp_cost_pct)
     # Phase 2a: include _mode so the cross-join's E side carries the mode tag,
     # which _select_cost_pct then projects into the unioned temp_cost_pct.
     eu_distinct = entity_underlyings.select("UnderlyingEntityId", "_mode").distinct()
@@ -618,11 +634,25 @@ def build_cost_percentage_by_type(
         F.col("E.UnderlyingEntityId"),
         F.coalesce(F.col("C.TrackingKey"), F.lit("")),
     )
-    ac_p2 = _anti_dedup(ac_p2, existing_ac2)
-    temp_cost_pct = temp_cost_pct.unionByName(ac_p2, allowMissingColumns=True)
 
-    # ── (tcp_post_et checkpoint above already broke the main lineage;
-    # the 2 AC steps only add 2 shallow unions — checkpoint removed.) ──
+    # Each step keeps only keys no earlier step (or the input) already has.
+    priority_steps = [uo_p1, uo_p2, et_p1, et_p2, ac_p1, ac_p2]
+    mode = cfg.get("_current_mode", 1)
+    pending_tcp_checkpoint = None
+    if cfg.get("_output_v3_cpbt_priority_pick", False):
+        temp_cost_pct = _priority_pick(temp_cost_pct, priority_steps)
+        pending_tcp_checkpoint = f"tcp_post_ac_m{mode}"
+    else:
+        for step_no, step in enumerate(priority_steps, start=1):
+            step = _anti_dedup(step, _existing_deals(temp_cost_pct))
+            temp_cost_pct = temp_cost_pct.unionByName(step, allowMissingColumns=True)
+            # Break the nested anti-dedup chain after UO+ET (4 steps); the
+            # 2 AC steps then add only shallow unions.
+            if step_no == 4 and checkpoint_fn is not None:
+                temp_cost_pct = checkpoint_fn(
+                    spark, temp_cost_pct, f"tcp_post_et_m{mode}", cfg
+                )
+                logger.info("[CHECKPOINT] temp_cost_pct after UO+ET (4 steps)")
 
     # ═══════════════════════════════════════════════════════════
     # Build #TempAllEntities (union of dated + non-dated entities)
@@ -681,25 +711,17 @@ def build_cost_percentage_by_type(
     # Delete entities already matched in cost_pct
     # Phase 2a: add _mode equality so a mode-1 entity isn't suppressed by a
     # mode-2 cost_pct row (only meaningful in Phase 2b's fused execution).
-    matched_cost_keys = _anti_cost_keys(temp_cost_pct)
-    all_entities = all_entities.join(
-        matched_cost_keys,
-        (all_entities["UnderlyingEntityID"] == matched_cost_keys["DealId"])
-        & (all_entities["TypeID"] == matched_cost_keys["TypeId"])
-        & (all_entities["TrackingKey"] == matched_cost_keys["TrackingKey"])
-        & (all_entities["Tag"] == matched_cost_keys["Tag"])
-        & (all_entities["_mode"] == matched_cost_keys["_mode"]),
-        "left_anti",
-    )
-
-    # Checkpoint all_entities — it's a 4-union + distinct + anti-join that is
-    # otherwise recomputed inside parent_ranked (expensive window join) and
-    # again for tag/nothing matching. Materializing here prevents the
-    # DENSE_RANK window from triggering a full recomputation of the entity set.
-    if checkpoint_fn is not None:
-        mode = cfg.get("_current_mode", 1)
-        all_entities = checkpoint_fn(spark, all_entities, f"all_ent_m{mode}", cfg)
-        logger.info("[CHECKPOINT] all_entities (initial anti-join)")
+    def _drop_matched(df, entity_col):
+        matched_cost_keys = _anti_cost_keys(temp_cost_pct)
+        return df.join(
+            matched_cost_keys,
+            (df[entity_col] == matched_cost_keys["DealId"])
+            & (df["TypeID"] == matched_cost_keys["TypeId"])
+            & (df["TrackingKey"] == matched_cost_keys["TrackingKey"])
+            & (df["Tag"] == matched_cost_keys["Tag"])
+            & (df["_mode"] == matched_cost_keys["_mode"]),
+            "left_anti",
+        )
 
     # ═══════════════════════════════════════════════════════════
     # Parent hierarchy matching (DENSE_RANK)
@@ -709,43 +731,86 @@ def build_cost_percentage_by_type(
     # partitionBy so each (UnderlyingEntityID, TypeID, TrackingKey, Tag, _mode)
     # tuple gets its own DENSE_RANK ordering. Without _mode in the partition,
     # a fused-mode plan would mix entities across modes when computing rank.
-    parent_ranked = (
-        all_entities.alias("E")
-        .join(
-            all_underlyings.alias("U"),
-            (F.col("E.UnderlyingEntityID") == F.col("U.UnderlyingEntityId"))
-            & (F.col("E.TrackingKey") == F.col("U.TrackingKey"))
-            & (F.col("E.TypeID") == F.col("U.AllocationTypeId"))
-            & (F.col("E._mode") == F.col("U._mode")),
-            "left",
+    def _rank_parents(entities):
+        parent_ranked = (
+            entities.alias("E")
+            .join(
+                all_underlyings.alias("U"),
+                (F.col("E.UnderlyingEntityID") == F.col("U.UnderlyingEntityId"))
+                & (F.col("E.TrackingKey") == F.col("U.TrackingKey"))
+                & (F.col("E.TypeID") == F.col("U.AllocationTypeId"))
+                & (F.col("E._mode") == F.col("U._mode")),
+                "left",
+            )
+            .select(
+                F.col("E.UnderlyingEntityID").alias("UnderlyingEntityId"),
+                F.col("E.TypeID"),
+                F.col("E.TrackingKey"),
+                F.col("E.Tag"),
+                F.col("U.EntityId"),
+                F.col("U.Underlyingtype"),
+                F.col("E._mode"),
+                F.dense_rank().over(
+                    Window.partitionBy(
+                        F.col("E.UnderlyingEntityID"), F.col("E.TypeID"),
+                        F.col("E.TrackingKey"), F.col("E.Tag"), F.col("E._mode"),
+                    ).orderBy(F.col("U.Underlyingtype"))
+                ).alias("RuleRank"),
+            )
         )
-        .select(
-            F.col("E.UnderlyingEntityID").alias("UnderlyingEntityId"),
-            F.col("E.TypeID"),
-            F.col("E.TrackingKey"),
-            F.col("E.Tag"),
-            F.col("U.EntityId"),
-            F.col("U.Underlyingtype"),
-            F.col("E._mode"),
-            F.dense_rank().over(
-                Window.partitionBy(
-                    F.col("E.UnderlyingEntityID"), F.col("E.TypeID"),
-                    F.col("E.TrackingKey"), F.col("E.Tag"), F.col("E._mode"),
-                ).orderBy(F.col("U.Underlyingtype"))
-            ).alias("RuleRank"),
-        )
-    )
+        return parent_ranked.filter(F.col("RuleRank") == F.lit(1)).select(
+            "UnderlyingEntityId", "TypeID", "TrackingKey", "Tag", "EntityId", "Underlyingtype", "_mode",
+        ).distinct()
 
-    parent_ordered = parent_ranked.filter(F.col("RuleRank") == F.lit(1)).select(
-        "UnderlyingEntityId", "TypeID", "TrackingKey", "Tag", "EntityId", "Underlyingtype", "_mode",
-    ).distinct()
+    if cfg.get("_output_v3_cpbt_parent_rank_first", False):
+        # all_entities is distinct on the 5 window-partition columns, and the
+        # anti-join removes rows by exactly those columns, so it only drops
+        # whole partitions: ranking before the anti-join gives the same rows.
+        # That lets the DENSE_RANK window run concurrently with temp_cost_pct.
+        parent_ordered = _rank_parents(all_entities)
+        if checkpoint_fn is not None:
+            breaks = [
+                ("entities", all_entities, f"all_ent_base_m{mode}"),
+                ("parents", parent_ordered, f"parent_ord_base_m{mode}"),
+            ]
+            if pending_tcp_checkpoint is not None:
+                breaks.append(("temp_cost_pct", temp_cost_pct, pending_tcp_checkpoint))
+            if checkpoint_group_fn is not None:
+                done = checkpoint_group_fn(
+                    [
+                        (key, checkpoint_fn, (spark, df, name, cfg), {})
+                        for key, df, name in breaks
+                    ]
+                )
+            else:
+                done = {
+                    key: checkpoint_fn(spark, df, name, cfg)
+                    for key, df, name in breaks
+                }
+            all_entities = done["entities"]
+            parent_ordered = done["parents"]
+            temp_cost_pct = done.get("temp_cost_pct", temp_cost_pct)
+        all_entities = _drop_matched(all_entities, "UnderlyingEntityID")
+        parent_ordered = _drop_matched(parent_ordered, "UnderlyingEntityId")
+    else:
+        if pending_tcp_checkpoint is not None and checkpoint_fn is not None:
+            temp_cost_pct = checkpoint_fn(spark, temp_cost_pct, pending_tcp_checkpoint, cfg)
+        all_entities = _drop_matched(all_entities, "UnderlyingEntityID")
+
+        # Checkpoint all_entities — it's a 4-union + distinct + anti-join that is
+        # otherwise recomputed inside parent_ranked (expensive window join) and
+        # again for tag/nothing matching. Materializing here prevents the
+        # DENSE_RANK window from triggering a full recomputation of the entity set.
+        if checkpoint_fn is not None:
+            all_entities = checkpoint_fn(spark, all_entities, f"all_ent_m{mode}", cfg)
+            logger.info("[CHECKPOINT] all_entities (initial anti-join)")
+        parent_ordered = _rank_parents(all_entities)
 
     # Checkpoint parent_ordered — it's used 4 times (TK/no-TK × temp_cost_pct/transfers_adj).
     # Without this, the expensive DENSE_RANK window over all_entities × all_underlyings
     # is recomputed for each use. For mode 2, all_entities includes footnote entities
     # making this O(N²) recomputation the primary bottleneck.
     if checkpoint_fn is not None:
-        mode = cfg.get("_current_mode", 1)
         parent_ordered = checkpoint_fn(spark, parent_ordered, f"parent_ord_m{mode}", cfg)
         logger.info("[CHECKPOINT] parent_ordered (hierarchy rank=1)")
 

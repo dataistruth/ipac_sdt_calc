@@ -349,7 +349,9 @@ def build_entity_hierarchy(
             break
 
         hierarchy = hierarchy.unionByName(new_rows)
-        if materialize:
+        # Pass 1 sits on the checkpointed seed, so its plan stays shallow;
+        # later passes still break the self-join lineage, which grows per pass.
+        if materialize and depth >= 1:
             hierarchy = _hierarchy_cp(
                 spark, hierarchy, f"entity_hierarchy_d{depth + 1}", cfg
             )
