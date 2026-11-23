@@ -698,19 +698,13 @@ def run_modes(
                 spark, cfg, common_underlying_mod, lt_in, book_effective,
                 entity_alloc_rule, dar_setup, map_dar, cost_pct_snapshot_123,
             )
-            # The no-lt chain is shared by the mode 2 and mode 3 prep threads.
-            shared = label == "nolt"
-            all_und = _checkpoint(
-                spark, all_und, f"all_und_common_{label}", cfg, durable=shared,
-            )
+            all_und = _checkpoint(spark, all_und, f"all_und_common_{label}", cfg)
 
             in_lines, _, _ = build_input_lines(
                 spark, cfg, lt_in, line_items, book_effective,
                 entity_alloc_rule, all_und,
             )
-            in_lines = _checkpoint(
-                spark, in_lines, f"input_lines_{label}", cfg, durable=shared,
-            )
+            in_lines = _checkpoint(spark, in_lines, f"input_lines_{label}", cfg)
 
             fin_amts, all_und = compute_amount_based_allocation(
                 spark, cfg, all_und, cost_pct_snapshot_123, lt_in, map_dar,
@@ -746,7 +740,6 @@ def run_modes(
                 common_temp_cost_pct_base = common_temp_cost_pct_base.unionByName(_yearly_cost_rows)
                 common_temp_cost_pct_base = _checkpoint(
                     spark, common_temp_cost_pct_base, "tcp_with_yearly_common", cfg,
-                    durable=True,
                 )
 
             # underlying_mod (no equivalent named SP table -- inline join,
@@ -1310,7 +1303,6 @@ def run_modes(
                 )
                 fused_entity_underlyings = _checkpoint(
                     spark, fused_entity_underlyings, "entity_und_fused", cfg,
-                    durable=True,
                 )
                 warn_if_entity_underlyings_empty(
                     fused_entity_underlyings, tagged_entity_input_lines
